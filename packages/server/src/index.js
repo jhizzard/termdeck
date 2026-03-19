@@ -1,0 +1,432 @@
+// TermDeck Server - main entry point
+// Express REST API + WebSocket hub + PTY management
+
+const express = require('express');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
+
+// Conditional imports (graceful fallback if not installed yet)
+let pty, Database;
+try { pty = require('node-pty'); } catch { pty = null; }
+try { Database = require('better-sqlite3'); } catch { Database = null; }
+
+const { SessionManager } = require('./session');
+const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = require('./database');
+const { RAGIntegration } = require('./rag');
+const { themes, statusColors } = require('./themes');
+
+// Load config
+function loadConfig() {
+  const configPath = path.join(os.homedir(), '.termdeck', 'config.yaml');
+  const defaults = {
+    port: 3000,
+    host: '127.0.0.1',
+    shell: process.env.SHELL || '/bin/bash',
+    defaultTheme: 'tokyo-night',
+    projects: {},
+    rag: {
+      enabled: false,
+      supabaseUrl: null,
+      supabaseKey: null,
+      developerId: os.userInfo().username,
+      syncIntervalMs: 10000,
+      tables: {
+        session: 'engram_session_memory',
+        project: 'engram_project_memory',
+        developer: 'engram_developer_memory',
+        commands: 'engram_commands'
+      }
+    }
+  };
+
+  try {
+    const yaml = require('yaml');
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      const parsed = yaml.parse(raw);
+      return { ...defaults, ...parsed, rag: { ...defaults.rag, ...parsed?.rag } };
+    }
+  } catch (err) {
+    console.warn('[config] Could not load config.yaml, using defaults:', err.message);
+  }
+
+  return defaults;
+}
+
+function createServer(config) {
+  const app = express();
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: '/ws' });
+
+  app.use(express.json());
+
+  // Serve client files
+  const clientDir = path.join(__dirname, '..', '..', 'client', 'public');
+  app.use(express.static(clientDir));
+
+  // Initialize database
+  let db = null;
+  if (Database) {
+    try {
+      db = initDatabase(Database);
+      // Mark orphaned sessions as exited (PTYs lost on server restart)
+      const orphaned = db.prepare(
+        `UPDATE sessions SET exited_at = ?, exit_code = -1 WHERE exited_at IS NULL`
+      ).run(new Date().toISOString());
+      if (orphaned.changes > 0) {
+        console.log(`[db] Marked ${orphaned.changes} orphaned session(s) as exited`);
+      }
+      console.log('[db] SQLite initialized');
+    } catch (err) {
+      console.warn('[db] SQLite init failed:', err.message);
+    }
+  }
+
+  // Initialize session manager
+  const sessions = new SessionManager(db);
+
+  // Initialize RAG
+  const rag = new RAGIntegration(config, db);
+
+  // Wire RAG to session events
+  sessions.on('session:created', (s) => rag.onSessionCreated(s));
+  sessions.on('session:removed', (s) => rag.onSessionEnded(s));
+
+  // ==================== REST API ====================
+
+  // GET /api/sessions - list all active sessions
+  app.get('/api/sessions', (req, res) => {
+    res.json(sessions.getAll());
+  });
+
+  // POST /api/sessions - create a new terminal session
+  app.post('/api/sessions', (req, res) => {
+    const { command, cwd, project, label, type, theme, reason } = req.body;
+
+    const rawCwd = cwd || config.projects?.[project]?.path || os.homedir();
+    const resolvedCwd = path.resolve(rawCwd.replace(/^~/, os.homedir()));
+
+    const session = sessions.create({
+      type: type || 'shell',
+      project: project || null,
+      label: label || command || 'Terminal',
+      command: command || config.shell,
+      cwd: resolvedCwd,
+      theme: theme || config.projects?.[project]?.defaultTheme || config.defaultTheme,
+      reason: reason || 'launched via API'
+    });
+
+    // Spawn PTY
+    if (pty) {
+      const shell = command || config.shell;
+      const args = command ? ['-c', command] : [];
+      const spawnShell = command ? config.shell : shell;
+
+      try {
+        const term = pty.spawn(spawnShell, args, {
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 30,
+          cwd: resolvedCwd,
+          env: {
+            ...process.env,
+            TERMDECK_SESSION: session.id,
+            TERMDECK_PROJECT: project || '',
+            TERM: 'xterm-256color',
+            COLORTERM: 'truecolor'
+          }
+        });
+
+        session.pty = term;
+        session.pid = term.pid;
+        session.meta.status = 'active';
+
+        // PTY output → analyze + broadcast to WebSocket
+        term.onData((data) => {
+          session.analyzeOutput(data);
+
+          // Send to connected WebSocket
+          if (session.ws && session.ws.readyState === 1) {
+            session.ws.send(JSON.stringify({ type: 'output', data }));
+          }
+        });
+
+        term.onExit(({ exitCode, signal }) => {
+          session.meta.status = 'exited';
+          session.meta.exitCode = exitCode;
+          session.meta.statusDetail = `Exited (${exitCode})${signal ? `, signal ${signal}` : ''}`;
+
+          if (session.ws && session.ws.readyState === 1) {
+            session.ws.send(JSON.stringify({
+              type: 'exit',
+              exitCode,
+              signal
+            }));
+          }
+
+          rag.onSessionEnded(session);
+        });
+
+        // Wire command logging to SQLite + RAG
+        session.onCommand = (sessionId, command) => {
+          if (db) {
+            try { logCommand(db, sessionId, command); } catch {}
+          }
+          rag.onCommandExecuted(session, command);
+        };
+
+        // Wire status change tracking to RAG
+        session.onStatusChange = (sess, oldStatus, newStatus) => {
+          rag.onStatusChanged(sess, oldStatus, newStatus);
+        };
+
+        console.log(`[pty] Spawned session ${session.id} (PID ${term.pid}): ${shell} ${args.join(' ')}`);
+      } catch (err) {
+        session.meta.status = 'errored';
+        session.meta.statusDetail = err.message;
+        console.error(`[pty] Spawn failed:`, err);
+      }
+    } else {
+      session.meta.status = 'errored';
+      session.meta.statusDetail = 'node-pty not available';
+    }
+
+    res.status(201).json(session.toJSON());
+  });
+
+  // GET /api/sessions/:id - get session details
+  app.get('/api/sessions/:id', (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session.toJSON());
+  });
+
+  // PATCH /api/sessions/:id - update session metadata
+  app.patch('/api/sessions/:id', (req, res) => {
+    const session = sessions.updateMeta(req.params.id, req.body);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session.toJSON());
+  });
+
+  // DELETE /api/sessions/:id - kill terminal and remove session
+  app.delete('/api/sessions/:id', (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    // Kill PTY process
+    if (session.pty) {
+      try { session.pty.kill(); } catch {}
+    }
+
+    sessions.remove(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // POST /api/sessions/:id/resize - resize terminal
+  app.post('/api/sessions/:id/resize', (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session?.pty) return res.status(404).json({ error: 'Session not found' });
+
+    const { cols, rows } = req.body;
+    try {
+      session.pty.resize(cols || 120, rows || 30);
+      res.json({ ok: true, cols, rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/sessions/:id/history - command history for session
+  app.get('/api/sessions/:id/history', (req, res) => {
+    if (!db) return res.json([]);
+    res.json(getSessionHistory(db, req.params.id));
+  });
+
+  // GET /api/themes - available terminal themes
+  app.get('/api/themes', (req, res) => {
+    const list = Object.entries(themes).map(([id, t]) => ({
+      id,
+      label: t.label,
+      category: t.category,
+      background: t.theme.background,
+      foreground: t.theme.foreground,
+      theme: t.theme
+    }));
+    res.json(list);
+  });
+
+  // GET /api/themes/:id - full theme data
+  app.get('/api/themes/:id', (req, res) => {
+    const t = themes[req.params.id];
+    if (!t) return res.status(404).json({ error: 'Theme not found' });
+    res.json(t);
+  });
+
+  // GET /api/config - current config (sanitized)
+  app.get('/api/config', (req, res) => {
+    res.json({
+      projects: config.projects || {},
+      defaultTheme: config.defaultTheme,
+      ragEnabled: rag.enabled,
+      statusColors
+    });
+  });
+
+  // GET /api/status - global status (control room data)
+  app.get('/api/status', (req, res) => {
+    const allSessions = sessions.getAll();
+    const byProject = {};
+    const byStatus = {};
+    const byType = {};
+
+    for (const s of allSessions) {
+      const proj = s.meta.project || 'untagged';
+      byProject[proj] = (byProject[proj] || 0) + 1;
+      byStatus[s.meta.status] = (byStatus[s.meta.status] || 0) + 1;
+      byType[s.meta.type] = (byType[s.meta.type] || 0) + 1;
+    }
+
+    res.json({
+      totalSessions: allSessions.length,
+      byProject,
+      byStatus,
+      byType,
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      ragEnabled: rag.enabled
+    });
+  });
+
+  // GET /api/rag/events - recent RAG events from local buffer
+  app.get('/api/rag/events', (req, res) => {
+    if (!db) return res.json([]);
+    const limit = parseInt(req.query.limit) || 50;
+    const rows = db.prepare(
+      'SELECT * FROM rag_events ORDER BY timestamp DESC LIMIT ?'
+    ).all(limit);
+    res.json(rows.map(r => ({ ...r, payload: JSON.parse(r.payload) })));
+  });
+
+  // GET /api/rag/status - RAG system status
+  app.get('/api/rag/status', (req, res) => {
+    if (!db) return res.json({ enabled: false, localEvents: 0, unsynced: 0 });
+    const total = db.prepare('SELECT COUNT(*) as n FROM rag_events').get().n;
+    const unsynced = db.prepare('SELECT COUNT(*) as n FROM rag_events WHERE synced = 0').get().n;
+    res.json({
+      enabled: rag.enabled,
+      supabaseConfigured: !!(rag.supabaseUrl),
+      localEvents: total,
+      unsynced,
+      tables: rag.tables
+    });
+  });
+
+  // ==================== WebSocket ====================
+
+  wss.on('connection', (ws, req) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const sessionId = url.searchParams.get('session');
+
+    if (!sessionId) {
+      ws.close(4000, 'Missing session parameter');
+      return;
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+      ws.close(4001, 'Session not found');
+      return;
+    }
+
+    // Bind WebSocket to session
+    session.ws = ws;
+    console.log(`[ws] Client connected to session ${sessionId}`);
+
+    // Send initial metadata
+    ws.send(JSON.stringify({
+      type: 'meta',
+      session: session.toJSON()
+    }));
+
+    // Client → PTY
+    ws.on('message', (msg) => {
+      try {
+        const parsed = JSON.parse(msg);
+
+        switch (parsed.type) {
+          case 'input':
+            if (session.pty) {
+              session.pty.write(parsed.data);
+              session.trackInput(parsed.data);
+            }
+            break;
+
+          case 'resize':
+            if (session.pty) {
+              session.pty.resize(parsed.cols || 120, parsed.rows || 30);
+            }
+            break;
+
+          case 'meta':
+            // Client requesting metadata refresh
+            ws.send(JSON.stringify({
+              type: 'meta',
+              session: session.toJSON()
+            }));
+            break;
+        }
+      } catch {}
+    });
+
+    ws.on('close', () => {
+      console.log(`[ws] Client disconnected from session ${sessionId}`);
+      if (session.ws === ws) {
+        session.ws = null;
+      }
+    });
+  });
+
+  // Periodic metadata broadcast (control room live updates)
+  setInterval(() => {
+    const allMeta = sessions.getAll();
+    const payload = JSON.stringify({ type: 'status_broadcast', sessions: allMeta });
+
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) {
+        try { client.send(payload); } catch {}
+      }
+    });
+  }, 2000);
+
+  // Fallback route → serve index.html
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(clientDir, 'index.html'));
+  });
+
+  return { app, server, wss, sessions, rag, db };
+}
+
+// Start server
+if (require.main === module) {
+  const config = loadConfig();
+  const { server } = createServer(config);
+  const port = config.port || 3000;
+  const host = config.host || '127.0.0.1';
+
+  server.listen(port, host, () => {
+    console.log(`\n  TermDeck running at http://${host}:${port}\n`);
+    console.log(`  Terminals:  0 active`);
+    console.log(`  Database:   ${Database ? 'SQLite OK' : 'unavailable'}`);
+    console.log(`  PTY:        ${pty ? 'node-pty OK' : 'unavailable (install node-pty)'}`);
+    console.log(`  RAG:        ${config.rag?.supabaseUrl ? 'configured' : 'not configured'}`);
+    console.log(`\n  WARNING: TermDeck binds to ${host} only.`);
+    console.log(`  Do NOT expose this to the network without authentication.`);
+    console.log(`  Terminal sessions have full shell access.\n`);
+  });
+}
+
+module.exports = { createServer, loadConfig };

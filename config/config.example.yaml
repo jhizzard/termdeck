@@ -1,0 +1,39 @@
+# TermDeck Configuration
+# Copy to ~/.termdeck/config.yaml and customize
+
+port: 3000
+host: 127.0.0.1
+shell: /bin/zsh    # or /bin/bash
+
+defaultTheme: tokyo-night
+
+# Project definitions
+# Each project maps a name to a directory + defaults
+# These appear in the prompt bar dropdown and enable auto-cd + default themes
+projects:
+  # my-project:
+  #   path: ~/code/my-project
+  #   defaultTheme: catppuccin-mocha
+  #   defaultCommand: claude         # or bash, gemini, etc.
+  # another-project:
+  #   path: ~/code/another-project
+  #   defaultTheme: dracula
+  #   defaultCommand: bash
+
+# RAG Integration (Supabase)
+# Multi-layer memory: session -> project -> developer
+# Events are always recorded to local SQLite.
+# Set supabaseUrl + supabaseKey to enable cloud sync.
+rag:
+  enabled: false
+  # supabaseUrl: https://your-project.supabase.co
+  # supabaseKey: your-anon-key
+  # developerId: your-username (defaults to OS username)
+  syncIntervalMs: 10000
+
+  # Supabase table names (created by config/supabase-migration.sql)
+  tables:
+    session: engram_session_memory
+    project: engram_project_memory
+    developer: engram_developer_memory
+    commands: engram_commands

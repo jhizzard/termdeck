@@ -1,0 +1,23 @@
+{
+  "name": "termdeck",
+  "version": "0.1.0",
+  "description": "Web-based terminal multiplexer with metadata overlays, AI-aware session management, and developer memory integration",
+  "private": true,
+  "workspaces": [
+    "packages/server",
+    "packages/client",
+    "packages/cli"
+  ],
+  "scripts": {
+    "dev": "node packages/cli/src/index.js",
+    "server": "node packages/server/src/index.js",
+    "install:app": "bash install.sh",
+    "start": "NODE_ENV=production node packages/server/src/index.js"
+  },
+  "keywords": ["terminal", "multiplexer", "xterm", "pty", "web-terminal", "tmux-alternative", "termdeck"],
+  "author": "Joshua Izzard",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
