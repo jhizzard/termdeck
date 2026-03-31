@@ -72,6 +72,8 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
     <string>0.1.0</string>
     <key>CFBundleExecutable</key>
     <string>TermDeck</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -81,6 +83,11 @@ cat > "$APP_DIR/Contents/Info.plist" << PLIST
 </dict>
 </plist>
 PLIST
+
+# Copy icon
+if [ -f "$TERMDECK_DIR/assets/TermDeck.icns" ]; then
+  cp "$TERMDECK_DIR/assets/TermDeck.icns" "$ICON_DIR/AppIcon.icns"
+fi
 
 echo "  [3/4] App created at ~/Applications/$APP_NAME.app"
 
