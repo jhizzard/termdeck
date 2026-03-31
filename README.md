@@ -7,7 +7,7 @@ Think of it as tmux in your browser — but each terminal panel shows you what p
 ## Install
 
 ```bash
-git clone https://github.com/joshizzard/termdeck.git
+git clone https://github.com/jhizzard/termdeck.git
 cd termdeck
 npm install
 
