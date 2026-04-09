@@ -10,18 +10,27 @@ Think of it as tmux in your browser — but each terminal panel shows you what p
 git clone https://github.com/jhizzard/termdeck.git
 cd termdeck
 npm install
-
-# Create a double-clickable macOS app (adds to ~/Applications)
-npm run install:app
 ```
 
-After installation, launch TermDeck by:
+### macOS
+```bash
+npm run install:app
+# Creates ~/Applications/TermDeck.app — double-click to launch, drag to Dock
+```
 
-1. **Double-click** `TermDeck.app` in `~/Applications` (or drag it to your Dock)
-2. **Add as Login Item** in System Settings to auto-start on boot
-3. Or from a terminal: `npm run dev`
+### Windows
+```cmd
+install.bat
+# Creates Start Menu + Desktop shortcuts
+```
 
-No terminal needed to start TermDeck — the app opens your browser automatically.
+### Linux
+```bash
+npm run dev
+# Or: node packages/cli/src/index.js
+```
+
+No terminal needed after installation — TermDeck opens your browser automatically.
 
 ## What it does
 
