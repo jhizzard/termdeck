@@ -375,7 +375,7 @@ class SessionManager {
   _emit(event, data) {
     const fns = this._listeners.get(event) || [];
     for (const fn of fns) {
-      try { fn(data); } catch (e) { console.error(`Event handler error [${event}]:`, e); }
+      try { fn(data); } catch (e) { console.error(`[events] handler error for ${event}:`, e); }
     }
   }
 }
