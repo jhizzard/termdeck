@@ -153,7 +153,8 @@ class RAGIntegration {
               payload: JSON.parse(event.payload)
             });
             synced.push(event.id);
-          } catch {
+          } catch (err) {
+            console.error('[rag] sync push failed for event', event.id + ':', err);
             break; // Stop on first failure, retry next cycle
           }
         }
@@ -199,7 +200,8 @@ class RAGIntegration {
 
       if (!response.ok) return [];
       return await response.json();
-    } catch {
+    } catch (err) {
+      console.error('[rag] queryContext failed:', err);
       return [];
     }
   }

@@ -68,7 +68,8 @@ server.listen(port, host, async () => {
         : platform() === 'win32' ? 'start'
         : 'xdg-open';
       execSync(`${cmd} ${url}`, { stdio: 'ignore' });
-    } catch {
+    } catch (err) {
+      console.error('[cli] auto-open browser failed:', err.message);
       console.log(`  Open ${url} in your browser\n`);
     }
   }

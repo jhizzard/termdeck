@@ -680,7 +680,7 @@
               updateGlobalStats(msg.sessions);
               break;
           }
-        } catch {}
+        } catch (err) { console.error('[client] ws message parse failed:', err); }
       };
 
       ws.onclose = (event) => {
@@ -735,7 +735,7 @@
               rows: terminal.rows
             }));
           }
-        } catch {}
+        } catch (err) { console.error('[client] terminal resize failed:', err); }
       });
       resizeObserver.observe(container);
 
@@ -793,7 +793,7 @@
               updateGlobalStats(msg.sessions);
               break;
           }
-        } catch {}
+        } catch (err) { console.error('[client] reconnect ws message failed:', err); }
       };
 
       ws.onopen = () => {
@@ -1074,7 +1074,7 @@
 
     function fitAll() {
       for (const [, entry] of state.sessions) {
-        try { entry.fitAddon.fit(); } catch {}
+        try { entry.fitAddon.fit(); } catch (err) { if (!entry._fitWarned) { console.error('[client] fitAddon.fit failed for session:', err); entry._fitWarned = true; } }
       }
     }
 
@@ -1146,7 +1146,7 @@
             updateEmptyState();
           }
         }
-      } catch {}
+      } catch (err) { console.error('[client] session poll failed:', err); }
     }, 3000);
 
     // Refresh "opened X ago" timestamps every 30s

@@ -174,7 +174,7 @@ function createServer(config) {
         // Wire command logging to SQLite + RAG
         session.onCommand = (sessionId, command) => {
           if (db) {
-            try { logCommand(db, sessionId, command); } catch {}
+            try { logCommand(db, sessionId, command); } catch (err) { console.error('[db] logCommand failed:', err); }
           }
           rag.onCommandExecuted(session, command);
         };
@@ -219,7 +219,7 @@ function createServer(config) {
 
     // Kill PTY process
     if (session.pty) {
-      try { session.pty.kill(); } catch {}
+      try { session.pty.kill(); } catch (err) { console.error('[pty] kill failed for session', req.params.id + ':', err); }
     }
 
     sessions.remove(req.params.id);
@@ -379,7 +379,7 @@ function createServer(config) {
             }));
             break;
         }
-      } catch {}
+      } catch (err) { console.error('[ws] message handler error:', err); }
     });
 
     ws.on('close', () => {
@@ -397,7 +397,7 @@ function createServer(config) {
 
     wss.clients.forEach((client) => {
       if (client.readyState === 1) {
-        try { client.send(payload); } catch {}
+        try { client.send(payload); } catch (err) { console.error('[ws] broadcast send failed:', err); }
       }
     });
   }, 2000);
