@@ -1,8 +1,12 @@
 # TermDeck
 
+![TermDeck running 6 terminals in a 3x2 control room layout](assets/hero.jpg)
+
 Web-based terminal multiplexer with AI-aware session management, rich metadata overlays, and cross-project RAG integration.
 
 Think of it as tmux in your browser — but each terminal panel shows you what project it belongs to, what the AI is doing, and pipes everything into your memory system.
+
+![30 second demo](assets/demo.gif)
 
 ## Install
 

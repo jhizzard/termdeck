@@ -7,3 +7,4 @@ dist/
 .DS_Store
 *.gif
 *.mp4
+!assets/demo.gif
