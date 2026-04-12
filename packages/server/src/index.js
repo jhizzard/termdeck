@@ -378,7 +378,7 @@ function createServer(config) {
           full_text_weight: 1.0,
           semantic_weight: 1.0,
           rrf_k: 60,
-          filter_project: project || null,
+          filter_project: null,  // Always search all projects — let relevance ranking handle scope
           filter_source_type: null,
           recency_weight: 0.15,
           decay_days: 30.0
