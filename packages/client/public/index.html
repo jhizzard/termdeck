@@ -870,12 +870,43 @@
       const entry = state.sessions.get(id);
       if (!entry) return;
 
-      // Clear the input
-      document.getElementById(`ai-${id}`).value = '';
+      const inputEl = document.getElementById(`ai-${id}`);
+      inputEl.value = 'Searching memories...';
+      inputEl.disabled = true;
 
-      // For now, write the question context to the terminal as a comment
-      // In production, this would call the RAG system
-      console.log(`[AI] Question for session ${id}: ${question}`);
+      try {
+        const result = await api('POST', '/api/ai/query', {
+          question,
+          sessionId: id,
+          project: entry.session?.meta?.project || null
+        });
+
+        if (result.error) {
+          entry.terminal.write(`\r\n\x1b[33m[engram] ${result.error}\x1b[0m\r\n`);
+        } else if (result.memories && result.memories.length > 0) {
+          entry.terminal.write(`\r\n\x1b[36m━━━ Engram: ${result.total} memories found for "${question}" ━━━\x1b[0m\r\n`);
+          for (const m of result.memories) {
+            const score = m.similarity ? ` (${(m.similarity * 100).toFixed(0)}%)` : '';
+            const proj = m.project ? `[${m.project}]` : '';
+            entry.terminal.write(`\r\n\x1b[35m${m.source_type}${score} ${proj}\x1b[0m\r\n`);
+            // Word-wrap content at 80 chars
+            const lines = (m.content || '').match(/.{1,78}/g) || ['(empty)'];
+            for (const line of lines) {
+              entry.terminal.write(`  ${line}\r\n`);
+            }
+          }
+          entry.terminal.write(`\r\n\x1b[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\r\n\r\n`);
+        } else {
+          entry.terminal.write(`\r\n\x1b[33m[engram] No relevant memories found.\x1b[0m\r\n`);
+        }
+      } catch (err) {
+        console.error('[client] AI query failed:', err);
+        entry.terminal.write(`\r\n\x1b[31m[engram] Query failed: ${err.message}\x1b[0m\r\n`);
+      }
+
+      inputEl.value = '';
+      inputEl.disabled = false;
+      inputEl.placeholder = 'Ask about this terminal...';
     }
 
     // ===== Launch terminal =====

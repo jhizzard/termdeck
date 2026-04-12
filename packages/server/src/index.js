@@ -325,6 +325,102 @@ function createServer(config) {
     });
   });
 
+  // POST /api/ai/query - query Engram memory from the AI input bar
+  app.post('/api/ai/query', async (req, res) => {
+    const { question, sessionId, project } = req.body;
+    if (!question) return res.status(400).json({ error: 'Missing question' });
+
+    if (!rag.supabaseUrl || !rag.supabaseKey) {
+      return res.status(503).json({ error: 'RAG not configured — add supabaseUrl and supabaseKey to ~/.termdeck/config.yaml' });
+    }
+
+    try {
+      // Step 1: Generate embedding for the question via OpenAI
+      const openaiKey = config.rag?.openaiApiKey || process.env.OPENAI_API_KEY;
+      if (!openaiKey) {
+        return res.status(503).json({ error: 'OPENAI_API_KEY not configured' });
+      }
+
+      const embeddingRes = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'text-embedding-3-large',
+          input: question,
+          dimensions: 1536
+        })
+      });
+
+      if (!embeddingRes.ok) {
+        const err = await embeddingRes.text();
+        console.error('[rag] OpenAI embedding failed:', err);
+        return res.status(502).json({ error: 'Embedding generation failed' });
+      }
+
+      const embeddingData = await embeddingRes.json();
+      const embedding = embeddingData.data[0].embedding;
+
+      // Step 2: Query Supabase memory_hybrid_search
+      const searchRes = await fetch(`${rag.supabaseUrl}/rest/v1/rpc/memory_hybrid_search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': rag.supabaseKey,
+          'Authorization': `Bearer ${rag.supabaseKey}`
+        },
+        body: JSON.stringify({
+          query_text: question,
+          query_embedding: `[${embedding.join(',')}]`,
+          match_count: 10,
+          full_text_weight: 1.0,
+          semantic_weight: 1.0,
+          rrf_k: 60,
+          filter_project: project || null,
+          filter_source_type: null,
+          recency_weight: 0.15,
+          decay_days: 30.0
+        })
+      });
+
+      if (!searchRes.ok) {
+        const err = await searchRes.text();
+        console.error('[rag] Supabase search failed:', err);
+        return res.status(502).json({ error: 'Memory search failed' });
+      }
+
+      const memories = await searchRes.json();
+
+      // Step 3: Add session context
+      const session = sessionId ? sessions.get(sessionId) : null;
+      const context = session ? {
+        type: session.meta.type,
+        project: session.meta.project,
+        lastCommands: session.meta.lastCommands.slice(-5),
+        status: session.meta.status
+      } : null;
+
+      res.json({
+        question,
+        memories: memories.slice(0, 5).map(m => ({
+          content: m.content?.substring(0, 500),
+          source_type: m.source_type,
+          project: m.project,
+          similarity: m.similarity,
+          created_at: m.created_at
+        })),
+        sessionContext: context,
+        total: memories.length
+      });
+
+    } catch (err) {
+      console.error('[rag] AI query failed:', err);
+      res.status(500).json({ error: 'Query failed' });
+    }
+  });
+
   // ==================== WebSocket ====================
 
   wss.on('connection', (ws, req) => {
