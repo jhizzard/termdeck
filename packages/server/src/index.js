@@ -327,8 +327,15 @@ function createServer(config) {
 
   // POST /api/ai/query - query Engram memory from the AI input bar
   app.post('/api/ai/query', async (req, res) => {
-    const { question, sessionId, project } = req.body;
+    let { question, sessionId, project } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question' });
+
+    // "all: query" searches all projects; otherwise scope to session's project
+    let searchAllProjects = false;
+    if (question.toLowerCase().startsWith('all:')) {
+      question = question.substring(4).trim();
+      searchAllProjects = true;
+    }
 
     if (!rag.supabaseUrl || !rag.supabaseKey) {
       return res.status(503).json({ error: 'RAG not configured — add supabaseUrl and supabaseKey to ~/.termdeck/config.yaml' });
@@ -378,7 +385,7 @@ function createServer(config) {
           full_text_weight: 1.0,
           semantic_weight: 1.0,
           rrf_k: 60,
-          filter_project: null,  // Always search all projects — let relevance ranking handle scope
+          filter_project: searchAllProjects ? null : (project || null),
           filter_source_type: null,
           recency_weight: 0.15,
           decay_days: 30.0
