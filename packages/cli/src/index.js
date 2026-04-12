@@ -60,9 +60,12 @@ server.listen(port, host, async () => {
   ╚══════════════════════════════════════╝
   `);
 
-  if (!flags.noOpen) {
+  // Skip auto-open in Codespaces/CI (port forwarding handles it)
+  const isCodespaces = !!process.env.CODESPACES || !!process.env.GITHUB_CODESPACE_TOKEN;
+  const isCI = !!process.env.CI;
+
+  if (!flags.noOpen && !isCodespaces && !isCI) {
     try {
-      // Cross-platform browser open
       const { platform } = require('os');
       const cmd = platform() === 'darwin' ? 'open'
         : platform() === 'win32' ? 'start'
@@ -72,6 +75,8 @@ server.listen(port, host, async () => {
       console.error('[cli] auto-open browser failed:', err.message);
       console.log(`  Open ${url} in your browser\n`);
     }
+  } else if (isCodespaces) {
+    console.log(`  Codespaces detected — use the Ports tab to open the browser\n`);
   }
 });
 
