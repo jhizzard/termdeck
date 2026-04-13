@@ -40,7 +40,9 @@ const PATTERNS = {
     // Match lines ending with common shell control sequences that indicate a new prompt
     // We track commands via input echo instead (see _trackInput)
     command: /^[\$#%❯>]\s+(.+)$/m
-  }
+  },
+  // Broad error markers across shells, compilers, scripts, and HTTP servers.
+  error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|\b5\d\d\b)\b/
 };
 
 class Session {
@@ -85,8 +87,10 @@ class Session {
     this._inputBuffer = '';   // tracks user keyboard input for command detection
     this.onCommand = null;    // callback: (sessionId, command) => void
     this.onStatusChange = null; // callback: (session, oldStatus, newStatus) => void
+    this.onErrorDetected = null; // callback: (session, { lastCommand, tail }) => void
     this._statusChangeTimer = null;
     this._pendingStatusChange = null;
+    this._lastErrorFireAt = 0;
   }
 
   // Analyze PTY output to extract metadata
@@ -113,6 +117,9 @@ class Session {
 
     // Count HTTP requests for server terminals
     this._countRequests(clean);
+
+    // Error detection — transition to 'errored' and fire onErrorDetected (rate limited 30s)
+    this._detectErrors(clean);
 
     // Flush buffer periodically (don't hold too much in memory)
     clearTimeout(this._outputFlushTimer);
@@ -259,6 +266,37 @@ class Session {
         }
       } else if (code >= 32) {
         this._inputBuffer += ch;
+      }
+    }
+  }
+
+  _detectErrors(clean) {
+    if (!PATTERNS.error.test(clean)) return;
+
+    const oldStatus = this.meta.status;
+    this.meta.status = 'errored';
+    this.meta.statusDetail = 'Error detected in output';
+
+    // Mirror status-change callback so T1 sees 'errored' in status_broadcast without
+    // waiting for the 3s debounce.
+    if (oldStatus !== 'errored' && this.onStatusChange) {
+      try { this.onStatusChange(this, oldStatus, 'errored'); } catch {}
+    }
+
+    // Server-side rate limit: at most one error_detected event every 30s per session
+    const now = Date.now();
+    if (now - this._lastErrorFireAt < 30000) return;
+    this._lastErrorFireAt = now;
+
+    if (this.onErrorDetected) {
+      const lastCommand = this.meta.lastCommands.length > 0
+        ? this.meta.lastCommands[this.meta.lastCommands.length - 1].command
+        : '';
+      const tail = this._outputBuffer.slice(-200).replace(/\x1b\[[\?]?[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+      try {
+        this.onErrorDetected(this, { lastCommand, tail });
+      } catch (err) {
+        console.error('[session] onErrorDetected handler error:', err);
       }
     }
   }

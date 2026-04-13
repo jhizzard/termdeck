@@ -1,11 +1,20 @@
 {
-  "name": "@termdeck/cli",
+  "name": "@jhizzard/termdeck",
   "version": "0.1.0",
-  "description": "TermDeck CLI launcher",
+  "description": "TermDeck — web-based terminal multiplexer with metadata overlays and AI-aware session management",
   "bin": {
     "termdeck": "src/index.js"
   },
   "main": "src/index.js",
+  "files": [
+    "src"
+  ],
+  "keywords": ["terminal", "multiplexer", "xterm", "pty", "web-terminal", "tmux-alternative", "termdeck"],
+  "author": "Joshua Izzard",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "open": "^10.0.0"
   }

@@ -11,14 +11,23 @@ Think of it as tmux in your browser — but each terminal panel shows you what p
 ## Install
 
 ```bash
+npx @jhizzard/termdeck
+```
+
+That's it — the published package ships prebuilt binaries for `node-pty` and `better-sqlite3`, so you don't need a C++ toolchain for the common path (Node 20/22/24 on macOS, Linux, Windows).
+
+### From source
+
+```bash
 git clone https://github.com/jhizzard/termdeck.git
 cd termdeck
 npm install
+npm run dev
 ```
 
-### Prerequisites
+### Prerequisites for source builds only
 
-TermDeck uses [node-pty](https://github.com/nicholasrq/node-pty) for real terminal emulation. This requires a C++ compiler for your platform:
+If prebuilt binaries are unavailable for your platform (rare), TermDeck falls back to compiling [node-pty](https://github.com/microsoft/node-pty) locally. In that case you'll need:
 
 - **macOS**: `xcode-select --install` (installs Xcode Command Line Tools)
 - **Windows**: Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload

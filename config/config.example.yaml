@@ -28,8 +28,17 @@ rag:
   enabled: false
   # supabaseUrl: https://your-project.supabase.co
   # supabaseKey: your-anon-key
+  # openaiApiKey: sk-...   # or set OPENAI_API_KEY env var (direct mode only)
   # developerId: your-username (defaults to OS username)
   syncIntervalMs: 10000
+
+  # Engram bridge — how /api/ai/query talks to @jhizzard/engram.
+  #   direct  — server embeds + queries Supabase itself (default, preserves v0.1 behavior)
+  #   webhook — POST to a running `engram serve` HTTP webhook (see engramWebhookUrl)
+  #   mcp     — spawn the local `engram` binary and talk JSON-RPC over stdio
+  engramMode: direct
+  engramWebhookUrl: http://localhost:37778/engram
+  # engramBinary: engram   # override path to the @jhizzard/engram CLI for mcp mode
 
   # Supabase table names (created by config/supabase-migration.sql)
   tables:
@@ -37,3 +46,10 @@ rag:
     project: engram_project_memory
     developer: engram_developer_memory
     commands: engram_commands
+
+# Per-session markdown logs written to ~/.termdeck/sessions/ on session exit.
+# Zero-config: works without Supabase / OpenAI. Optional LLM summary requires
+# ANTHROPIC_API_KEY (env or rag.anthropicApiKey). CLI flag: `termdeck --session-logs`.
+sessionLogs:
+  enabled: false
+  summaryModel: claude-haiku-4-5

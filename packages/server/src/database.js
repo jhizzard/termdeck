@@ -36,6 +36,7 @@ function initDatabase(Database) {
       command TEXT NOT NULL,
       output_snippet TEXT,
       timestamp TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'user',
       FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
 
@@ -65,14 +66,27 @@ function initDatabase(Database) {
     CREATE INDEX IF NOT EXISTS idx_rag_project ON rag_events(project);
   `);
 
+  // Migration: add command_history.source on existing databases
+  try {
+    const cols = db.prepare(`PRAGMA table_info(command_history)`).all();
+    const hasSource = cols.some((c) => c.name === 'source');
+    if (!hasSource) {
+      db.exec(`ALTER TABLE command_history ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`);
+      db.exec(`UPDATE command_history SET source = 'user' WHERE source IS NULL`);
+      console.log("[db] Migrated command_history: added 'source' column");
+    }
+  } catch (err) {
+    console.warn('[db] command_history.source migration failed:', err.message);
+  }
+
   return db;
 }
 
-function logCommand(db, sessionId, command, outputSnippet) {
+function logCommand(db, sessionId, command, outputSnippet, source) {
   db.prepare(`
-    INSERT INTO command_history (session_id, command, output_snippet, timestamp)
-    VALUES (?, ?, ?, ?)
-  `).run(sessionId, command, outputSnippet || null, new Date().toISOString());
+    INSERT INTO command_history (session_id, command, output_snippet, timestamp, source)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(sessionId, command, outputSnippet || null, new Date().toISOString(), source || 'user');
 }
 
 function logRagEvent(db, sessionId, eventType, payload, project) {

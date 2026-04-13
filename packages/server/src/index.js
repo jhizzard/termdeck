@@ -17,6 +17,8 @@ try { Database = require('better-sqlite3'); } catch { Database = null; }
 const { SessionManager } = require('./session');
 const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = require('./database');
 const { RAGIntegration } = require('./rag');
+const { createBridge } = require('./engram-bridge');
+const { writeSessionLog } = require('./session-logger');
 const { themes, statusColors } = require('./themes');
 
 // Load config
@@ -35,12 +37,18 @@ function loadConfig() {
       supabaseKey: null,
       developerId: os.userInfo().username,
       syncIntervalMs: 10000,
+      engramMode: 'direct',
+      engramWebhookUrl: 'http://localhost:37778/engram',
       tables: {
         session: 'engram_session_memory',
         project: 'engram_project_memory',
         developer: 'engram_developer_memory',
         commands: 'engram_commands'
       }
+    },
+    sessionLogs: {
+      enabled: false,
+      summaryModel: 'claude-haiku-4-5'
     }
   };
 
@@ -93,7 +101,12 @@ rag:
       const raw = fs.readFileSync(configPath, 'utf-8');
       const parsed = yaml.parse(raw);
       console.log('[config] Loaded from', configPath);
-      return { ...defaults, ...parsed, rag: { ...defaults.rag, ...parsed?.rag } };
+      return {
+        ...defaults,
+        ...parsed,
+        rag: { ...defaults.rag, ...parsed?.rag },
+        sessionLogs: { ...defaults.sessionLogs, ...parsed?.sessionLogs }
+      };
     }
   } catch (err) {
     console.warn('[config] Could not load config.yaml, using defaults:', err.message);
@@ -134,8 +147,10 @@ function createServer(config) {
   // Initialize session manager
   const sessions = new SessionManager(db);
 
-  // Initialize RAG
+  // Initialize RAG + Engram bridge
   const rag = new RAGIntegration(config, db);
+  const engramBridge = createBridge(config);
+  console.log(`[engram-bridge] mode=${engramBridge.mode}`);
 
   // Wire RAG to session events
   sessions.on('session:created', (s) => rag.onSessionCreated(s));
@@ -214,6 +229,9 @@ function createServer(config) {
           }
 
           rag.onSessionEnded(session);
+
+          // Fire-and-forget session log (T2.5)
+          writeSessionLog({ session, config, db, getSessionHistory });
         });
 
         // Wire command logging to SQLite + RAG
@@ -227,6 +245,35 @@ function createServer(config) {
         // Wire status change tracking to RAG
         session.onStatusChange = (sess, oldStatus, newStatus) => {
           rag.onStatusChanged(sess, oldStatus, newStatus);
+        };
+
+        // Proactive Engram queries on error — fire-and-forget, respects rag.enabled
+        session.onErrorDetected = (sess, ctx) => {
+          if (!rag.enabled) return;
+          const question = `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
+          engramBridge.queryEngram({
+            question,
+            project: sess.meta.project,
+            searchAll: false,
+            sessionContext: {
+              type: sess.meta.type,
+              project: sess.meta.project,
+              lastCommands: sess.meta.lastCommands.slice(-5),
+              status: 'errored'
+            }
+          }).then((result) => {
+            const hit = (result.memories || [])[0];
+            if (!hit) return;
+            if (sess.ws && sess.ws.readyState === 1) {
+              try {
+                sess.ws.send(JSON.stringify({ type: 'proactive_memory', hit }));
+              } catch (err) {
+                console.error('[ws] proactive_memory send failed:', err);
+              }
+            }
+          }).catch((err) => {
+            console.warn('[engram-bridge] proactive query failed:', err.message);
+          });
         };
 
         console.log(`[pty] Spawned session ${session.id} (PID ${term.pid}): ${shell} ${args.join(' ')}`);
@@ -269,6 +316,63 @@ function createServer(config) {
 
     sessions.remove(req.params.id);
     res.json({ ok: true });
+  });
+
+  // POST /api/sessions/:id/input - write text into a PTY from an external sender
+  // Body: { text: string, source?: 'user' | 'reply' | 'ai', fromSessionId?: string }
+  // Used by T1.3 reply button and any agent-to-agent routing.
+  const inputRateLimit = new Map(); // sessionId -> { windowStart, count }
+  app.post('/api/sessions/:id/input', (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.meta.status === 'exited' || !session.pty) {
+      return res.status(404).json({ error: 'Session is exited' });
+    }
+
+    const { text, source, fromSessionId } = req.body || {};
+    if (typeof text !== 'string') {
+      return res.status(400).json({ error: 'Missing text' });
+    }
+
+    // Rate limit: max 10 writes/sec per target session
+    const now = Date.now();
+    const bucket = inputRateLimit.get(session.id) || { windowStart: now, count: 0 };
+    if (now - bucket.windowStart >= 1000) {
+      bucket.windowStart = now;
+      bucket.count = 0;
+    }
+    bucket.count += 1;
+    inputRateLimit.set(session.id, bucket);
+    if (bucket.count > 10) {
+      return res.status(429).json({ error: 'Rate limit exceeded (10/sec)' });
+    }
+
+    // CRLF normalize: zsh/readline want \r for Enter
+    const normalized = text.replace(/\r\n?/g, '\r').replace(/\n/g, '\r');
+
+    try {
+      session.pty.write(normalized);
+      session.trackInput(normalized);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    session.meta.replyCount = (session.meta.replyCount || 0) + 1;
+
+    // Log the injection to command_history with its source. Commands typed by the
+    // user get auto-logged via session.onCommand — here we log the raw write so
+    // non-newline-terminated injections and agent-to-agent traffic are visible.
+    const effectiveSource = source || 'user';
+    if (db) {
+      try {
+        const snippet = fromSessionId ? `from:${fromSessionId}` : null;
+        logCommand(db, session.id, text.slice(0, 500), snippet, effectiveSource);
+      } catch (err) {
+        console.error('[db] logCommand (input endpoint) failed:', err);
+      }
+    }
+
+    res.json({ ok: true, bytes: normalized.length, replyCount: session.meta.replyCount });
   });
 
   // POST /api/sessions/:id/resize - resize terminal
@@ -371,106 +475,51 @@ function createServer(config) {
     });
   });
 
-  // POST /api/ai/query - query Engram memory from the AI input bar
+  // POST /api/ai/query - query Engram memory via the bridge (direct|webhook|mcp)
   app.post('/api/ai/query', async (req, res) => {
     let { question, sessionId, project } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question' });
 
-    // "all: query" searches all projects; otherwise scope to session's project
-    let searchAllProjects = false;
+    let searchAll = false;
     if (question.toLowerCase().startsWith('all:')) {
       question = question.substring(4).trim();
-      searchAllProjects = true;
+      searchAll = true;
     }
 
-    if (!rag.supabaseUrl || !rag.supabaseKey) {
-      return res.status(503).json({ error: 'RAG not configured — add supabaseUrl and supabaseKey to ~/.termdeck/config.yaml' });
-    }
+    const session = sessionId ? sessions.get(sessionId) : null;
+    const sessionContext = session ? {
+      type: session.meta.type,
+      project: session.meta.project,
+      lastCommands: session.meta.lastCommands.slice(-5),
+      status: session.meta.status
+    } : null;
 
     try {
-      // Step 1: Generate embedding for the question via OpenAI
-      const openaiKey = config.rag?.openaiApiKey || process.env.OPENAI_API_KEY;
-      if (!openaiKey) {
-        return res.status(503).json({ error: 'OPENAI_API_KEY not configured' });
-      }
-
-      const embeddingRes = await fetch('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openaiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'text-embedding-3-large',
-          input: question,
-          dimensions: 1536
-        })
+      const { memories, total } = await engramBridge.queryEngram({
+        question,
+        project,
+        searchAll,
+        sessionContext
       });
-
-      if (!embeddingRes.ok) {
-        const err = await embeddingRes.text();
-        console.error('[rag] OpenAI embedding failed:', err);
-        return res.status(502).json({ error: 'Embedding generation failed' });
-      }
-
-      const embeddingData = await embeddingRes.json();
-      const embedding = embeddingData.data[0].embedding;
-
-      // Step 2: Query Supabase memory_hybrid_search
-      const searchRes = await fetch(`${rag.supabaseUrl}/rest/v1/rpc/memory_hybrid_search`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': rag.supabaseKey,
-          'Authorization': `Bearer ${rag.supabaseKey}`
-        },
-        body: JSON.stringify({
-          query_text: question,
-          query_embedding: `[${embedding.join(',')}]`,
-          match_count: 10,
-          full_text_weight: 1.0,
-          semantic_weight: 1.0,
-          rrf_k: 60,
-          filter_project: searchAllProjects ? null : (project || null),
-          filter_source_type: null,
-          recency_weight: 0.15,
-          decay_days: 30.0
-        })
-      });
-
-      if (!searchRes.ok) {
-        const err = await searchRes.text();
-        console.error('[rag] Supabase search failed:', err);
-        return res.status(502).json({ error: 'Memory search failed' });
-      }
-
-      const memories = await searchRes.json();
-
-      // Step 3: Add session context
-      const session = sessionId ? sessions.get(sessionId) : null;
-      const context = session ? {
-        type: session.meta.type,
-        project: session.meta.project,
-        lastCommands: session.meta.lastCommands.slice(-5),
-        status: session.meta.status
-      } : null;
 
       res.json({
         question,
-        memories: memories.slice(0, 5).map(m => ({
+        memories: memories.slice(0, 5).map((m) => ({
           content: m.content?.substring(0, 500),
           source_type: m.source_type,
           project: m.project,
           similarity: m.similarity,
           created_at: m.created_at
         })),
-        sessionContext: context,
-        total: memories.length
+        sessionContext,
+        total
       });
-
     } catch (err) {
-      console.error('[rag] AI query failed:', err);
-      res.status(500).json({ error: 'Query failed' });
+      console.error('[engram-bridge] query failed:', err.message);
+      // Config-shaped errors are 503, everything else 502
+      const msg = err.message || 'Query failed';
+      const status = /not configured|OPENAI_API_KEY/i.test(msg) ? 503 : 502;
+      res.status(status).json({ error: msg });
     }
   });
 

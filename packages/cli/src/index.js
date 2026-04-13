@@ -15,6 +15,8 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (args[i] === '--no-open') {
     flags.noOpen = true;
+  } else if (args[i] === '--session-logs') {
+    flags.sessionLogs = true;
   } else if (args[i] === '--help' || args[i] === '-h') {
     console.log(`
   TermDeck - Web-based terminal multiplexer
@@ -23,6 +25,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck                    Start with defaults (port 3000)
     termdeck --port 8080        Start on custom port
     termdeck --no-open          Don't auto-open browser
+    termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
 
   Keyboard shortcuts (in browser):
     Ctrl+Shift+N                Focus prompt bar
@@ -43,6 +46,9 @@ const { createServer, loadConfig } = require(path.join(__dirname, '..', '..', 's
 
 const config = loadConfig();
 if (flags.port) config.port = flags.port;
+if (flags.sessionLogs) {
+  config.sessionLogs = { ...(config.sessionLogs || {}), enabled: true };
+}
 
 const { server } = createServer(config);
 const port = config.port || 3000;

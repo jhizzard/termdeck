@@ -1,0 +1,232 @@
+// Engram bridge — routes TermDeck memory queries through one of three backends:
+//   - direct:  talk to Supabase + OpenAI from the server (pre-bridge behavior)
+//   - webhook: POST to Engram's HTTP webhook server (T3.1) at rag.engramWebhookUrl
+//   - mcp:     spawn the @jhizzard/engram binary and talk JSON-RPC over stdio
+//
+// All three modes return the same shape:
+//   { memories: Array<{ content, source_type, project, similarity, created_at }>, total }
+//
+// Errors are thrown as plain Error objects; the caller maps them to HTTP responses.
+
+const { spawn } = require('child_process');
+
+function createBridge(config) {
+  const mode = config.rag?.engramMode || 'direct';
+  const state = { mcpChild: null, mcpQueue: [], mcpNextId: 1, mcpBuffer: '' };
+
+  async function queryDirect({ question, project, searchAll }) {
+    const supabaseUrl = config.rag?.supabaseUrl;
+    const supabaseKey = config.rag?.supabaseKey;
+    const openaiKey = config.rag?.openaiApiKey || process.env.OPENAI_API_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('RAG not configured — add supabaseUrl and supabaseKey to ~/.termdeck/config.yaml');
+    }
+    if (!openaiKey) {
+      throw new Error('OPENAI_API_KEY not configured');
+    }
+
+    const embeddingRes = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-large',
+        input: question,
+        dimensions: 1536
+      })
+    });
+    if (!embeddingRes.ok) {
+      const err = await embeddingRes.text();
+      console.error('[engram-bridge:direct] embedding failed:', err);
+      throw new Error('Embedding generation failed');
+    }
+    const embeddingData = await embeddingRes.json();
+    const embedding = embeddingData.data[0].embedding;
+
+    const searchRes = await fetch(`${supabaseUrl}/rest/v1/rpc/memory_hybrid_search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`
+      },
+      body: JSON.stringify({
+        query_text: question,
+        query_embedding: `[${embedding.join(',')}]`,
+        match_count: 10,
+        full_text_weight: 1.0,
+        semantic_weight: 1.0,
+        rrf_k: 60,
+        filter_project: searchAll ? null : (project || null),
+        filter_source_type: null,
+        recency_weight: 0.15,
+        decay_days: 30.0
+      })
+    });
+    if (!searchRes.ok) {
+      const err = await searchRes.text();
+      console.error('[engram-bridge:direct] supabase search failed:', err);
+      throw new Error('Memory search failed');
+    }
+    const rows = await searchRes.json();
+    return {
+      memories: rows.map((m) => ({
+        content: m.content,
+        source_type: m.source_type,
+        project: m.project,
+        similarity: m.similarity,
+        created_at: m.created_at
+      })),
+      total: rows.length
+    };
+  }
+
+  async function queryWebhook({ question, project, searchAll }) {
+    const url = config.rag?.engramWebhookUrl || 'http://localhost:37778/engram';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        op: 'recall',
+        question,
+        project: searchAll ? null : (project || null),
+        min_results: 5
+      })
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('[engram-bridge:webhook] request failed:', err);
+      throw new Error(`Engram webhook returned ${res.status}`);
+    }
+    const data = await res.json();
+    const rows = data.memories || [];
+    return {
+      memories: rows.map((m) => ({
+        content: m.content,
+        source_type: m.source_type,
+        project: m.project,
+        similarity: m.similarity ?? m.score ?? null,
+        created_at: m.created_at
+      })),
+      total: rows.length
+    };
+  }
+
+  function ensureMcpChild() {
+    if (state.mcpChild && !state.mcpChild.killed) return state.mcpChild;
+
+    const bin = config.rag?.engramBinary || 'engram';
+    const child = spawn(bin, ['serve', '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    state.mcpChild = child;
+    state.mcpBuffer = '';
+
+    child.stdout.on('data', (chunk) => {
+      state.mcpBuffer += chunk.toString('utf-8');
+      let idx;
+      while ((idx = state.mcpBuffer.indexOf('\n')) >= 0) {
+        const line = state.mcpBuffer.slice(0, idx).trim();
+        state.mcpBuffer = state.mcpBuffer.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const msg = JSON.parse(line);
+          const pending = state.mcpQueue.find((p) => p.id === msg.id);
+          if (pending) {
+            state.mcpQueue = state.mcpQueue.filter((p) => p !== pending);
+            if (msg.error) pending.reject(new Error(msg.error.message || 'Engram MCP error'));
+            else pending.resolve(msg.result);
+          }
+        } catch (err) {
+          console.error('[engram-bridge:mcp] parse error:', err.message, line);
+        }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      console.error('[engram-bridge:mcp]', chunk.toString('utf-8').trim());
+    });
+
+    child.on('exit', (code, signal) => {
+      console.warn(`[engram-bridge:mcp] child exited (code=${code}, signal=${signal}); will respawn on next call`);
+      state.mcpChild = null;
+      for (const pending of state.mcpQueue) {
+        pending.reject(new Error('Engram MCP child exited'));
+      }
+      state.mcpQueue = [];
+    });
+
+    return child;
+  }
+
+  function mcpCall(method, params) {
+    const child = ensureMcpChild();
+    const id = state.mcpNextId++;
+    const req = { jsonrpc: '2.0', id, method, params };
+    return new Promise((resolve, reject) => {
+      state.mcpQueue.push({ id, resolve, reject });
+      try {
+        child.stdin.write(JSON.stringify(req) + '\n');
+      } catch (err) {
+        state.mcpQueue = state.mcpQueue.filter((p) => p.id !== id);
+        reject(err);
+      }
+      // Safety timeout
+      setTimeout(() => {
+        const pending = state.mcpQueue.find((p) => p.id === id);
+        if (pending) {
+          state.mcpQueue = state.mcpQueue.filter((p) => p !== pending);
+          pending.reject(new Error('Engram MCP call timed out'));
+        }
+      }, 15000);
+    });
+  }
+
+  async function queryMcp({ question, project, searchAll }) {
+    try {
+      const result = await mcpCall('tools/call', {
+        name: 'memory_recall',
+        arguments: {
+          query: question,
+          project: searchAll ? null : (project || null),
+          match_count: 10
+        }
+      });
+      const rows = (result && (result.memories || result.content || [])) || [];
+      return {
+        memories: rows.map((m) => ({
+          content: m.content,
+          source_type: m.source_type,
+          project: m.project,
+          similarity: m.similarity ?? m.score ?? null,
+          created_at: m.created_at
+        })),
+        total: rows.length
+      };
+    } catch (err) {
+      // Kill child so it respawns next call
+      if (state.mcpChild) {
+        try { state.mcpChild.kill(); } catch {}
+        state.mcpChild = null;
+      }
+      throw err;
+    }
+  }
+
+  async function queryEngram({ question, project, searchAll }) {
+    switch (mode) {
+      case 'webhook':
+        return queryWebhook({ question, project, searchAll });
+      case 'mcp':
+        return queryMcp({ question, project, searchAll });
+      case 'direct':
+      default:
+        return queryDirect({ question, project, searchAll });
+    }
+  }
+
+  return { mode, queryEngram };
+}
+
+module.exports = { createBridge };

@@ -1,5 +1,5 @@
 {
-  "name": "termdeck",
+  "name": "@jhizzard/termdeck-monorepo",
   "version": "0.1.0",
   "description": "Web-based terminal multiplexer with metadata overlays, AI-aware session management, and developer memory integration",
   "private": true,
