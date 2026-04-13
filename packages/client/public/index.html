@@ -468,7 +468,18 @@
     }
     .empty-state .notes span {
       font-size: 11px;
-      opacity: 0.45;
+      opacity: 0.55;
+    }
+    .empty-state kbd {
+      display: inline-block;
+      padding: 1px 6px;
+      margin: 0 2px;
+      font-family: var(--tg-mono);
+      font-size: 10px;
+      color: var(--tg-text);
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-border);
+      border-radius: 3px;
     }
 
     /* ===== PROJECT TAG COLORS ===== */
@@ -478,6 +489,464 @@
     .project-commerce { background: #2a1f0f; color: #e0af68; }
     .project-imessageai { background: #1f1a2e; color: #bb9af7; }
     .project-default { background: #1e1f28; color: #6b7089; }
+
+    /* ===== PANEL DRAWER (tabbed info drawer at bottom of each panel) ===== */
+    .panel-drawer {
+      display: flex;
+      flex-direction: column;
+      background: var(--tg-surface);
+      border-top: 1px solid var(--tg-border);
+      flex-shrink: 0;
+    }
+
+    .drawer-tabs {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 4px 6px;
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+
+    .drawer-tab {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--tg-text-dim);
+      font-size: 10px;
+      padding: 3px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: var(--tg-sans);
+      transition: all 0.1s;
+      white-space: nowrap;
+    }
+    .drawer-tab:hover { color: var(--tg-text); background: var(--tg-bg); }
+    .drawer-tab.active {
+      color: var(--tg-accent);
+      border-color: var(--tg-accent-dim);
+      background: var(--tg-bg);
+    }
+    .panel-drawer.open .drawer-tab.active { color: var(--tg-text-bright); }
+
+    .tab-badge {
+      display: inline-block;
+      margin-left: 5px;
+      padding: 0 5px;
+      background: var(--tg-border);
+      color: var(--tg-text-dim);
+      border-radius: 7px;
+      font-size: 9px;
+      min-width: 14px;
+      text-align: center;
+      line-height: 13px;
+    }
+    .drawer-tab.active .tab-badge { background: var(--tg-accent-dim); color: var(--tg-text-bright); }
+
+    .drawer-body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.18s ease;
+      border-top: 1px solid transparent;
+    }
+    .panel-drawer.open .drawer-body {
+      max-height: 180px;
+      border-top-color: var(--tg-border);
+    }
+
+    .drawer-panel {
+      display: none;
+      height: 180px;
+      overflow-y: auto;
+      padding: 8px 10px;
+    }
+    .drawer-panel.active { display: block; }
+
+    .drawer-overview {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .drawer-overview .overview-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .drawer-overview .overview-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      font-size: 10px;
+      color: var(--tg-text-dim);
+    }
+    .drawer-overview .overview-meta .ov-label { opacity: 0.6; margin-right: 4px; }
+    .drawer-overview .overview-meta .ov-value { color: var(--tg-text); font-family: var(--tg-mono); }
+    .drawer-overview .ctrl-input { flex: 1; min-width: 180px; }
+
+    /* Reply form (T1.3) */
+    .reply-form {
+      display: none;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 8px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: 4px;
+    }
+    .reply-form.open { display: flex; }
+    .reply-form select,
+    .reply-form input {
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-border);
+      color: var(--tg-text);
+      font-size: 11px;
+      padding: 3px 6px;
+      border-radius: 3px;
+      font-family: var(--tg-sans);
+    }
+    .reply-form input { flex: 1; min-width: 160px; font-family: var(--tg-mono); }
+    .reply-form input:focus,
+    .reply-form select:focus { outline: none; border-color: var(--tg-accent-dim); }
+    .reply-form .reply-send {
+      background: var(--tg-accent-dim);
+      border: 1px solid var(--tg-accent);
+      color: var(--tg-text-bright);
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .reply-form .reply-send:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .reply-form .reply-status {
+      font-size: 10px;
+      color: var(--tg-text-dim);
+      width: 100%;
+    }
+    .reply-form .reply-status.error { color: var(--tg-red); }
+    .reply-form .reply-status.ok { color: var(--tg-green); }
+
+    .ctrl-btn.reply-toggle[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+    .drawer-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .drawer-list .empty-msg {
+      color: var(--tg-text-dim);
+      font-size: 11px;
+      font-style: italic;
+      padding: 4px 2px;
+    }
+
+    .drawer-row {
+      padding: 5px 8px;
+      border-radius: 3px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      cursor: pointer;
+      transition: border-color 0.1s, background 0.1s;
+    }
+    .drawer-row:hover { border-color: var(--tg-border-active); }
+    .drawer-row .row-meta {
+      display: flex;
+      gap: 8px;
+      font-size: 9px;
+      color: var(--tg-text-dim);
+      margin-bottom: 2px;
+    }
+    .drawer-row .row-cmd {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .drawer-row .row-content {
+      font-family: var(--tg-sans);
+      font-size: 11px;
+      color: var(--tg-text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .drawer-row.expanded .row-content {
+      -webkit-line-clamp: unset;
+      display: block;
+    }
+    .drawer-row.copied { border-color: var(--tg-green); }
+
+    .status-log-row {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      padding: 3px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+    }
+    .status-log-row:hover { background: var(--tg-bg); }
+    .status-log-row .ts {
+      color: var(--tg-text-dim);
+      font-size: 10px;
+      font-family: var(--tg-mono);
+      min-width: 64px;
+    }
+    .status-log-row .transition { font-family: var(--tg-mono); font-size: 10px; }
+    .status-log-row .detail { color: var(--tg-text-dim); font-size: 10px; }
+    .status-log-row .chip {
+      display: inline-block;
+      padding: 0 5px;
+      border-radius: 3px;
+      font-size: 9px;
+      font-family: var(--tg-mono);
+      background: var(--tg-surface);
+    }
+
+    .term-panel.exited .drawer-overview .ctrl-input,
+    .term-panel.exited .drawer-overview .theme-select,
+    .term-panel.exited .drawer-overview .ctrl-btn { pointer-events: none; opacity: 0.55; }
+
+    /* ===== TERMINAL SWITCHER (T1.2) ===== */
+    .term-switcher {
+      position: fixed;
+      top: 48px;
+      right: 10px;
+      z-index: 40;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px;
+      background: rgba(22, 24, 33, 0.92);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      backdrop-filter: blur(4px);
+      max-height: calc(100vh - 120px);
+      overflow-y: auto;
+    }
+    .term-switcher.visible { display: flex; }
+    .term-switcher-label {
+      font-size: 9px;
+      color: var(--tg-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      text-align: center;
+      margin-bottom: 2px;
+      user-select: none;
+    }
+    .switcher-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 4px;
+    }
+    .switcher-tile {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      border-radius: 4px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      color: var(--tg-text);
+      font-family: var(--tg-mono);
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.12s, background 0.12s, transform 0.08s;
+    }
+    .switcher-tile:hover { border-color: var(--tg-accent-dim); background: var(--tg-surface-hover); }
+    .switcher-tile.active { border-color: var(--tg-accent); box-shadow: 0 0 0 1px var(--tg-accent-dim) inset; }
+    .switcher-tile.exited { opacity: 0.45; }
+    .switcher-tile .switcher-dot {
+      position: absolute;
+      top: 3px;
+      right: 3px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    .switcher-tile .switcher-bar {
+      position: absolute;
+      left: 3px;
+      right: 3px;
+      bottom: 3px;
+      height: 2px;
+      border-radius: 1px;
+    }
+
+    /* ===== Proactive memory toast (T1.4) ===== */
+    .term-panel { position: relative; }
+    .proactive-toast {
+      position: absolute;
+      right: 10px;
+      bottom: 44px;
+      max-width: 320px;
+      padding: 8px 10px 8px 12px;
+      background: rgba(15, 17, 23, 0.95);
+      border: 1px solid var(--tg-accent-dim);
+      border-left: 3px solid var(--tg-purple);
+      border-radius: var(--tg-radius-sm);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+      color: var(--tg-text);
+      font-size: 11px;
+      cursor: pointer;
+      z-index: 25;
+      animation: toast-in 0.18s ease;
+    }
+    .proactive-toast .t-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: var(--tg-purple);
+      margin-bottom: 3px;
+    }
+    .proactive-toast .t-body {
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--tg-text);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .proactive-toast .t-meta {
+      margin-top: 4px;
+      font-size: 9px;
+      color: var(--tg-text-dim);
+    }
+    .proactive-toast .t-dismiss {
+      position: absolute;
+      top: 2px;
+      right: 4px;
+      background: none;
+      border: none;
+      color: var(--tg-text-dim);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 4px;
+    }
+    .proactive-toast .t-dismiss:hover { color: var(--tg-text); }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ===== Control dashboard (T1.6) ===== */
+    .control-feed {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: var(--tg-bg);
+      border-radius: var(--tg-radius);
+      padding: 12px 16px;
+      overflow-y: auto;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .grid-container.layout-control .term-panel { display: none; }
+    .grid-container.layout-control .control-feed { display: flex; }
+    .grid-container.layout-control {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      position: relative;
+    }
+
+    .control-feed-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--tg-border);
+      margin-bottom: 4px;
+    }
+    .control-feed-header h3 {
+      margin: 0;
+      font-size: 12px;
+      color: var(--tg-text-bright);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+    .control-feed-header .feed-count {
+      font-size: 10px;
+      color: var(--tg-text-dim);
+    }
+
+    .feed-row {
+      display: grid;
+      grid-template-columns: 68px 110px 62px 1fr;
+      gap: 10px;
+      align-items: start;
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .feed-row:hover { background: var(--tg-surface); border-color: var(--tg-border); }
+    .feed-row .feed-time { color: var(--tg-text-dim); font-family: var(--tg-mono); font-size: 10px; }
+    .feed-row .feed-panel-ref {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--tg-text);
+      font-size: 10px;
+    }
+    .feed-row .feed-panel-ref .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+    }
+    .feed-row .feed-kind {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      font-family: var(--tg-mono);
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: var(--tg-surface);
+      color: var(--tg-text-dim);
+      text-align: center;
+      align-self: start;
+    }
+    .feed-row .feed-kind.status { color: var(--tg-accent); }
+    .feed-row .feed-kind.command { color: var(--tg-green); }
+    .feed-row .feed-kind.error { color: var(--tg-red); }
+    .feed-row .feed-kind.memory { color: var(--tg-purple); }
+    .feed-row .feed-body {
+      font-family: var(--tg-mono);
+      color: var(--tg-text);
+      word-break: break-word;
+      white-space: pre-wrap;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .feed-empty {
+      color: var(--tg-text-dim);
+      font-size: 12px;
+      font-style: italic;
+      padding: 20px 4px;
+      text-align: center;
+    }
+
+    .layout-btn.control-btn { color: var(--tg-purple); }
+    .layout-btn.control-btn.active { color: var(--tg-purple); background: var(--tg-surface); }
+
+    /* Focus flash — applied briefly when a panel gains focus */
+    .term-panel.focus-flash {
+      box-shadow: 0 0 0 2px var(--tg-accent);
+      border-color: var(--tg-accent);
+    }
 
     /* ===== SCROLLBAR ===== */
     ::-webkit-scrollbar { width: 6px; }
@@ -515,6 +984,7 @@
       <button class="layout-btn" data-layout="3x2">3x2</button>
       <button class="layout-btn" data-layout="2x4">2x4</button>
       <button class="layout-btn" data-layout="4x2">4x2</button>
+      <button class="layout-btn control-btn" data-layout="control" title="Aggregate activity feed">control</button>
     </div>
 
     <div class="topbar-right">
@@ -525,6 +995,13 @@
 
   <!-- TERMINAL GRID -->
   <div class="grid-container layout-2x1" id="termGrid">
+    <div class="control-feed" id="controlFeed">
+      <div class="control-feed-header">
+        <h3>Control · live activity</h3>
+        <span class="feed-count" id="feedCount">0 events</span>
+      </div>
+      <div class="feed-rows" id="feedRows"></div>
+    </div>
     <div class="empty-state" id="emptyState">
       <svg width="64" height="64" viewBox="0 0 48 48" fill="none">
         <rect x="4" y="4" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5"/>
@@ -532,27 +1009,32 @@
         <rect x="4" y="26" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5"/>
         <rect x="26" y="26" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5"/>
       </svg>
-      <h2>Welcome to TermDeck</h2>
-      <p>Launch a terminal to get started</p>
+      <h2>No terminals yet.</h2>
+      <p>Launch one to get started.</p>
       <div class="quick-launch-group">
         <button class="quick-launch-btn" onclick="quickLaunch('bash')">
           <span class="ql-cmd">bash</span>
           <span class="ql-desc">Open a shell</span>
         </button>
-        <button class="quick-launch-btn" onclick="quickLaunch('python3 -m http.server 8080')">
-          <span class="ql-cmd">python3 -m http.server 8080</span>
-          <span class="ql-desc">Demo server &mdash; shows port detection</span>
-        </button>
         <button class="quick-launch-btn" onclick="quickLaunch('claude')">
           <span class="ql-cmd">claude</span>
-          <span class="ql-desc">Claude Code &mdash; shows AI agent detection</span>
+          <span class="ql-desc">Open Claude Code</span>
+        </button>
+        <button class="quick-launch-btn" onclick="quickLaunch('python3 -m http.server 8080')">
+          <span class="ql-cmd">python3 -m http.server 8080</span>
+          <span class="ql-desc">Open a Python server</span>
         </button>
       </div>
       <div class="notes">
-        <span>Select a project from the dropdown to auto-cd into a project directory</span>
-        <span>Use the "Ask about this terminal..." input at the bottom of any panel to query your Engram memories</span>
+        <span>Press <kbd>/</kbd> to focus the prompt bar, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> to open a shell.</span>
       </div>
     </div>
+  </div>
+
+  <!-- TERMINAL SWITCHER (T1.2) -->
+  <div class="term-switcher" id="termSwitcher" aria-label="Terminal switcher">
+    <div class="term-switcher-label">Alt+1…9</div>
+    <div class="switcher-grid" id="switcherGrid"></div>
   </div>
 
   <!-- PROMPT BAR -->
@@ -679,18 +1161,43 @@
           <span class="meta-item" id="meta-reqs-${id}" style="${meta.type === 'python-server' ? '' : 'display:none'}"><span class="meta-label">reqs</span> <span class="meta-value">${meta.requestCount || 0}</span></span>
         </div>
         <div class="panel-terminal" id="term-${id}"></div>
-        <div class="panel-controls">
-          <div class="control-group">
-            <select class="theme-select" id="theme-${id}" onchange="changeTheme('${id}', this.value)">
-              ${Object.entries(state.themes).map(([tid, t]) =>
-                `<option value="${tid}" ${tid === meta.theme ? 'selected' : ''}>${t.label}</option>`
-              ).join('')}
-            </select>
-            <button class="ctrl-btn" onclick="focusPanel('${id}')">focus</button>
-            <button class="ctrl-btn" onclick="halfPanel('${id}')">half</button>
+        <div class="panel-drawer" id="drawer-${id}">
+          <div class="drawer-tabs" role="tablist">
+            <button class="drawer-tab active" data-tab="overview" data-panel-id="${id}">Overview</button>
+            <button class="drawer-tab" data-tab="commands" data-panel-id="${id}">Commands<span class="tab-badge" id="badge-commands-${id}">0</span></button>
+            <button class="drawer-tab" data-tab="memory" data-panel-id="${id}">Memory<span class="tab-badge" id="badge-memory-${id}">0</span></button>
+            <button class="drawer-tab" data-tab="log" data-panel-id="${id}">Status log<span class="tab-badge" id="badge-log-${id}">0</span></button>
           </div>
-          <div class="control-group">
-            <input type="text" class="ctrl-input" id="ai-${id}" placeholder="Ask about this terminal..." onkeydown="if(event.key==='Enter')askAI('${id}', this.value)">
+          <div class="drawer-body">
+            <div class="drawer-panel drawer-overview active" data-panel="overview">
+              <div class="overview-controls">
+                <select class="theme-select" id="theme-${id}" onchange="changeTheme('${id}', this.value)">
+                  ${Object.entries(state.themes).map(([tid, t]) =>
+                    `<option value="${tid}" ${tid === meta.theme ? 'selected' : ''}>${t.label}</option>`
+                  ).join('')}
+                </select>
+                <button class="ctrl-btn" onclick="focusPanel('${id}')">focus</button>
+                <button class="ctrl-btn" onclick="halfPanel('${id}')">half</button>
+                <button class="ctrl-btn reply-toggle" id="reply-btn-${id}" onclick="toggleReplyForm('${id}')" title="Send text to another terminal">reply ▸</button>
+                <input type="text" class="ctrl-input" id="ai-${id}" placeholder="Ask about this terminal..." onkeydown="if(event.key==='Enter')askAI('${id}', this.value)">
+              </div>
+              <div class="reply-form" id="reply-form-${id}">
+                <select class="reply-target" id="reply-target-${id}"></select>
+                <input type="text" class="reply-text" id="reply-text-${id}" placeholder="Text to send..." onkeydown="if(event.key==='Enter')sendReply('${id}')">
+                <button class="reply-send" id="reply-send-${id}" onclick="sendReply('${id}')">send</button>
+                <div class="reply-status" id="reply-status-${id}"></div>
+              </div>
+              <div class="overview-meta" id="ovmeta-${id}"></div>
+            </div>
+            <div class="drawer-panel drawer-list" data-panel="commands" id="dp-commands-${id}">
+              <div class="empty-msg">No commands captured yet.</div>
+            </div>
+            <div class="drawer-panel drawer-list" data-panel="memory" id="dp-memory-${id}">
+              <div class="empty-msg">No memory hits yet. Ask about this terminal or wait for a proactive lookup.</div>
+            </div>
+            <div class="drawer-panel drawer-list" data-panel="log" id="dp-log-${id}">
+              <div class="empty-msg">No status transitions recorded yet.</div>
+            </div>
           </div>
         </div>
       `;
@@ -749,6 +1256,8 @@
               // Dim the panel
               const exitPanel = document.getElementById(`panel-${id}`);
               if (exitPanel) exitPanel.classList.add('exited');
+              refreshAllReplyFormsFor(id);
+              renderSwitcher();
               break;
             case 'status_broadcast':
               updateGlobalStats(msg.sessions);
@@ -796,7 +1305,33 @@
       });
 
       // Store reference
-      state.sessions.set(id, { session: sessionData, terminal, ws, fitAddon, el: panel });
+      state.sessions.set(id, {
+        session: sessionData,
+        terminal,
+        ws,
+        fitAddon,
+        el: panel,
+        activeTab: 'overview',
+        drawerOpen: false,
+        commandHistory: [],
+        commandsLoaded: false,
+        memoryHits: [],
+        statusLog: [],
+        lastKnownStatus: meta.status,
+      });
+
+      // Seed an initial status-log entry so the tab isn't blank
+      appendStatusLog(id, meta.status, meta.statusDetail || '');
+
+      // Drawer tab wiring
+      setupDrawerListeners(id);
+      renderOverviewTab(id);
+      renderSwitcher();
+
+      // Reply form: disabled until there's another panel to target
+      const replyBtn = document.getElementById(`reply-btn-${id}`);
+      if (replyBtn) replyBtn.disabled = state.sessions.size < 2;
+      refreshAllReplyFormsFor(id);
 
       // Handle window resize
       const resizeObserver = new ResizeObserver(() => {
@@ -814,6 +1349,696 @@
       resizeObserver.observe(container);
 
       return { terminal, ws, fitAddon };
+    }
+
+    // ===== Control dashboard (T1.6) =====
+    async function enterControlMode() {
+      // Pre-warm command history for every open session so the feed is dense.
+      const loads = [];
+      for (const [sid, entry] of state.sessions) {
+        if (entry.commandsLoaded) continue;
+        loads.push(
+          api('GET', `/api/sessions/${sid}/history`).then(resp => {
+            const list = Array.isArray(resp) ? resp : (resp.commands || resp.history || []);
+            entry.commandHistory = list;
+            entry.commandsLoaded = true;
+          }).catch(() => { /* silent */ })
+        );
+      }
+      await Promise.allSettled(loads);
+      renderControlFeed();
+    }
+
+    function renderControlFeed() {
+      const grid = document.getElementById('termGrid');
+      const rowsEl = document.getElementById('feedRows');
+      const countEl = document.getElementById('feedCount');
+      if (!grid || !rowsEl) return;
+      if (!grid.classList.contains('layout-control')) return;
+
+      const events = [];
+      for (const [sid, entry] of state.sessions) {
+        const meta = entry.session?.meta || {};
+        const label = `${getTypeLabel(meta.type || 'shell')}${meta.project ? '·' + meta.project : ''}`;
+        const statusColor = getStatusColor(meta.status || 'idle');
+
+        // Status transitions
+        for (const ev of (entry.statusLog || [])) {
+          const isErr = ev.status === 'errored';
+          events.push({
+            at: new Date(ev.at).getTime(),
+            sid,
+            label,
+            statusColor,
+            kind: isErr ? 'error' : 'status',
+            body: `${ev.status}${ev.detail ? ' — ' + ev.detail : ''}`,
+          });
+        }
+
+        // Recent commands
+        for (const c of (entry.commandHistory || []).slice(0, 25)) {
+          const t = c.timestamp || c.createdAt || c.created_at;
+          if (!t) continue;
+          events.push({
+            at: new Date(t).getTime(),
+            sid,
+            label,
+            statusColor,
+            kind: 'command',
+            body: c.command || c.cmd || '',
+          });
+        }
+
+        // Memory hits cached from askAI / proactive queries
+        for (const m of (entry.memoryHits || []).slice(0, 10)) {
+          if (!m.cachedAt) continue;
+          events.push({
+            at: new Date(m.cachedAt).getTime(),
+            sid,
+            label,
+            statusColor,
+            kind: 'memory',
+            body: (m.content || m.text || '(memory)').slice(0, 220),
+          });
+        }
+      }
+
+      events.sort((a, b) => b.at - a.at);
+      const capped = events.slice(0, 200);
+
+      if (countEl) countEl.textContent = `${capped.length} event${capped.length === 1 ? '' : 's'}`;
+
+      if (capped.length === 0) {
+        rowsEl.innerHTML = '<div class="feed-empty">No activity yet. Commands, status transitions, and memory hits will appear here.</div>';
+        return;
+      }
+
+      rowsEl.innerHTML = capped.map(ev => {
+        const t = new Date(ev.at);
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        const ss = String(t.getSeconds()).padStart(2, '0');
+        return `
+          <div class="feed-row" data-session-id="${ev.sid}">
+            <span class="feed-time">${hh}:${mm}:${ss}</span>
+            <span class="feed-panel-ref"><span class="dot" style="background:${ev.statusColor}"></span>${escapeHtml(ev.label)}</span>
+            <span class="feed-kind ${ev.kind}">${ev.kind}</span>
+            <span class="feed-body">${escapeHtml(ev.body)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function onFeedRowClick(e) {
+      const row = e.target.closest('.feed-row');
+      if (!row) return;
+      const sid = row.dataset.sessionId;
+      if (!sid) return;
+      // Return to 2x2 layout and focus the source panel
+      setLayout('2x2');
+      requestAnimationFrame(() => focusSessionById(sid));
+    }
+
+    // ===== Proactive memory toast (T1.4) =====
+    const PROACTIVE_COOLDOWN_MS = 30_000;
+
+    async function triggerProactiveMemoryQuery(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      if (!state.config.aiQueryAvailable) return;
+
+      const now = Date.now();
+      if (entry._lastProactiveAt && now - entry._lastProactiveAt < PROACTIVE_COOLDOWN_MS) return;
+      entry._lastProactiveAt = now;
+
+      const meta = entry.session?.meta || {};
+      const lastCmd = meta.lastCommands?.length
+        ? meta.lastCommands[meta.lastCommands.length - 1].command
+        : '';
+      const type = meta.type || 'shell';
+      const question = `${type} error ${lastCmd}`.trim();
+      if (!question || question === `${type} error`) {
+        // No command context — still query using status detail as a last resort
+        if (!meta.statusDetail) return;
+      }
+
+      try {
+        const result = await api('POST', '/api/ai/query', {
+          question: question || `${type} error ${meta.statusDetail || ''}`.trim(),
+          sessionId: id,
+          project: meta.project || null,
+        });
+        if (result?.error) return;
+        if (!Array.isArray(result?.memories) || result.memories.length === 0) return;
+
+        // Cache every hit into the Memory tab so the drawer stays in sync
+        if (!entry.memoryHits) entry.memoryHits = [];
+        const cachedAt = new Date().toISOString();
+        for (const m of result.memories) entry.memoryHits.unshift({ ...m, cachedAt });
+        if (entry.memoryHits.length > 60) entry.memoryHits.length = 60;
+        setBadge(id, 'memory', entry.memoryHits.length);
+        if (entry.drawerOpen && entry.activeTab === 'memory') renderMemoryTab(id);
+
+        showProactiveToast(id, result.memories[0]);
+      } catch (err) {
+        console.error('[client] proactive memory query failed:', err);
+      }
+    }
+
+    function showProactiveToast(id, hit) {
+      const entry = state.sessions.get(id);
+      if (!entry || !entry.el) return;
+
+      // Remove any prior toast for this panel
+      const prev = entry.el.querySelector('.proactive-toast');
+      if (prev) prev.remove();
+
+      const toast = document.createElement('div');
+      toast.className = 'proactive-toast';
+      const proj = hit.project ? escapeHtml(hit.project) : 'another session';
+      const snippet = escapeHtml((hit.content || hit.text || '').slice(0, 220));
+      const score = typeof hit.similarity === 'number' ? `${(hit.similarity * 100).toFixed(0)}%` : '';
+
+      toast.innerHTML = `
+        <button class="t-dismiss" aria-label="Dismiss">×</button>
+        <div class="t-title">Engram — possible match</div>
+        <div class="t-body">Found a similar error in <b>${proj}</b>${score ? ` · ${score}` : ''} — click to see.</div>
+        <div class="t-meta">${snippet}</div>
+      `;
+
+      entry.el.appendChild(toast);
+
+      const dismiss = () => {
+        toast.remove();
+        clearTimeout(toast._autoTimer);
+      };
+      toast.querySelector('.t-dismiss').addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismiss();
+      });
+      toast.addEventListener('click', () => {
+        dismiss();
+        focusSessionById(id);
+        // Open the Memory tab so the user lands directly on the hit list
+        const entry2 = state.sessions.get(id);
+        if (entry2 && (!entry2.drawerOpen || entry2.activeTab !== 'memory')) {
+          toggleDrawerTab(id, 'memory');
+        }
+      });
+
+      toast._autoTimer = setTimeout(dismiss, 8000);
+    }
+
+    // ===== Reply / send-to-terminal (T1.3) =====
+    // Flip this to false to force the local-WS fallback even when the server
+    // endpoint is available — handy for debugging.
+    const USE_SERVER_INPUT_API = true;
+
+    function toggleReplyForm(fromId) {
+      const form = document.getElementById(`reply-form-${fromId}`);
+      if (!form) return;
+      const willOpen = !form.classList.contains('open');
+      form.classList.toggle('open', willOpen);
+      if (willOpen) {
+        refreshReplyTargets(fromId);
+        const input = document.getElementById(`reply-text-${fromId}`);
+        setTimeout(() => input?.focus(), 20);
+      }
+    }
+
+    function refreshReplyTargets(fromId) {
+      const select = document.getElementById(`reply-target-${fromId}`);
+      if (!select) return;
+      const prev = select.value;
+      const options = [];
+      for (const [sid, entry] of state.sessions) {
+        if (sid === fromId) continue;
+        const panel = entry.el;
+        if (panel && panel.classList.contains('exited')) continue;
+        const meta = entry.session?.meta || {};
+        const label = `${getTypeLabel(meta.type || 'shell')}${meta.project ? ' · ' + meta.project : ''}`;
+        options.push(`<option value="${sid}">${escapeHtml(label)}</option>`);
+      }
+      if (options.length === 0) {
+        select.innerHTML = `<option value="">(no other terminals)</option>`;
+      } else {
+        select.innerHTML = options.join('');
+        if (prev && Array.from(select.options).some(o => o.value === prev)) {
+          select.value = prev;
+        }
+      }
+    }
+
+    function refreshAllReplyFormsFor(changedId) {
+      // When a panel is added, removed, or exits, the target list in *other*
+      // panels' open reply forms needs refreshing.
+      for (const [sid, entry] of state.sessions) {
+        if (sid === changedId) continue;
+        const form = document.getElementById(`reply-form-${sid}`);
+        if (form && form.classList.contains('open')) {
+          refreshReplyTargets(sid);
+        }
+        const btn = document.getElementById(`reply-btn-${sid}`);
+        if (btn) btn.disabled = state.sessions.size < 2;
+      }
+    }
+
+    async function sendReply(fromId) {
+      const select = document.getElementById(`reply-target-${fromId}`);
+      const input = document.getElementById(`reply-text-${fromId}`);
+      const statusEl = document.getElementById(`reply-status-${fromId}`);
+      if (!select || !input) return;
+      const targetId = select.value;
+      let text = input.value;
+      if (!targetId) {
+        showReplyStatus(statusEl, 'No target selected.', 'error');
+        return;
+      }
+      if (!text) return;
+
+      const targetEntry = state.sessions.get(targetId);
+      if (!targetEntry) {
+        showReplyStatus(statusEl, 'Target not found.', 'error');
+        return;
+      }
+
+      // zsh and most shells want CR. Normalize \n → \r and strip \r\n pairs.
+      const normalized = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+      // Ensure the line actually submits at the target prompt.
+      const payload = normalized.endsWith('\r') ? normalized : normalized + '\r';
+
+      let delivered = false;
+      let errMsg = '';
+
+      if (USE_SERVER_INPUT_API) {
+        try {
+          const result = await api('POST', `/api/sessions/${targetId}/input`, {
+            text: payload,
+            source: 'reply',
+            fromSessionId: fromId,
+          });
+          if (result && !result.error) {
+            delivered = true;
+          } else {
+            errMsg = result?.error || 'server returned an error';
+          }
+        } catch (err) {
+          errMsg = err.message || String(err);
+        }
+      }
+
+      if (!delivered) {
+        // Local-WS fallback. Used when USE_SERVER_INPUT_API is false, or when
+        // the server endpoint is missing / failing.
+        const ws = targetEntry.ws;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: 'input', data: payload }));
+            delivered = true;
+          } catch (err) {
+            errMsg = err.message || String(err);
+          }
+        } else {
+          if (!errMsg) errMsg = 'target websocket not open';
+        }
+      }
+
+      if (delivered) {
+        input.value = '';
+        showReplyStatus(statusEl, `Sent ${payload.length} bytes →`, 'ok');
+      } else {
+        showReplyStatus(statusEl, `Send failed: ${errMsg}`, 'error');
+      }
+    }
+
+    function showReplyStatus(el, msg, kind) {
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => { el.textContent = ''; el.classList.remove('error', 'ok'); }, 3500);
+    }
+
+    // ===== Terminal switcher (T1.2) =====
+    function renderSwitcher() {
+      const wrap = document.getElementById('termSwitcher');
+      const grid = document.getElementById('switcherGrid');
+      if (!wrap || !grid) return;
+
+      const ids = Array.from(state.sessions.keys());
+      if (ids.length < 2) {
+        wrap.classList.remove('visible');
+        grid.innerHTML = '';
+        return;
+      }
+
+      wrap.classList.add('visible');
+      grid.innerHTML = '';
+
+      ids.forEach((id, idx) => {
+        const entry = state.sessions.get(id);
+        if (!entry) return;
+        const meta = entry.session?.meta || {};
+        const tile = document.createElement('button');
+        tile.className = 'switcher-tile';
+        tile.type = 'button';
+        tile.dataset.sessionId = id;
+        tile.title = `${getTypeLabel(meta.type || 'shell')}${meta.project ? ' · ' + meta.project : ''} — ${meta.status || ''}`;
+        tile.textContent = String(idx + 1);
+        if (state.focusedId === id) tile.classList.add('active');
+        if (entry.el && entry.el.classList.contains('exited')) tile.classList.add('exited');
+
+        const dot = document.createElement('span');
+        dot.className = 'switcher-dot';
+        dot.style.background = getStatusColor(meta.status || 'idle');
+        tile.appendChild(dot);
+
+        if (meta.project) {
+          const bar = document.createElement('span');
+          bar.className = 'switcher-bar';
+          bar.style.background = getProjectBarColor(meta.project);
+          tile.appendChild(bar);
+        }
+
+        tile.addEventListener('click', (e) => {
+          e.preventDefault();
+          focusSessionById(id);
+        });
+
+        grid.appendChild(tile);
+      });
+    }
+
+    // Pull the CSS-var color for a project tag, falling back to gray
+    function getProjectBarColor(project) {
+      const cls = `project-${project.replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
+      const probe = document.createElement('span');
+      probe.className = cls;
+      probe.style.display = 'none';
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      document.body.removeChild(probe);
+      return color || '#6b7089';
+    }
+
+    function focusSessionById(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+
+      // If we're in focus-mode, swap which panel is the focused one
+      const grid = document.getElementById('termGrid');
+      if (grid.classList.contains('layout-focus')) {
+        document.querySelectorAll('.term-panel').forEach(p => p.classList.remove('focused'));
+        entry.el.classList.add('focused');
+      } else if (grid.classList.contains('layout-half')) {
+        document.querySelectorAll('.term-panel').forEach(p => p.classList.remove('primary'));
+        entry.el.classList.add('primary');
+      }
+
+      // Focus the xterm textarea (without stealing pointer)
+      try { entry.terminal.focus(); } catch (err) { /* ignore */ }
+      state.focusedId = id;
+
+      // Flash the panel border briefly
+      entry.el.classList.remove('focus-flash');
+      // Force reflow so the animation restarts on rapid switches
+      void entry.el.offsetWidth;
+      entry.el.classList.add('focus-flash');
+      clearTimeout(entry._focusFlashTimer);
+      entry._focusFlashTimer = setTimeout(() => {
+        entry.el.classList.remove('focus-flash');
+      }, 600);
+
+      // Refit if layout changed (focus / half swap)
+      requestAnimationFrame(() => fitAll());
+      renderSwitcher();
+    }
+
+    function focusNthSession(n) {
+      const ids = Array.from(state.sessions.keys());
+      if (ids.length === 0) return;
+      if (n < 1 || n > ids.length) return;
+      focusSessionById(ids[n - 1]);
+    }
+
+    function cycleSessionFocus() {
+      const ids = Array.from(state.sessions.keys());
+      if (ids.length === 0) return;
+      const curIdx = ids.indexOf(state.focusedId);
+      const next = curIdx < 0 ? 0 : (curIdx + 1) % ids.length;
+      focusSessionById(ids[next]);
+    }
+
+    // ===== Panel info drawer (T1.1) =====
+    function setupDrawerListeners(id) {
+      const drawer = document.getElementById(`drawer-${id}`);
+      if (!drawer) return;
+
+      // Tab clicks
+      drawer.querySelectorAll('.drawer-tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleDrawerTab(id, tab.dataset.tab);
+        });
+      });
+
+      // Commands tab — click a row to copy
+      const cmdContainer = drawer.querySelector('[data-panel="commands"]');
+      cmdContainer.addEventListener('click', (e) => {
+        const row = e.target.closest('.drawer-row');
+        if (!row || !row.dataset.command) return;
+        copyRowText(row, row.dataset.command);
+      });
+
+      // Memory tab — click a row to expand inline
+      const memContainer = drawer.querySelector('[data-panel="memory"]');
+      memContainer.addEventListener('click', (e) => {
+        const row = e.target.closest('.drawer-row');
+        if (!row) return;
+        row.classList.toggle('expanded');
+      });
+    }
+
+    function toggleDrawerTab(id, tabName) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      const drawer = document.getElementById(`drawer-${id}`);
+      if (!drawer) return;
+
+      const wasOpen = !!entry.drawerOpen;
+      const prevTab = entry.activeTab || 'overview';
+
+      // Clicking the same active tab while the drawer is open collapses it
+      if (wasOpen && prevTab === tabName) {
+        entry.drawerOpen = false;
+        drawer.classList.remove('open');
+      } else {
+        entry.activeTab = tabName;
+        entry.drawerOpen = true;
+        drawer.classList.add('open');
+        drawer.querySelectorAll('.drawer-tab').forEach(t => {
+          t.classList.toggle('active', t.dataset.tab === tabName);
+        });
+        drawer.querySelectorAll('.drawer-panel').forEach(p => {
+          p.classList.toggle('active', p.dataset.panel === tabName);
+        });
+        renderDrawerTab(id, tabName);
+      }
+
+      // Re-fit the terminal after the drawer transitions
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try { entry.fitAddon.fit(); } catch (err) { /* ignore */ }
+          const ws = entry.ws;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'resize',
+              cols: entry.terminal.cols,
+              rows: entry.terminal.rows,
+            }));
+          }
+        }, 190);
+      });
+    }
+
+    function renderDrawerTab(id, tabName) {
+      if (tabName === 'overview') renderOverviewTab(id);
+      else if (tabName === 'commands') renderCommandsTab(id);
+      else if (tabName === 'memory') renderMemoryTab(id);
+      else if (tabName === 'log') renderStatusLogTab(id);
+    }
+
+    function renderOverviewTab(id) {
+      const entry = state.sessions.get(id);
+      const ov = document.getElementById(`ovmeta-${id}`);
+      if (!entry || !ov) return;
+      const meta = entry.session?.meta || {};
+      const last = meta.lastCommands?.length
+        ? meta.lastCommands[meta.lastCommands.length - 1].command
+        : '—';
+      const parts = [
+        ['type', getTypeLabel(meta.type || 'shell')],
+        ['project', meta.project || '—'],
+        ['status', meta.statusDetail || meta.status || '—'],
+        ['opened', meta.createdAt ? timeAgo(meta.createdAt) : '—'],
+        ['last', last],
+      ];
+      if (meta.detectedPort) parts.push(['port', ':' + meta.detectedPort]);
+      if (typeof meta.requestCount === 'number' && meta.requestCount > 0) {
+        parts.push(['requests', String(meta.requestCount)]);
+      }
+      ov.innerHTML = parts.map(([k, v]) =>
+        `<span><span class="ov-label">${k}</span><span class="ov-value">${escapeHtml(String(v))}</span></span>`
+      ).join('');
+    }
+
+    async function renderCommandsTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-commands-${id}`);
+      if (!entry || !container) return;
+
+      try {
+        const resp = await api('GET', `/api/sessions/${id}/history`);
+        const list = Array.isArray(resp) ? resp : (resp.commands || resp.history || []);
+        entry.commandHistory = list;
+        entry.commandsLoaded = true;
+      } catch (err) {
+        console.error('[client] failed to load command history:', err);
+        if (!entry.commandsLoaded) {
+          container.innerHTML = '<div class="empty-msg">Failed to load history.</div>';
+          return;
+        }
+      }
+
+      // server returns command_history rows ordered DESC (newest first)
+      const rows = (entry.commandHistory || []).slice(0, 60);
+      if (rows.length === 0) {
+        container.innerHTML = '<div class="empty-msg">No commands captured yet.</div>';
+      } else {
+        container.innerHTML = rows.map(r => {
+          const cmd = r.command || r.cmd || '';
+          const ts = r.timestamp || r.createdAt || r.created_at || null;
+          const src = r.source ? ` · ${escapeHtml(r.source)}` : '';
+          return `
+            <div class="drawer-row" data-command="${escapeAttr(cmd)}">
+              <div class="row-meta"><span>${escapeHtml(ts ? timeAgo(ts) : 'recent')}${src}</span></div>
+              <div class="row-cmd">${escapeHtml(cmd)}</div>
+            </div>
+          `;
+        }).join('');
+      }
+      container.scrollTop = 0;
+      setBadge(id, 'commands', entry.commandHistory.length);
+    }
+
+    function renderMemoryTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-memory-${id}`);
+      if (!entry || !container) return;
+
+      const hits = entry.memoryHits || [];
+      if (hits.length === 0) {
+        container.innerHTML = '<div class="empty-msg">No memory hits yet. Ask about this terminal or wait for a proactive lookup.</div>';
+        setBadge(id, 'memory', 0);
+        return;
+      }
+
+      const rows = hits.slice(0, 40);
+      container.innerHTML = rows.map(m => {
+        const score = typeof m.similarity === 'number' ? `${(m.similarity * 100).toFixed(0)}%` : '';
+        const proj = m.project ? escapeHtml(m.project) : '';
+        const type = escapeHtml(m.source_type || m.sourceType || 'memory');
+        const ts = m.cachedAt ? timeAgo(m.cachedAt) : '';
+        return `
+          <div class="drawer-row">
+            <div class="row-meta">
+              <span>${type}</span>
+              ${proj ? `<span>${proj}</span>` : ''}
+              ${score ? `<span>${score}</span>` : ''}
+              ${ts ? `<span>${ts}</span>` : ''}
+            </div>
+            <div class="row-content">${escapeHtml(m.content || m.text || '(empty)')}</div>
+          </div>
+        `;
+      }).join('');
+      setBadge(id, 'memory', hits.length);
+    }
+
+    function renderStatusLogTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-log-${id}`);
+      if (!entry || !container) return;
+
+      const log = entry.statusLog || [];
+      if (log.length === 0) {
+        container.innerHTML = '<div class="empty-msg">No status transitions recorded yet.</div>';
+        setBadge(id, 'log', 0);
+        return;
+      }
+
+      const rows = log.slice().reverse();
+      container.innerHTML = rows.map(ev => {
+        const color = getStatusColor(ev.status);
+        const t = new Date(ev.at);
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        const ss = String(t.getSeconds()).padStart(2, '0');
+        return `
+          <div class="status-log-row">
+            <span class="ts">${hh}:${mm}:${ss}</span>
+            <span class="chip" style="color:${color}">${escapeHtml(ev.status)}</span>
+            ${ev.detail ? `<span class="detail">${escapeHtml(ev.detail)}</span>` : ''}
+          </div>
+        `;
+      }).join('');
+      container.scrollTop = 0;
+      setBadge(id, 'log', log.length);
+    }
+
+    function appendStatusLog(id, status, detail) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      if (!entry.statusLog) entry.statusLog = [];
+      entry.statusLog.push({ at: new Date().toISOString(), status, detail: detail || '' });
+      if (entry.statusLog.length > 500) entry.statusLog.splice(0, entry.statusLog.length - 500);
+      setBadge(id, 'log', entry.statusLog.length);
+      if (entry.drawerOpen && entry.activeTab === 'log') {
+        renderStatusLogTab(id);
+      }
+    }
+
+    function setBadge(id, tab, count) {
+      const el = document.getElementById(`badge-${tab}-${id}`);
+      if (el) el.textContent = String(count);
+    }
+
+    function copyRowText(row, text) {
+      const done = () => {
+        row.classList.add('copied');
+        setTimeout(() => row.classList.remove('copied'), 700);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(err => {
+          console.error('[client] clipboard write failed:', err);
+        });
+      } else {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          done();
+        } catch (err) { console.error('[client] fallback copy failed:', err); }
+      }
+    }
+
+    function escapeAttr(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     // ===== Panel actions =====
@@ -926,6 +2151,8 @@
       }
 
       updateEmptyState();
+      renderSwitcher();
+      refreshAllReplyFormsFor(id);
     }
 
     function changeTheme(id, themeId) {
@@ -971,6 +2198,19 @@
         if (result.error) {
           entry.terminal.write(`\r\n\x1b[33m[engram] ${result.error}\x1b[0m\r\n`);
         } else if (result.memories && result.memories.length > 0) {
+          // Cache hits for the Memory tab
+          if (!entry.memoryHits) entry.memoryHits = [];
+          const cachedAt = new Date().toISOString();
+          for (const m of result.memories) {
+            entry.memoryHits.unshift({ ...m, cachedAt });
+          }
+          if (entry.memoryHits.length > 60) {
+            entry.memoryHits.length = 60;
+          }
+          setBadge(id, 'memory', entry.memoryHits.length);
+          if (entry.drawerOpen && entry.activeTab === 'memory') {
+            renderMemoryTab(id);
+          }
           const cols = entry.terminal.cols || 80;
           const wrap = (text, indent) => {
             const maxW = cols - indent - 2;
@@ -1078,7 +2318,12 @@
 
     // ===== Layout =====
     function setLayout(layout) {
-      state.layout = layout;
+      const wasControl = state.layout === 'control';
+      // Only persist "real" grid layouts as state.layout; the control view is
+      // an overlay, not a target to restore to when the user hits Escape.
+      if (layout !== 'control') {
+        state.layout = layout;
+      }
       const grid = document.getElementById('termGrid');
       grid.className = `grid-container layout-${layout}`;
 
@@ -1092,6 +2337,13 @@
       document.querySelectorAll('.layout-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.layout === layout);
       });
+
+      // Control-mode side effects (T1.6)
+      if (layout === 'control') {
+        enterControlMode();
+      } else if (wasControl) {
+        // Leaving control — nothing to clean up; feed stays hidden via CSS
+      }
 
       requestAnimationFrame(() => fitAll());
     }
@@ -1141,6 +2393,22 @@
     }
 
     function updatePanelMeta(id, meta) {
+      // Track status transitions into the per-panel status log
+      const entry = state.sessions.get(id);
+      if (entry && meta.status && meta.status !== entry.lastKnownStatus) {
+        appendStatusLog(id, meta.status, meta.statusDetail || '');
+        // Proactive memory lookup on entering the errored state (T1.4)
+        if (meta.status === 'errored') {
+          // Fire-and-forget; own rate limiting lives inside the function.
+          triggerProactiveMemoryQuery(id);
+        }
+        entry.lastKnownStatus = meta.status;
+      }
+      // Keep the cached session.meta fresh so the overview tab renders current data
+      if (entry && entry.session) {
+        entry.session.meta = { ...entry.session.meta, ...meta };
+      }
+
       const dot = document.getElementById(`dot-${id}`);
       const status = document.getElementById(`status-${id}`);
       const metaLast = document.getElementById(`meta-last-${id}`);
@@ -1166,6 +2434,11 @@
           metaReqs.style.display = '';
           metaReqs.querySelector('.meta-value').textContent = meta.requestCount || 0;
         }
+      }
+
+      // If the drawer is showing the overview tab, refresh its metadata block
+      if (entry && entry.drawerOpen && entry.activeTab === 'overview') {
+        renderOverviewTab(id);
       }
 
       // Sync theme dropdown if server-side theme changed
@@ -1206,6 +2479,7 @@
       document.getElementById('stat-active').textContent = active;
       document.getElementById('stat-thinking').textContent = thinking;
       document.getElementById('stat-idle').textContent = idle;
+      renderSwitcher();
     }
 
     function updateEmptyState() {
@@ -1240,6 +2514,16 @@
       if (e.ctrlKey && e.shiftKey && e.key === 'N') {
         e.preventDefault();
         document.getElementById('promptInput').focus();
+      }
+      // "/" → focus prompt bar (first-run hint, ignored when typing in any input/textarea)
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const target = e.target;
+        const tag = target?.tagName || '';
+        const inEditable = tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable;
+        if (!inEditable) {
+          e.preventDefault();
+          document.getElementById('promptInput').focus();
+        }
       }
       // Ctrl+Shift+1-6 → layout switch
       if (e.ctrlKey && e.shiftKey && e.key >= '1' && e.key <= '6') {
@@ -1276,6 +2560,33 @@
         }
       }
     });
+
+    // Control feed click (T1.6) — delegated at the feed container
+    document.getElementById('feedRows').addEventListener('click', onFeedRowClick);
+
+    // Live refresh while in control mode
+    setInterval(() => {
+      const grid = document.getElementById('termGrid');
+      if (grid && grid.classList.contains('layout-control')) {
+        renderControlFeed();
+      }
+    }, 2000);
+
+    // Alt+1..9 → focus panel N, Alt+0 → cycle focus (T1.2)
+    // Use capture-phase so xterm.js never sees the key as a Meta sequence.
+    document.addEventListener('keydown', (e) => {
+      if (!e.altKey) return;
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key >= '1' && e.key <= '9') {
+        e.preventDefault();
+        e.stopPropagation();
+        focusNthSession(parseInt(e.key, 10));
+      } else if (e.key === '0') {
+        e.preventDefault();
+        e.stopPropagation();
+        cycleSessionFocus();
+      }
+    }, { capture: true });
 
     // Poll for new sessions created externally (API, demo script, etc.)
     setInterval(async () => {
