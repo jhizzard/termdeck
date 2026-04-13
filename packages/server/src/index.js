@@ -21,7 +21,8 @@ const { themes, statusColors } = require('./themes');
 
 // Load config
 function loadConfig() {
-  const configPath = path.join(os.homedir(), '.termdeck', 'config.yaml');
+  const configDir = path.join(os.homedir(), '.termdeck');
+  const configPath = path.join(configDir, 'config.yaml');
   const defaults = {
     port: 3000,
     host: '127.0.0.1',
@@ -43,11 +44,55 @@ function loadConfig() {
     }
   };
 
+  // Ensure ~/.termdeck/ directory exists
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+
+  // Auto-create default config if it doesn't exist
+  if (!fs.existsSync(configPath)) {
+    const defaultConfigYaml = `# TermDeck Configuration
+# Documentation: https://github.com/your-org/termdeck
+
+# Server settings
+port: 3000
+host: 127.0.0.1
+
+# Default shell (auto-detected from $SHELL)
+shell: ${process.env.SHELL || '/bin/bash'}
+
+# Default terminal theme
+# Options: tokyo-night, rose-pine-dawn, catppuccin-mocha, github-light,
+#          dracula, solarized-dark, nord, gruvbox-dark
+defaultTheme: tokyo-night
+
+# Project definitions
+# Each project gets a quick-launch entry in the prompt bar dropdown.
+# projects:
+#   my-project:
+#     path: ~/code/my-project
+#     defaultTheme: catppuccin-mocha
+#     defaultCommand: claude
+
+# RAG (Retrieval-Augmented Generation) memory sync
+# Syncs terminal session data to Supabase for cross-session memory.
+rag:
+  enabled: false
+  # supabaseUrl: https://your-project.supabase.co
+  # supabaseKey: your-anon-key
+  # openaiApiKey: sk-... (or set OPENAI_API_KEY env var)
+  syncIntervalMs: 10000
+`;
+    fs.writeFileSync(configPath, defaultConfigYaml, 'utf-8');
+    console.log('[config] Created default config at ~/.termdeck/config.yaml');
+  }
+
   try {
     const yaml = require('yaml');
     if (fs.existsSync(configPath)) {
       const raw = fs.readFileSync(configPath, 'utf-8');
       const parsed = yaml.parse(raw);
+      console.log('[config] Loaded from', configPath);
       return { ...defaults, ...parsed, rag: { ...defaults.rag, ...parsed?.rag } };
     }
   } catch (err) {
@@ -272,6 +317,7 @@ function createServer(config) {
       projects: config.projects || {},
       defaultTheme: config.defaultTheme,
       ragEnabled: rag.enabled,
+      aiQueryAvailable: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey && config.rag?.openaiApiKey),
       statusColors
     });
   });

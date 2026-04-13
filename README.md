@@ -16,6 +16,17 @@ cd termdeck
 npm install
 ```
 
+### Prerequisites
+
+TermDeck uses [node-pty](https://github.com/nicholasrq/node-pty) for real terminal emulation. This requires a C++ compiler for your platform:
+
+- **macOS**: `xcode-select --install` (installs Xcode Command Line Tools)
+- **Windows**: Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload
+- **Linux (Debian/Ubuntu)**: `sudo apt install build-essential python3`
+- **Linux (Fedora)**: `sudo dnf groupinstall "Development Tools"`
+
+If `npm install` fails with errors mentioning `node-gyp`, `gyp`, or `node-pty`, you're missing the compiler.
+
 ### macOS
 ```bash
 npm run install:app
@@ -194,6 +205,28 @@ npm run dev
 
 # The client is served as static files from packages/client/public/
 ```
+
+## Troubleshooting
+
+### `npm install` fails with node-gyp errors
+
+Install the C++ compiler for your platform (see Prerequisites above), then:
+
+```bash
+npm cache clean --force
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### Terminal panels don't respond to input
+
+Check that node-pty compiled correctly:
+
+```bash
+node -e "require('node-pty')"
+```
+
+If this throws an error, reinstall with: `npm rebuild node-pty`
 
 ## License
 
