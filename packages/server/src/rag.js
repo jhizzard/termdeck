@@ -10,7 +10,7 @@ class RAGIntegration {
     this.db = db;
     this.supabaseUrl = config.rag?.supabaseUrl || null;
     this.supabaseKey = config.rag?.supabaseKey || null;
-    this.enabled = !!(this.supabaseUrl && this.supabaseKey);
+    this.enabled = !!(config.rag?.enabled && this.supabaseUrl && this.supabaseKey);
     this.syncInterval = config.rag?.syncIntervalMs || 10000;
     this._syncTimer = null;
 
