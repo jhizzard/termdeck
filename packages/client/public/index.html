@@ -131,6 +131,22 @@
       border-color: var(--tg-border-active);
     }
 
+    /* Persistent quick-launch group in the top toolbar (always visible) */
+    .topbar-ql {
+      display: flex;
+      gap: 4px;
+      padding-right: 8px;
+      margin-right: 4px;
+      border-right: 1px solid var(--tg-border);
+    }
+    .topbar-ql-btn {
+      color: var(--tg-accent) !important;
+    }
+    .topbar-ql-btn:hover {
+      background: var(--tg-accent-dim);
+      color: var(--tg-bg) !important;
+    }
+
     /* ===== MAIN GRID ===== */
     .grid-container {
       flex: 1;
@@ -220,6 +236,15 @@
       color: var(--tg-text-bright);
       white-space: nowrap;
     }
+
+    /* Per-panel index suffix, shown only when ≥2 panels share (type, project). */
+    .panel-index {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--tg-accent);
+      white-space: nowrap;
+    }
+    .panel-index:empty { display: none; }
 
     .panel-project {
       font-size: 10px;
@@ -713,22 +738,21 @@
     .term-panel.exited .drawer-overview .theme-select,
     .term-panel.exited .drawer-overview .ctrl-btn { pointer-events: none; opacity: 0.55; }
 
-    /* ===== TERMINAL SWITCHER (T1.2) ===== */
+    /* ===== TERMINAL SWITCHER (T1.2) =====
+       F1.2: lives inside the topbar as a chrome child, not a floating overlay —
+       guarantees zero PTY overlap at any grid density. */
     .term-switcher {
-      position: fixed;
-      top: 48px;
-      right: 10px;
-      z-index: 40;
       display: none;
-      flex-direction: column;
-      gap: 4px;
-      padding: 6px;
-      background: rgba(22, 24, 33, 0.92);
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 6px;
+      background: var(--tg-bg);
       border: 1px solid var(--tg-border);
       border-radius: var(--tg-radius-sm);
-      backdrop-filter: blur(4px);
-      max-height: calc(100vh - 120px);
-      overflow-y: auto;
+      max-width: 60vw;
+      overflow-x: auto;
+      z-index: 1000;
     }
     .term-switcher.visible { display: flex; }
     .term-switcher-label {
@@ -736,19 +760,20 @@
       color: var(--tg-text-dim);
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      text-align: center;
-      margin-bottom: 2px;
       user-select: none;
+      white-space: nowrap;
     }
     .switcher-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-auto-flow: column;
+      grid-auto-columns: 26px;
+      grid-template-rows: 26px;
       gap: 4px;
     }
     .switcher-tile {
       position: relative;
-      width: 32px;
-      height: 32px;
+      width: 26px;
+      height: 26px;
       border-radius: 4px;
       background: var(--tg-bg);
       border: 1px solid var(--tg-border);
@@ -767,17 +792,17 @@
     .switcher-tile.exited { opacity: 0.45; }
     .switcher-tile .switcher-dot {
       position: absolute;
-      top: 3px;
-      right: 3px;
-      width: 6px;
-      height: 6px;
+      top: 2px;
+      right: 2px;
+      width: 5px;
+      height: 5px;
       border-radius: 50%;
     }
     .switcher-tile .switcher-bar {
       position: absolute;
-      left: 3px;
-      right: 3px;
-      bottom: 3px;
+      left: 2px;
+      right: 2px;
+      bottom: 2px;
       height: 2px;
       border-radius: 1px;
     }
@@ -988,6 +1013,16 @@
     </div>
 
     <div class="topbar-right">
+      <!-- TERMINAL SWITCHER (T1.2 / F1.2): lives in chrome, not over PTY content -->
+      <div class="term-switcher" id="termSwitcher" aria-label="Terminal switcher">
+        <div class="term-switcher-label">Alt+1…9</div>
+        <div class="switcher-grid" id="switcherGrid"></div>
+      </div>
+      <div class="topbar-ql" id="topbarQuickLaunch" aria-label="Quick launch">
+        <button class="topbar-ql-btn" onclick="quickLaunch('zsh')" title="Open a zsh shell">shell</button>
+        <button class="topbar-ql-btn" onclick="quickLaunch('claude')" title="Open Claude Code">claude</button>
+        <button class="topbar-ql-btn" onclick="quickLaunch('python3 -m http.server 8080')" title="Open a Python HTTP server on :8080">python</button>
+      </div>
       <button id="btn-status">status</button>
       <button id="btn-config">config</button>
     </div>
@@ -1012,8 +1047,8 @@
       <h2>No terminals yet.</h2>
       <p>Launch one to get started.</p>
       <div class="quick-launch-group">
-        <button class="quick-launch-btn" onclick="quickLaunch('bash')">
-          <span class="ql-cmd">bash</span>
+        <button class="quick-launch-btn" onclick="quickLaunch('zsh')">
+          <span class="ql-cmd">zsh</span>
           <span class="ql-desc">Open a shell</span>
         </button>
         <button class="quick-launch-btn" onclick="quickLaunch('claude')">
@@ -1029,12 +1064,6 @@
         <span>Press <kbd>/</kbd> to focus the prompt bar, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> to open a shell.</span>
       </div>
     </div>
-  </div>
-
-  <!-- TERMINAL SWITCHER (T1.2) -->
-  <div class="term-switcher" id="termSwitcher" aria-label="Terminal switcher">
-    <div class="term-switcher-label">Alt+1…9</div>
-    <div class="switcher-grid" id="switcherGrid"></div>
   </div>
 
   <!-- PROMPT BAR -->
@@ -1145,6 +1174,7 @@
             <span class="status-dot" id="dot-${id}" style="background:${getStatusColor(meta.status)}"></span>
             <span class="panel-type">${getTypeLabel(meta.type)}</span>
             ${meta.project ? `<span class="panel-project ${projClass}">${meta.project}</span>` : ''}
+            <span class="panel-index" id="idx-${id}"></span>
             <span class="panel-status" id="status-${id}">${meta.statusDetail || meta.status}</span>
           </div>
           <div class="panel-header-right">
@@ -1257,6 +1287,7 @@
               const exitPanel = document.getElementById(`panel-${id}`);
               if (exitPanel) exitPanel.classList.add('exited');
               refreshAllReplyFormsFor(id);
+              refreshPanelIndices();
               renderSwitcher();
               break;
             case 'status_broadcast':
@@ -1332,6 +1363,7 @@
       const replyBtn = document.getElementById(`reply-btn-${id}`);
       if (replyBtn) replyBtn.disabled = state.sessions.size < 2;
       refreshAllReplyFormsFor(id);
+      refreshPanelIndices();
 
       // Handle window resize
       const resizeObserver = new ResizeObserver(() => {
@@ -1570,13 +1602,33 @@
       const select = document.getElementById(`reply-target-${fromId}`);
       if (!select) return;
       const prev = select.value;
+
+      // F1.3: number duplicate labels with `#N` so e.g. two "Claude Code · termdeck"
+      // panels become "Claude Code · termdeck #1" / "... #2". Numbering is across
+      // ALL live panels with that base label (including the current one) in
+      // state.sessions insertion order, so suffixes stay stable as the user opens
+      // the reply form from different panels.
+      const groupIndex = new Map();  // sid → index-within-group (1-based, only when group.size ≥ 2)
+      const groupCount = new Map();  // baseLabel → count so far
+      for (const [sid, entry] of state.sessions) {
+        const panel = entry.el;
+        if (panel && panel.classList.contains('exited')) continue;
+        const meta = entry.session?.meta || {};
+        const base = `${getTypeLabel(meta.type || 'shell')}${meta.project ? ' · ' + meta.project : ''}`;
+        const next = (groupCount.get(base) || 0) + 1;
+        groupCount.set(base, next);
+        groupIndex.set(sid, { base, n: next });
+      }
+
       const options = [];
       for (const [sid, entry] of state.sessions) {
         if (sid === fromId) continue;
         const panel = entry.el;
         if (panel && panel.classList.contains('exited')) continue;
-        const meta = entry.session?.meta || {};
-        const label = `${getTypeLabel(meta.type || 'shell')}${meta.project ? ' · ' + meta.project : ''}`;
+        const info = groupIndex.get(sid);
+        if (!info) continue;
+        const needsSuffix = (groupCount.get(info.base) || 0) >= 2;
+        const label = needsSuffix ? `${info.base} #${info.n}` : info.base;
         options.push(`<option value="${sid}">${escapeHtml(label)}</option>`);
       }
       if (options.length === 0) {
@@ -1586,6 +1638,27 @@
         if (prev && Array.from(select.options).some(o => o.value === prev)) {
           select.value = prev;
         }
+      }
+    }
+
+    // Assign #N index suffixes to panels that share (type, project) with another
+    // panel. Insertion-order numbering via Map iteration (Map preserves insert order).
+    // Groups of size 1 get no suffix — only collisions get numbered.
+    function refreshPanelIndices() {
+      const groups = new Map(); // key = "type|project" → [sid, ...]
+      for (const [sid, entry] of state.sessions) {
+        const meta = entry.session?.meta || {};
+        const key = `${meta.type || 'shell'}|${meta.project || ''}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(sid);
+      }
+      for (const [, sids] of groups) {
+        const showIndex = sids.length >= 2;
+        sids.forEach((sid, i) => {
+          const el = document.getElementById(`idx-${sid}`);
+          if (!el) return;
+          el.textContent = showIndex ? `#${i + 1}` : '';
+        });
       }
     }
 
@@ -2153,6 +2226,7 @@
       updateEmptyState();
       renderSwitcher();
       refreshAllReplyFormsFor(id);
+      refreshPanelIndices();
     }
 
     function changeTheme(id, themeId) {
@@ -2574,17 +2648,21 @@
 
     // Alt+1..9 → focus panel N, Alt+0 → cycle focus (T1.2)
     // Use capture-phase so xterm.js never sees the key as a Meta sequence.
+    // Match on e.code, not e.key: on macOS, Option+1 produces "¡", not "1".
     document.addEventListener('keydown', (e) => {
       if (!e.altKey) return;
       if (e.ctrlKey || e.metaKey || e.shiftKey) return;
-      if (e.key >= '1' && e.key <= '9') {
-        e.preventDefault();
-        e.stopPropagation();
-        focusNthSession(parseInt(e.key, 10));
-      } else if (e.key === '0') {
-        e.preventDefault();
-        e.stopPropagation();
-        cycleSessionFocus();
+      if (e.code && e.code.startsWith('Digit')) {
+        const n = parseInt(e.code.slice(5), 10);
+        if (n >= 1 && n <= 9) {
+          e.preventDefault();
+          e.stopPropagation();
+          focusNthSession(n);
+        } else if (n === 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          cycleSessionFocus();
+        }
       }
     }, { capture: true });
 
