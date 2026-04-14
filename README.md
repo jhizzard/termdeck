@@ -1,22 +1,212 @@
 # TermDeck
 
-![TermDeck running 6 terminals in a 3x2 control room layout](assets/hero.jpg)
+> **The terminal that remembers what you fixed last month.**
 
-Web-based terminal multiplexer with AI-aware session management, rich metadata overlays, and cross-project RAG integration.
+A browser-based terminal multiplexer with an onboarding tour, rich per-panel metadata, and **Flashback** — automatic recall of similar past errors, surfaced the moment a panel hits a problem. No asking, no querying, no manual search. TermDeck notices you're stuck and offers the memory.
 
-Think of it as tmux in your browser — but each terminal panel shows you what project it belongs to, what the AI is doing, and pipes everything into your memory system.
+![TermDeck dashboard — browser-based terminal multiplexer with per-panel metadata overlays](assets/hero.jpg)
 
-![30 second demo](assets/demo.gif)
+*(A fresh hero screenshot with a live Flashback toast is coming in v0.2.1 — see [docs/FOLLOWUP.md](docs/FOLLOWUP.md).)*
 
-## Install
+---
+
+## One command to try it
 
 ```bash
 npx @jhizzard/termdeck
 ```
 
-That's it — the published package ships prebuilt binaries for `node-pty` and `better-sqlite3`, so you don't need a C++ toolchain for the common path (Node 20/22/24 on macOS, Linux, Windows).
+Ninety seconds, one command. Node 18+ is all you need — prebuilt binaries mean no C++ toolchain. Your browser opens automatically at `http://127.0.0.1:3000`, an onboarding tour walks you through every button, and you're launching real PTY shells, Claude Code, Python servers, or anything else a normal terminal can run.
 
-### From source
+This is **Tier 1**. Works immediately, fully local, no accounts, no credentials, no database. You get the full dashboard — 7 grid layouts, 8 themes, per-panel metadata overlays, terminal switcher, reply button, status logs, session history in local SQLite. **Flashback is silent at this tier** because there's no memory store to query.
+
+Enabling Flashback takes **one additional 15-minute setup step** — see Tier 2 below. The rest of this README explains what you get, how it works, and how to go deeper.
+
+---
+
+## How Flashback works
+
+When a panel's status transitions to `errored`, the server's output analyzer fires an event. The engram bridge takes the session context (type, project, last command, error tail) and queries your Engram memory store for the top similar match. If it finds one above the relevance threshold, the result is pushed to the panel's WebSocket as a `proactive_memory` message. The client renders it as a toast anchored to the panel, showing the match's project tag, source type, similarity score, and content snippet. You click the toast to expand into the Memory tab of that panel's drawer.
+
+Rate-limited to once per 30 seconds per panel. Needs RAG enabled and credentials configured (Tier 2+). Fires on **any** terminal panel — shell, Claude Code, Python server, anything.
+
+---
+
+## The three-tier stack
+
+TermDeck is one piece of a three-tier memory stack. Each tier adds capability; each tier is optional.
+
+| Tier | Install time | What you get |
+|---|---|---|
+| **1 — TermDeck alone** | 90 seconds | Full multiplexer, metadata, layouts, themes, tour, session history, command logging. Flashback silent. |
+| **2 — + Engram memory store** | ~15 minutes | Flashback actively fires. Cross-session recall. "Ask about this terminal" queries real memories. Optional Engram-as-MCP for Claude Code / Cursor / Windsurf. |
+| **3 — + Rumen async learning** | ~30 minutes | Async learning layer runs on a cron, synthesizes insights across projects, writes them back into Engram. Flashback starts surfacing cross-project patterns, not just direct matches. |
+
+### Tier 1 — `npx @jhizzard/termdeck` (you're here)
+
+What's included:
+
+- Real PTY shells in the browser via `@homebridge/node-pty-prebuilt-multiarch`
+- 7 grid layouts (`1x1`, `2x1`, `2x2`, `3x2`, `2x4`, `4x2`, control-room feed)
+- 8 curated xterm.js themes (Tokyo Night, Catppuccin Mocha, Rosé Pine Dawn, Dracula, Nord, Gruvbox Dark, Solarized Dark, GitHub Light) — per-panel, switchable live
+- Rich panel metadata: project tag, session type, status dot, detected port, last command, request count, `#N` suffix for same-project duplicates
+- Per-panel drawer with four tabs: Overview, Commands (history), Memory (Flashback hits), Status log
+- Reply button to route text from one panel to another
+- Terminal switcher (`Option+1..9` on macOS, `Alt+1..9` elsewhere)
+- Layout keyboard shortcuts (`Cmd+Shift+1..6` on macOS)
+- Interactive onboarding tour (13 steps, auto-fires on first visit, replayable from the `how this works` button)
+- Add-project modal — create a new project entry from the UI without hand-editing yaml
+- Local SQLite persistence for sessions, command history, and RAG events
+- Optional session log markdown files on PTY exit (enable with `--session-logs`)
+
+What's excluded at this tier: **Flashback is silent**, the "Ask about this terminal" input returns nothing, and no memories are surfaced. All other features work.
+
+### Tier 2 — Add Engram to light up Flashback
+
+Engram is a separate npm package — `@jhizzard/engram@0.2.0` — that ships a Postgres-backed persistent memory store with an MCP server, a webhook server, six search tools, and six SQL migrations. It can be consumed by TermDeck (for Flashback), by Claude Code (as an MCP memory layer), or by any tool that speaks the MCP protocol.
+
+To enable Flashback in TermDeck:
+
+1. **Provision Postgres with pgvector.** Easiest: create a free Supabase project at supabase.com. Copy the **Project URL** and the **service_role key** from Project Settings → API.
+2. **Apply Engram's migrations** to the database. Run each in order via the Supabase SQL Editor, or via `psql`:
+   ```bash
+   npm install -g @jhizzard/engram
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/001_engram_tables.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/002_engram_search_function.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/003_engram_event_webhook.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/004_engram_match_count_cap_and_explain.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/005_v0_1_to_v0_2_upgrade.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/006_memory_status_rpc.sql
+   ```
+3. **Get an OpenAI API key** (text-embedding-3-large).
+4. **Create `~/.termdeck/secrets.env`:**
+   ```
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=sb_secret_...
+   OPENAI_API_KEY=sk-proj-...
+   ANTHROPIC_API_KEY=sk-ant-...     # optional — enables Haiku session summaries
+   ```
+5. **Enable RAG in `~/.termdeck/config.yaml`:**
+   ```yaml
+   rag:
+     enabled: true
+     supabaseUrl: ${SUPABASE_URL}
+     supabaseKey: ${SUPABASE_SERVICE_ROLE_KEY}
+     openaiApiKey: ${OPENAI_API_KEY}
+     engramMode: direct
+   ```
+6. **Restart TermDeck** (`Ctrl+C`, then `npx @jhizzard/termdeck` again).
+
+Flashback now fires when panels error. Initially your store is empty, so nothing surfaces. As you use TermDeck day-to-day, the output analyzer captures session events, command history, and error contexts — each one becomes a memory. After a few days of real work, Flashback starts surfacing real hits.
+
+### Tier 2 bonus — Engram as a Claude Code MCP server
+
+Independently of TermDeck, install Engram as an MCP server so Claude Code (and Cursor / Windsurf / Cline / Continue) have persistent memory across sessions pointing at the same database TermDeck uses:
+
+```bash
+npm install -g @jhizzard/engram
+```
+
+Edit `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "engram",
+      "env": {
+        "SUPABASE_URL": "https://your-project.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_...",
+        "OPENAI_API_KEY": "sk-proj-...",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code. Six MCP tools appear: `memory_remember`, `memory_recall`, `memory_search`, `memory_forget`, `memory_status`, `memory_summarize_session`. Your AI assistant can now read and write memories that TermDeck's Flashback will later surface automatically. See [github.com/jhizzard/engram](https://github.com/jhizzard/engram) for full MCP reference.
+
+### Tier 3 — Add Rumen for async learning
+
+Rumen is a separate npm package — `@jhizzard/rumen@0.2.0` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Engram: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Engram's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
+
+Rumen v0.2 is the current shipped version. Setup is still manual — Sprint 3 (next) ships a `termdeck init --rumen` one-liner that automates the deploy. For now, follow [github.com/jhizzard/rumen#readme](https://github.com/jhizzard/rumen) to deploy via the Supabase CLI.
+
+**Why you'd want Rumen:** without it, Flashback only surfaces memories that structurally match the current context (same project, similar error). With Rumen, Flashback can surface **cross-project patterns** that Haiku synthesized while you were away — "the CORS fix you applied in Project A probably solves this error in Project B." That's the moat.
+
+---
+
+## What Flashback is NOT
+
+Honest limits, stated upfront so the skeptic has nothing to chase:
+
+- **Not magic.** It fires on pattern-matched status transitions from the PTY output analyzer (non-zero exits, `Error:` / `Traceback` / `panic:` / `command not found` / similar). If the analyzer misses your error class, no Flashback. Pattern tuning is an ongoing process.
+- **Not a replacement for reading docs.** It's the shortest path to a memory you already wrote. If the memory isn't there, the feature does nothing.
+- **Not fully local by default.** Tier 2+ reaches out to Supabase for storage and OpenAI for embeddings. Tier 1 is fully local. A fully-local Tier 2 (local Postgres + local embeddings) is on the Sprint 3 roadmap.
+- **Not free forever.** Tier 2+ pays OpenAI fractions of a cent per memory for embeddings. Self-hosted embeddings via Ollama are on the roadmap.
+- **Not proven at scale.** v0.2, validated against 3,400+ memories in one developer's production store. No multi-user data yet. Bug reports and issues welcome.
+
+---
+
+## Architecture at a glance
+
+```
+┌─────────────────────────────────────────┐
+│  Browser: dashboard + xterm.js panels   │
+└─────────────────┬───────────────────────┘
+                  │ WebSocket + REST
+                  ▼
+┌─────────────────────────────────────────┐
+│  TermDeck server                        │
+│  - Express + ws                         │
+│  - node-pty per session                 │
+│  - SQLite persistence                   │
+│  - Engram bridge (direct/webhook/mcp)   │
+└─────────────────┬───────────────────────┘
+                  │ hybrid search + embeddings
+                  ▼
+┌─────────────────────────────────────────┐
+│  Engram                                 │
+│  - Postgres + pgvector                  │
+│  - MCP server (6 tools)                 │
+│  - HTTP webhook                         │
+│  - 3-layer progressive search           │
+└─────────────────┬───────────────────────┘
+                  │ cron loop reads + writes
+                  ▼
+┌─────────────────────────────────────────┐
+│  Rumen                                  │
+│  - Supabase Edge Function               │
+│  - Extract → Relate → Synthesize        │
+│  - Claude Haiku insights                │
+└─────────────────────────────────────────┘
+```
+
+All three packages are independent. You can use Engram alone as a Claude Code memory layer. You can run Rumen on any pgvector store with compatible schema. You can use TermDeck with zero memory features. The stack is designed to be progressively adopted.
+
+---
+
+## Full install options
+
+For users who want more than `npx` — cloning from source, building a macOS `.app` bundle, or running from a downloaded ZIP — see **[docs/INSTALL.md](docs/INSTALL.md)** for the complete decision tree and troubleshooting.
+
+### Alternative install paths
+
+- **Permanent global install:** `npm install -g @jhizzard/termdeck` then `termdeck` from anywhere
+- **macOS native app:** `git clone && cd && ./install.sh` — creates `~/Applications/TermDeck.app`
+- **From source:** `git clone && npm install && npm run dev`
+
+---
+
+## Related packages
+
+- **[@jhizzard/engram](https://www.npmjs.com/package/@jhizzard/engram)** — persistent dev memory MCP server. pgvector + hybrid search + 3-layer progressive disclosure. Works standalone with any MCP client.
+- **[@jhizzard/rumen](https://www.npmjs.com/package/@jhizzard/rumen)** — async learning layer. Extract/Relate/Synthesize loop over any pgvector store. Supabase Edge Function + `pg_cron`.
+
+---
+
+## Development
 
 ```bash
 git clone https://github.com/jhizzard/termdeck.git
@@ -25,218 +215,50 @@ npm install
 npm run dev
 ```
 
-### Prerequisites for source builds only
+The server runs at `http://127.0.0.1:3000` with file-watch reload. Workspace layout:
 
-If prebuilt binaries are unavailable for your platform (rare), TermDeck falls back to compiling [node-pty](https://github.com/microsoft/node-pty) locally. In that case you'll need:
+- `packages/cli/src/` — the `termdeck` binary launcher
+- `packages/server/src/` — Express + WebSocket + PTY + Engram bridge + session analyzer
+- `packages/client/public/` — vanilla-JS dashboard (single HTML file, no build step, loads xterm.js from CDN)
+- `config/` — example `config.yaml` and `secrets.env.example`
+- `docs/` — planning documents, launch strategy, install guide, followup items, ship checklist
 
-- **macOS**: `xcode-select --install` (installs Xcode Command Line Tools)
-- **Windows**: Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload
-- **Linux (Debian/Ubuntu)**: `sudo apt install build-essential python3`
-- **Linux (Fedora)**: `sudo dnf groupinstall "Development Tools"`
+Submit PRs at https://github.com/jhizzard/termdeck/pulls.
 
-If `npm install` fails with errors mentioning `node-gyp`, `gyp`, or `node-pty`, you're missing the compiler.
-
-### macOS
-```bash
-npm run install:app
-# Creates ~/Applications/TermDeck.app — double-click to launch, drag to Dock
-```
-
-### Windows
-```cmd
-install.bat
-# Creates Start Menu + Desktop shortcuts
-```
-
-### Linux
-```bash
-npm run dev
-# Or: node packages/cli/src/index.js
-```
-
-No terminal needed after installation — TermDeck opens your browser automatically.
-
-## What it does
-
-TermDeck gives you a single browser window with multiple embedded terminal panels. Each panel is a real PTY — full ANSI/VT100 support, so Claude Code, Gemini CLI, vim, htop, and any other terminal app works exactly as it would in a native terminal.
-
-Each terminal panel has:
-
-- **Status indicator** — green (active), purple (thinking), amber (idle), red (errored)
-- **Type detection** — automatically identifies Claude Code, Gemini CLI, Python servers, or plain shells
-- **Project tag** — color-coded project association
-- **Metadata strip** — when opened, why, last commands, detected ports, request counts
-- **Individual controls** — theme selector, focus/half/close, AI question input
-- **Per-terminal theming** — Tokyo Night, Rose Pine Dawn, Catppuccin, Dracula, Nord, and more
-
-## Layout modes
-
-Designed for iMac-scale screens. Layout modes let you see the right amount of detail:
-
-| Mode | Grid | Use case |
-|------|------|----------|
-| 1x1 | Single terminal | Deep work with one AI agent |
-| 2x1 | Two columns | Half-screen split |
-| 2x2 | 2x2 grid | Four terminals at comfortable size |
-| 3x2 | 3x2 grid | Six terminals, monitoring mode |
-| 2x4 | 2x4 grid | Eight terminals, tall vertical pairs |
-| 4x2 | 4x2 grid | Eight terminals, control room |
-| Focus | One expanded | Temporarily expand any panel |
-| Half | One large + stack | One primary + secondary panels |
-
-## Prompt bar
-
-The bottom prompt bar launches new terminals:
-
-```
-> bash                              # Plain shell
-> claude code ~/my-project          # Claude Code in a directory
-> python3 manage.py runserver       # Django dev server
-> cc my-project                     # Shorthand: Claude Code + project
-> gemini                            # Gemini CLI
-> npx vitest run                    # One-shot command
-```
-
-Select a project from the dropdown to auto-tag and auto-`cd` into the project directory.
-
-## Configuration
-
-The installer creates `~/.termdeck/config.yaml`. Edit it to define your projects:
-
-```yaml
-port: 3000
-shell: /bin/zsh
-defaultTheme: tokyo-night
-
-projects:
-  my-project:
-    path: ~/code/my-project
-    defaultTheme: catppuccin-mocha
-    defaultCommand: claude
-
-rag:
-  enabled: false
-  supabaseUrl: https://your-project.supabase.co
-  supabaseKey: your-anon-key
-```
-
-## RAG integration
-
-TermDeck has a three-layer memory system:
-
-1. **Session memory** — what happened in each terminal session
-2. **Project memory** — commands, file edits, and patterns shared across sessions within a project
-3. **Developer memory** — cross-project patterns (your habits, common workflows, error resolutions)
-
-Events are always recorded to local SQLite (`~/.termdeck/termdeck.db`). Enable Supabase sync by adding your credentials to the config file and running `config/supabase-migration.sql` in your Supabase SQL editor.
+---
 
 ## Keyboard shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| Ctrl+Shift+N | Focus prompt bar |
-| Ctrl+Shift+1 | Layout: 1x1 |
-| Ctrl+Shift+2 | Layout: 2x1 |
-| Ctrl+Shift+3 | Layout: 2x2 |
-| Ctrl+Shift+4 | Layout: 3x2 |
-| Ctrl+Shift+5 | Layout: 2x4 |
-| Ctrl+Shift+6 | Layout: 4x2 |
-| Ctrl+Shift+] | Next terminal |
-| Ctrl+Shift+[ | Previous terminal |
-| Escape | Exit focus/half mode |
+| Key | Action |
+|---|---|
+| `Ctrl+Shift+N` | Focus the prompt bar |
+| `Cmd+Shift+1..6` / `Ctrl+Shift+1..6` | Switch grid layout |
+| `Ctrl+Shift+]` / `Ctrl+Shift+[` | Cycle to next / previous panel |
+| `Option+1..9` / `Alt+1..9` | Jump focus to panel N directly |
+| `Escape` | Exit focus / half mode |
+| `/` (not in an input) | Focus prompt bar |
+| `how this works` button | Replay the onboarding tour |
 
-## Architecture
+---
 
-```
-Browser (xterm.js panels)
-    | WebSocket (1 per terminal)
-Node.js server
-    |-- Session manager (create, destroy, metadata)
-    |-- WebSocket hub (mux terminal I/O)
-    |-- REST API (CRUD, resize, themes)
-    |-- Output analyzer (status detection)
-    |-- RAG event recorder (SQLite + Supabase sync)
-        | node-pty
-OS pseudo-terminals
-    |-- bash/zsh
-    |-- Claude Code
-    |-- python3 servers
-    |-- Gemini CLI
-    |-- any CLI tool
-        |
-SQLite (local) --sync--> Supabase (RAG)
-```
+## Configuration
 
-## Security
+Config lives at `~/.termdeck/config.yaml`. Secrets (API keys) belong in `~/.termdeck/secrets.env` using dotenv format — use `${VAR}` substitution in `config.yaml` to reference them. Template files are bundled in the published package at `config/config.example.yaml` and `config/secrets.env.example`.
 
-TermDeck gives each terminal panel full shell access on your machine. It binds to `127.0.0.1` (localhost only) by default.
-
-**Do NOT expose TermDeck to the network without authentication.** There is no built-in auth in v0.1. If you need remote access, put it behind a VPN or SSH tunnel.
-
-## Tech stack
-
-- **Server**: Node.js, Express, node-pty, ws, better-sqlite3
-- **Client**: xterm.js, xterm-addon-fit, vanilla JS (no build step)
-- **Storage**: SQLite (local), Supabase/PostgreSQL (RAG)
-- **Themes**: 8 curated terminal color schemes
-- **Launch**: macOS .app bundle (no terminal needed)
-
-## How to test
-
-After installing, verify each feature works:
-
-1. **Launch** — Double-click TermDeck.app or run `npm run dev`. Browser should open automatically.
-2. **Create terminals** — Type `bash` in the prompt bar and click Launch. Verify the terminal is interactive (`ls`, `pwd`, `echo hello`).
-3. **Multiple terminals** — Open 4+ terminals. Verify they're independent.
-4. **Layouts** — Click each layout button (1x1 through 4x2). Try Ctrl+Shift+1-6.
-5. **Focus/Half** — Click the focus (square) and half (rectangle) buttons on a panel. Press Escape to exit.
-6. **Keyboard nav** — Use Ctrl+Shift+] and [ to cycle between terminals.
-7. **Metadata** — Run commands and verify "last command" updates in the metadata strip.
-8. **Port detection** — Run `python3 -m http.server 8888`. Verify port shows in metadata and type changes to "Python Server".
-9. **Themes** — Change themes on two terminals independently via the dropdown.
-10. **Projects** — Select a project from the dropdown, launch a terminal. Verify it cd's to the right directory.
-11. **Terminal exit** — Type `exit` in a terminal. Panel should dim with "Exited (0)".
-12. **Persistence** — Restart the server. Old sessions should be marked as exited in the DB.
-13. **Command history** — Check `GET http://localhost:3000/api/sessions/:id/history`.
-14. **RAG events** — Check `GET http://localhost:3000/api/rag/events` to see recorded events.
-
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Run server directly
-npm run server
-
-# Run via CLI (opens browser)
-npm run dev
-
-# The client is served as static files from packages/client/public/
-```
-
-## Troubleshooting
-
-### `npm install` fails with node-gyp errors
-
-Install the C++ compiler for your platform (see Prerequisites above), then:
-
-```bash
-npm cache clean --force
-rm -rf node_modules package-lock.json
-npm install
-```
-
-### Terminal panels don't respond to input
-
-Check that node-pty compiled correctly:
-
-```bash
-node -e "require('node-pty')"
-```
-
-If this throws an error, reinstall with: `npm rebuild node-pty`
+---
 
 ## License
 
-MIT
+MIT © Joshua Izzard. See [LICENSE](LICENSE).
+
+---
+
+## Links
+
+- GitHub: [github.com/jhizzard/termdeck](https://github.com/jhizzard/termdeck)
+- npm: [@jhizzard/termdeck](https://www.npmjs.com/package/@jhizzard/termdeck)
+- Issues: [github.com/jhizzard/termdeck/issues](https://github.com/jhizzard/termdeck/issues)
+- Engram: [github.com/jhizzard/engram](https://github.com/jhizzard/engram) · [npm](https://www.npmjs.com/package/@jhizzard/engram)
+- Rumen: [github.com/jhizzard/rumen](https://github.com/jhizzard/rumen) · [npm](https://www.npmjs.com/package/@jhizzard/rumen)
+
+Built because every LLM starts from zero, and every terminal starts from zero, and I got tired of re-debugging the same CORS error.
