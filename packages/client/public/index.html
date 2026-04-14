@@ -1487,6 +1487,23 @@
       const id = sessionData.id;
       const meta = sessionData.meta;
 
+      // Idempotency guard: multiple code paths can trigger this function for
+      // the same session ID in rapid succession — status_broadcast handler
+      // (2s interval), external-session poller (3s interval), launchTerminal
+      // (immediate after POST), and init() on page load. Without a claim at
+      // function entry, two of these can race and create two client panels
+      // for the same server session — which means two WebSockets, the second
+      // overwrites session.ws on the server, and term.onData output stops
+      // reaching the first panel's xterm. Result: terminals spawn but never
+      // render a prompt and don't accept input.
+      //
+      // Fix: reserve the slot in state.sessions immediately on entry. Any
+      // subsequent call sees has(id) and early-returns. The full entry gets
+      // written later when the xterm + ws + fitAddon are built; that write
+      // overwrites this placeholder in place.
+      if (state.sessions.has(id)) return;
+      state.sessions.set(id, { _mounting: true });
+
       // Hide empty state
       document.getElementById('emptyState').style.display = 'none';
 
