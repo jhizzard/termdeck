@@ -1,21 +1,9 @@
 {
-  "name": "@jhizzard/termdeck",
-  "version": "0.1.0",
-  "description": "TermDeck — web-based terminal multiplexer with metadata overlays and AI-aware session management",
-  "bin": {
-    "termdeck": "src/index.js"
-  },
+  "name": "@termdeck/cli-internal",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Internal workspace package — CLI launcher for TermDeck. Published as part of the root @jhizzard/termdeck package, not as a standalone npm package.",
   "main": "src/index.js",
-  "files": [
-    "src"
-  ],
-  "keywords": ["terminal", "multiplexer", "xterm", "pty", "web-terminal", "tmux-alternative", "termdeck"],
   "author": "Joshua Izzard",
-  "license": "MIT",
-  "engines": {
-    "node": ">=20.0.0"
-  },
-  "dependencies": {
-    "open": "^10.0.0"
-  }
+  "license": "MIT"
 }
