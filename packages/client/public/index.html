@@ -177,6 +177,7 @@
       transition: top 0.3s ease, left 0.3s ease, width 0.3s ease, height 0.3s ease;
       pointer-events: none;
       z-index: 2001;
+      display: none; /* default hidden — only visible during an active tour */
     }
     .tour-spotlight.centered {
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.85);
@@ -558,6 +559,153 @@
     }
 
     .prompt-launch:hover { background: var(--tg-accent); }
+
+    .prompt-add-project {
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      color: var(--tg-accent);
+      font-size: 16px;
+      line-height: 1;
+      padding: 0;
+      width: 26px;
+      height: 26px;
+      border-radius: var(--tg-radius-sm);
+      cursor: pointer;
+      font-family: var(--tg-sans);
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .prompt-add-project:hover {
+      border-color: var(--tg-accent);
+      background: var(--tg-accent-dim);
+      color: var(--tg-text-bright);
+    }
+
+    /* ===== ADD PROJECT MODAL ===== */
+    .add-project-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 3000;
+      align-items: center;
+      justify-content: center;
+    }
+    .add-project-modal.open { display: flex; }
+    .add-project-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+    }
+    .add-project-card {
+      position: relative;
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-accent-dim);
+      border-radius: 10px;
+      padding: 22px 24px 18px;
+      width: 420px;
+      max-width: calc(100vw - 40px);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+      font-family: var(--tg-sans);
+      color: var(--tg-text);
+    }
+    .add-project-card h3 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      color: var(--tg-accent);
+    }
+    .add-project-card .apm-help {
+      margin: 0 0 14px;
+      font-size: 12px;
+      color: var(--tg-text-dim);
+    }
+    .add-project-card .apm-help code {
+      background: var(--tg-bg);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+    }
+    .add-project-card label {
+      display: block;
+      margin-bottom: 10px;
+    }
+    .add-project-card label > span {
+      display: block;
+      font-size: 11px;
+      color: var(--tg-text-dim);
+      margin-bottom: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .add-project-card label > span em {
+      font-style: normal;
+      text-transform: none;
+      color: var(--tg-text-dim);
+      opacity: 0.7;
+      font-size: 10px;
+      margin-left: 4px;
+    }
+    .add-project-card input,
+    .add-project-card select {
+      width: 100%;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      color: var(--tg-text);
+      font-size: 13px;
+      padding: 7px 10px;
+      border-radius: var(--tg-radius-sm);
+      font-family: var(--tg-mono);
+      box-sizing: border-box;
+    }
+    .add-project-card input:focus,
+    .add-project-card select:focus {
+      outline: none;
+      border-color: var(--tg-accent-dim);
+    }
+    .add-project-card .apm-status {
+      font-size: 12px;
+      min-height: 16px;
+      margin: 4px 0 8px;
+      color: var(--tg-text-dim);
+    }
+    .add-project-card .apm-status.error { color: var(--tg-red); }
+    .add-project-card .apm-status.ok { color: var(--tg-green); }
+    .add-project-card .apm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .add-project-card button {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: var(--tg-sans);
+      border: 1px solid var(--tg-border);
+    }
+    .add-project-card .apm-cancel {
+      background: transparent;
+      color: var(--tg-text-dim);
+    }
+    .add-project-card .apm-cancel:hover {
+      color: var(--tg-text);
+      border-color: var(--tg-border-active);
+    }
+    .add-project-card .apm-save {
+      background: var(--tg-accent);
+      color: var(--tg-bg);
+      border-color: var(--tg-accent);
+    }
+    .add-project-card .apm-save:hover { filter: brightness(1.1); }
+    .add-project-card .apm-save:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      filter: none;
+    }
 
     /* ===== EMPTY STATE ===== */
     .empty-state {
@@ -1223,7 +1371,38 @@
     <select class="prompt-project" id="promptProject">
       <option value="">no project</option>
     </select>
+    <button class="prompt-add-project" id="btnAddProject" title="Add a new project">+</button>
     <button class="prompt-launch" id="promptLaunch">launch</button>
+  </div>
+
+  <!-- Add-project modal (hidden by default) -->
+  <div class="add-project-modal" id="addProjectModal">
+    <div class="add-project-backdrop"></div>
+    <div class="add-project-card">
+      <h3>Add a project</h3>
+      <p class="apm-help">Projects are saved to <code>~/.termdeck/config.yaml</code> and persist across restarts.</p>
+      <label>
+        <span>Name</span>
+        <input type="text" id="apmName" placeholder="my-project" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        <span>Path</span>
+        <input type="text" id="apmPath" placeholder="~/code/my-project" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        <span>Default command <em>(optional)</em></span>
+        <input type="text" id="apmCommand" placeholder="claude" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        <span>Default theme <em>(optional)</em></span>
+        <select id="apmTheme"><option value="">— pick a theme —</option></select>
+      </label>
+      <div class="apm-status" id="apmStatus"></div>
+      <div class="apm-actions">
+        <button class="apm-cancel" id="apmCancel">cancel</button>
+        <button class="apm-save" id="apmSave">add project</button>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
@@ -2485,14 +2664,111 @@
       launchTerminal();
     }
 
+    // ===== Add Project modal =====
+    function rebuildProjectDropdown(selectName) {
+      const sel = document.getElementById('promptProject');
+      if (!sel) return;
+      const prev = selectName || sel.value;
+      sel.innerHTML = '<option value="">no project</option>';
+      for (const name of Object.keys(state.config.projects || {})) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      if (prev && state.config.projects && state.config.projects[prev]) {
+        sel.value = prev;
+      }
+    }
+
+    function openAddProjectModal() {
+      const modal = document.getElementById('addProjectModal');
+      // Populate theme dropdown from loaded themes
+      const themeSel = document.getElementById('apmTheme');
+      themeSel.innerHTML = '<option value="">— pick a theme —</option>';
+      for (const [tid, t] of Object.entries(state.themes || {})) {
+        const opt = document.createElement('option');
+        opt.value = tid;
+        opt.textContent = t.label || tid;
+        themeSel.appendChild(opt);
+      }
+      // Clear fields
+      document.getElementById('apmName').value = '';
+      document.getElementById('apmPath').value = '';
+      document.getElementById('apmCommand').value = '';
+      document.getElementById('apmTheme').value = '';
+      setApmStatus('', null);
+      modal.classList.add('open');
+      setTimeout(() => document.getElementById('apmName').focus(), 50);
+    }
+
+    function closeAddProjectModal() {
+      document.getElementById('addProjectModal').classList.remove('open');
+    }
+
+    function setApmStatus(msg, kind) {
+      const el = document.getElementById('apmStatus');
+      el.textContent = msg || '';
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+    }
+
+    async function submitAddProject() {
+      const name = document.getElementById('apmName').value.trim();
+      const projectPath = document.getElementById('apmPath').value.trim();
+      const defaultCommand = document.getElementById('apmCommand').value.trim();
+      const defaultTheme = document.getElementById('apmTheme').value;
+
+      if (!name) { setApmStatus('Name is required.', 'error'); return; }
+      if (!projectPath) { setApmStatus('Path is required.', 'error'); return; }
+
+      const saveBtn = document.getElementById('apmSave');
+      saveBtn.disabled = true;
+      setApmStatus('Saving…', null);
+
+      try {
+        const result = await api('POST', '/api/projects', {
+          name,
+          path: projectPath,
+          defaultCommand: defaultCommand || undefined,
+          defaultTheme: defaultTheme || undefined,
+        });
+        if (result && result.error) {
+          setApmStatus(result.error, 'error');
+          saveBtn.disabled = false;
+          return;
+        }
+        // Merge the updated projects into in-memory state.config so subsequent
+        // launches can immediately use the new project.
+        state.config.projects = result.projects || {};
+        rebuildProjectDropdown(name);
+        setApmStatus(`Added "${name}" ✓`, 'ok');
+        setTimeout(() => { closeAddProjectModal(); saveBtn.disabled = false; }, 700);
+      } catch (err) {
+        setApmStatus(`Failed: ${err.message || err}`, 'error');
+        saveBtn.disabled = false;
+      }
+    }
+
     // ===== Launch terminal =====
     async function launchTerminal() {
       const input = document.getElementById('promptInput');
       const project = document.getElementById('promptProject').value;
-      const command = input.value.trim();
+      let command = input.value.trim();
+
+      // If the input is empty but the selected project has a defaultCommand,
+      // use it. That way "select project + click launch" actually runs the
+      // project's declared default (e.g. `claude`) instead of silently falling
+      // through to the global shell.
+      if (!command && project) {
+        const projectCfg = state.config.projects?.[project];
+        if (projectCfg?.defaultCommand) {
+          command = projectCfg.defaultCommand;
+        }
+      }
 
       if (!command) {
-        // Default: open a shell
+        // Still nothing to run — launch a plain shell in the project's cwd
         const session = await api('POST', '/api/sessions', {
           project: project || undefined,
           reason: 'manual launch'
@@ -2738,21 +3014,22 @@
       {
         target: '.topbar-center',
         title: 'Layout modes',
-        body: `Seven preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd> plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Ctrl+Shift+1</kbd> through <kbd>Ctrl+Shift+6</kbd> do the same.`,
+        body: `Seven preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd> plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+6</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>6</kbd>) do the same.`,
       },
       {
         target: '#termSwitcher',
         title: 'Terminal switcher',
-        body: `When you have 2+ terminals open, this overlay shows numbered tiles. Click a tile to focus that panel, or press <kbd>Alt+1</kbd> through <kbd>Alt+9</kbd>. Color-coded by project, status-dot updates live.`,
+        body: `When you have 2+ terminals open, this overlay shows numbered tiles. Click a tile to focus that panel, or press <kbd>Alt+1</kbd> through <kbd>Alt+9</kbd>. Color-coded by project, status-dot updates live. Watch — a second shell is spawning right now so you can see it appear.`,
+        onEnter: async () => { await ensureSecondShellForTour(); },
       },
       {
-        target: '#btn-status',
+        targets: ['#btn-status', '#btn-config'],
         title: 'Status and config',
         body: `<strong>status</strong> opens a global-metrics modal (session counts by state, RAG mode, memory bridge). <strong>config</strong> shows your loaded project list and theme defaults. Both are in the polish queue for Sprint 3 — buttons are visible but unwired right now.`,
       },
       {
-        target: '#btn-how',
-        title: 'Replay this walkthrough',
+        targets: ['#btn-how', '#btn-help'],
+        title: 'How this works and help',
         body: `Click <strong>how this works</strong> any time to replay this tour. <strong>help</strong> opens the full TermDeck documentation on GitHub in a new tab.`,
       },
       {
@@ -2762,22 +3039,25 @@
         fallback: '#topbarQuickLaunch',
       },
       {
-        target: '.panel-drawer',
+        target: '.drawer-tabs',
         title: 'Info tabs',
         body: `Below every terminal is a drawer with four tabs. <strong>Overview</strong> — live metadata + "Ask about this terminal" input + reply button. <strong>Commands</strong> — scrollable command history (click to copy). <strong>Memory</strong> — every Flashback hit this panel has collected. <strong>Status log</strong> — chronological status transitions with detail chips.`,
-        fallback: '.topbar-center',
+        onEnter: async () => { await openFirstPanelDrawer('overview'); },
+        fallback: '#topbarQuickLaunch',
       },
       {
         target: '.reply-toggle',
         title: 'Reply — send text to another panel',
         body: `Click <strong>reply ▸</strong> on any panel to route text to another open terminal. Pick the target from the dropdown (labels use <kbd>#N</kbd> suffixes to disambiguate same-project duplicates), type your message, hit send. Useful for handing off work to a Claude Code panel, broadcasting a command, or piping errors into a debug agent.`,
-        fallback: '.topbar-center',
+        onEnter: async () => { await openFirstPanelDrawer('overview'); },
+        fallback: '#topbarQuickLaunch',
       },
       {
         target: '.ctrl-input',
         title: 'Ask about this terminal',
         body: `Type a question here and TermDeck queries your <strong>Engram memory store</strong> for relevant context — scoped to the current panel's project. Prefix with <kbd>all:</kbd> to search every project. Results render inline in the terminal with similarity scores.`,
-        fallback: '.topbar-center',
+        onEnter: async () => { await openFirstPanelDrawer('overview'); },
+        fallback: '#topbarQuickLaunch',
       },
       {
         target: null,
@@ -2796,13 +3076,77 @@
       },
     ];
 
+    // Tour setup helpers — manipulate DOM so target selectors resolve to
+    // visible, sized elements before the spotlight positions itself.
+    async function ensureSecondShellForTour() {
+      if (state.sessions.size >= 2) return;
+      try {
+        const session = await api('POST', '/api/sessions', {
+          command: 'zsh',
+          type: 'shell',
+          reason: 'onboarding tour (switcher demo)',
+        });
+        createTerminalPanel(session);
+        updateEmptyState();
+        await new Promise((r) => setTimeout(r, 450));
+      } catch (err) {
+        console.error('[tour] failed to auto-launch second shell:', err);
+      }
+    }
+
+    async function openFirstPanelDrawer(tabName = 'overview') {
+      const firstId = state.sessions.keys().next().value;
+      if (!firstId) return;
+      const entry = state.sessions.get(firstId);
+      if (!entry) return;
+      // Only toggle if not already open on the requested tab — avoid bouncing
+      // the drawer shut mid-tour.
+      if (entry.drawerOpen && entry.activeTab === tabName) return;
+      // Force-open by setting state first so toggleDrawerTab expands it.
+      entry.drawerOpen = false;
+      toggleDrawerTab(firstId, tabName);
+      // Let the CSS transition settle so bounding rects stabilize.
+      await new Promise((r) => setTimeout(r, 280));
+    }
+
     const tourState = { active: false, idx: 0 };
 
-    function tourGetTarget(step) {
-      if (!step.target) return null;
-      let el = document.querySelector(step.target);
-      if (!el && step.fallback) el = document.querySelector(step.fallback);
-      return el;
+    // Resolve a step's target(s) to a bounding rect. Supports single `target`
+    // selector, a `targets` array (union rect across multiple elements), and
+    // `fallback` as a last resort. Elements with 0×0 rects are treated as
+    // invisible and ignored so collapsed drawer content doesn't produce
+    // phantom spotlights in the top-left corner.
+    function tourResolveRect(step) {
+      const visibleRect = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return null;
+        return r;
+      };
+
+      if (step.targets && Array.isArray(step.targets)) {
+        const rects = step.targets.map(visibleRect).filter(Boolean);
+        if (rects.length > 0) {
+          const left = Math.min(...rects.map((r) => r.left));
+          const top = Math.min(...rects.map((r) => r.top));
+          const right = Math.max(...rects.map((r) => r.right));
+          const bottom = Math.max(...rects.map((r) => r.bottom));
+          return { left, top, right, bottom, width: right - left, height: bottom - top };
+        }
+      }
+
+      if (step.target) {
+        const r = visibleRect(step.target);
+        if (r) return r;
+      }
+
+      if (step.fallback) {
+        const r = visibleRect(step.fallback);
+        if (r) return r;
+      }
+
+      return null;
     }
 
     function positionTourElements(step) {
@@ -2812,9 +3156,9 @@
       backdrop.classList.add('active');
       tooltip.style.display = 'block';
 
-      const target = tourGetTarget(step);
-      if (!target) {
-        // Centered step — no spotlight target
+      const rect = tourResolveRect(step);
+      if (!rect) {
+        // Centered step — no spotlight target, or resolved element was invisible
         spotlight.classList.add('centered');
         tooltip.classList.add('centered');
         tooltip.style.top = '';
@@ -2824,8 +3168,6 @@
       spotlight.classList.remove('centered');
       tooltip.classList.remove('centered');
 
-      // Scroll target into view if off-screen
-      const rect = target.getBoundingClientRect();
       const padding = 8;
       spotlight.style.top = `${rect.top - padding}px`;
       spotlight.style.left = `${rect.left - padding}px`;
@@ -2847,9 +3189,15 @@
       tooltip.style.left = `${left}px`;
     }
 
-    function renderTourStep() {
+    async function renderTourStep() {
       const step = TOUR_STEPS[tourState.idx];
       if (!step) { endTour(); return; }
+
+      // Optional setup hook — launches a panel, opens a drawer, etc.
+      if (typeof step.onEnter === 'function') {
+        try { await step.onEnter(); } catch (err) { console.error('[tour] onEnter failed:', err); }
+      }
+
       document.getElementById('tourTitle').innerHTML = step.title;
       document.getElementById('tourBody').innerHTML = step.body;
       document.getElementById('tourCounter').textContent =
@@ -2860,9 +3208,35 @@
       positionTourElements(step);
     }
 
-    function startTour() {
+    // Auto-launch a shell panel so the tour's panel-targeting steps
+    // (header, drawer tabs, reply, ctrl-input) have a real DOM target.
+    // Only fires when no panels exist yet. Replays of the tour against
+    // an already-populated dashboard skip this — their existing panels
+    // serve as the tour targets.
+    async function ensurePanelForTour() {
+      if (state.sessions.size > 0) return;
+      try {
+        const session = await api('POST', '/api/sessions', {
+          command: 'zsh',
+          type: 'shell',
+          reason: 'onboarding tour',
+        });
+        createTerminalPanel(session);
+        updateEmptyState();
+        // Let xterm.js mount and .panel-* selectors settle before rendering.
+        await new Promise((r) => setTimeout(r, 450));
+      } catch (err) {
+        console.error('[tour] failed to auto-launch shell:', err);
+      }
+    }
+
+    async function startTour() {
       tourState.active = true;
       tourState.idx = 0;
+      // Explicitly show the spotlight. CSS default is `display:none` so the
+      // 9999px box-shadow doesn't darken the page before/after a tour runs.
+      document.getElementById('tourSpotlight').style.display = 'block';
+      await ensurePanelForTour();
       renderTourStep();
     }
 
@@ -2882,6 +3256,17 @@
       tourState.active = false;
       document.getElementById('tourBackdrop').classList.remove('active');
       document.getElementById('tourTooltip').style.display = 'none';
+      // CRITICAL: hide the spotlight element too. Its 9999px box-shadow
+      // creates the dark overlay effect independently of the backdrop, so
+      // leaving display:block here means the dashboard looks "stuck in tour"
+      // even after the tooltip is gone.
+      const spotlight = document.getElementById('tourSpotlight');
+      spotlight.style.display = 'none';
+      spotlight.classList.remove('centered');
+      const tooltip = document.getElementById('tourTooltip');
+      tooltip.classList.remove('centered');
+      tooltip.style.top = '';
+      tooltip.style.left = '';
       try { localStorage.setItem('termdeck:tour:seen', '1'); } catch {}
     }
 
@@ -2893,6 +3278,17 @@
     document.getElementById('promptLaunch').addEventListener('click', launchTerminal);
     document.getElementById('promptInput').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') launchTerminal();
+    });
+
+    // Add-project modal wiring
+    document.getElementById('btnAddProject').addEventListener('click', openAddProjectModal);
+    document.getElementById('apmCancel').addEventListener('click', closeAddProjectModal);
+    document.getElementById('apmSave').addEventListener('click', submitAddProject);
+    document.querySelector('#addProjectModal .add-project-backdrop').addEventListener('click', closeAddProjectModal);
+    // Enter in any input inside the modal submits; Escape closes
+    document.getElementById('addProjectModal').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAddProject(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeAddProjectModal(); }
     });
 
     // Onboarding tour wiring
@@ -2938,8 +3334,8 @@
           document.getElementById('promptInput').focus();
         }
       }
-      // Ctrl+Shift+1-6 → layout switch
-      if (e.ctrlKey && e.shiftKey && e.key >= '1' && e.key <= '6') {
+      // Ctrl+Shift+1-6 OR Cmd+Shift+1-6 → layout switch (Mac friendly)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '1' && e.key <= '6') {
         e.preventDefault();
         const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2'];
         setLayout(layouts[parseInt(e.key) - 1]);

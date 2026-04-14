@@ -82,6 +82,10 @@ The proactive-memory feature (T1.4 server event → T2.4 WebSocket push → clie
 
 Added 2026-04-15 after the onboarding tour and launch-strategy session.
 
+- [ ] **Cursor position lag on window resize.** After resizing the window, the xterm cursor renders below the current input line until the first keystroke redraws it. Cosmetic xterm.js `fit()` repaint issue — debounce the resize handler and force a `terminal.refresh(0, rows-1)` after the fit call, or replay a `<ESC>[H` cursor-position query to nudge the renderer.
+- [ ] **macOS zsh_sessions cosmetic error.** A `Saving: command not found` warning still prints on new shell startup because one of `~/.zsh_sessions/<UUID>.session` files has a corrupted line. The proper fix (`TERM_SESSION_ID=''` / `SHELL_SESSION_DID_INIT='1'`) broke interactive input in testing, so only `SHELL_SESSION_HISTORY='0'` is set today. Revisit by either (a) bisecting which of the two vars broke input, or (b) writing a known-empty file at `~/.zsh_sessions/<UUID>.session` before spawn so the source line finds a valid no-op file.
+- [ ] **Theme dropdown visibility.** Currently lives inside each panel's drawer under the Overview tab. Users don't discover it without opening the drawer. Options: (1) surface a small theme button `🎨` in the panel header next to `□ ▯ ×`, (2) add a global theme switcher in the top toolbar that applies to all panels, (3) leave as-is and rely on the onboarding tour to teach it. Recommend (1).
+
 - [ ] **Wire `status` and `config` top-toolbar buttons** to modal views of `GET /api/status` and `GET /api/config`. Placeholders today.
 - [ ] **Deploy docs-site to Vercel.** `cd docs-site && vercel deploy --prod`. Get a `termdeck.dev` or `*.vercel.app` URL. Update the `help` button href in `index.html` and the final step of the onboarding tour to point at it. Blocker for the launch credibility signal.
 - [ ] **Capture launch marketing assets.** `docs/screenshots/flashback-demo.gif` (12-14 second Flashback firing), `dashboard-4panel.png`, `drawer-open.png`, `switcher.png`. See `docs/FLASHBACK_LAUNCH_ANGLE.md` for the storyboard and `docs/LAUNCH_STRATEGY_2026-04-15.md` for the list.

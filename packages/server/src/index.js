@@ -20,7 +20,7 @@ const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./engram-bridge');
 const { writeSessionLog } = require('./session-logger');
 const { themes, statusColors } = require('./themes');
-const { loadConfig } = require('./config');
+const { loadConfig, addProject } = require('./config');
 
 function createServer(config) {
   const app = express();
@@ -89,9 +89,19 @@ function createServer(config) {
 
     // Spawn PTY
     if (pty) {
-      const shell = command || config.shell;
-      const args = command ? ['-c', command] : [];
-      const spawnShell = command ? config.shell : shell;
+      // Three launch shapes:
+      //   (1) no command            → spawn the default shell interactively
+      //   (2) command is a plain shell name (zsh, bash, fish, ...)
+      //                             → spawn THAT shell interactively, no -c wrapper
+      //                               (otherwise `zsh -c zsh` exits immediately)
+      //   (3) command is a real command string
+      //                             → spawn default shell with -c <command>
+      const cmdTrim = (command || '').trim();
+      const PLAIN_SHELLS = /^(zsh|bash|fish|sh|dash|tcsh|ksh|csh|pwsh|powershell)$/i;
+      const isPlainShell = PLAIN_SHELLS.test(cmdTrim);
+
+      const spawnShell = isPlainShell ? cmdTrim : (config.shell || '/bin/zsh');
+      const args = (cmdTrim && !isPlainShell) ? ['-c', cmdTrim] : [];
 
       try {
         const term = pty.spawn(spawnShell, args, {
@@ -105,10 +115,12 @@ function createServer(config) {
             TERMDECK_PROJECT: project || '',
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
-            // Disable macOS Terminal.app's zsh session save/restore. Without
-            // this, new PTYs source ~/.zsh_sessions/<TERM_SESSION_ID>.session
-            // which can contain stale or malformed lines from Terminal.app's
-            // bookkeeping and fail with "command not found: Saving".
+            // Kill macOS Terminal.app's zsh session save on teardown.
+            // We do NOT override TERM_SESSION_ID or SHELL_SESSION_DID_INIT —
+            // touching those caused interactive shells to stop accepting
+            // input in at least one confirmed reproducer. If ~/.zsh_sessions/
+            // files get corrupted externally and produce a one-line startup
+            // warning, that is cosmetic and safe to ignore.
             SHELL_SESSION_HISTORY: '0'
           }
         });
@@ -188,7 +200,7 @@ function createServer(config) {
           });
         };
 
-        console.log(`[pty] Spawned session ${session.id} (PID ${term.pid}): ${shell} ${args.join(' ')}`);
+        console.log(`[pty] Spawned session ${session.id} (PID ${term.pid}): ${spawnShell} ${args.join(' ')}`);
       } catch (err) {
         session.meta.status = 'errored';
         session.meta.statusDetail = err.message;
@@ -336,6 +348,22 @@ function createServer(config) {
       aiQueryAvailable: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey && config.rag?.openaiApiKey),
       statusColors
     });
+  });
+
+  // POST /api/projects - add a new project on the fly, persist to config.yaml
+  // Body: { name, path, defaultTheme?, defaultCommand? }
+  // Updates both the on-disk config.yaml and the in-memory config so new
+  // sessions can select the project immediately without a server restart.
+  app.post('/api/projects', (req, res) => {
+    const { name, path: projectPath, defaultTheme, defaultCommand } = req.body || {};
+    try {
+      const updatedProjects = addProject({ name, path: projectPath, defaultTheme, defaultCommand });
+      config.projects = updatedProjects;
+      res.json({ ok: true, projects: updatedProjects });
+    } catch (err) {
+      console.error('[config] addProject failed:', err.message);
+      res.status(400).json({ error: err.message });
+    }
   });
 
   // GET /api/status - global status (control room data)

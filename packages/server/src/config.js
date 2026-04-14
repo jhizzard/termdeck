@@ -230,8 +230,77 @@ sessionLogs:
   };
 }
 
+// Add a project to ~/.termdeck/config.yaml and return the updated projects map.
+// Writes a timestamped .bak of the existing file before overwriting so the
+// user can always recover manually. Comments in the original yaml WILL be lost
+// on rewrite — yaml.stringify does not round-trip comments. That's acceptable
+// for a v0.2 convenience feature; permanent editing still belongs in a text
+// editor for users who care about file comments.
+function addProject({ name, path: projectPath, defaultTheme, defaultCommand }) {
+  if (!name || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+    throw new Error('Project name must be non-empty and contain only letters, digits, . _ or -');
+  }
+  if (!projectPath || typeof projectPath !== 'string') {
+    throw new Error('Project path is required');
+  }
+
+  // Expand ~ for validation but keep tilde form in the stored config so it
+  // remains portable across machines.
+  const expanded = projectPath.replace(/^~/, os.homedir());
+  const resolved = path.resolve(expanded);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Project path does not exist: ${resolved}`);
+  }
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) {
+    throw new Error(`Project path is not a directory: ${resolved}`);
+  }
+
+  const yaml = require('yaml');
+  let parsed = {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    try {
+      parsed = yaml.parse(raw) || {};
+    } catch (err) {
+      throw new Error(`config.yaml is not valid YAML — cannot safely rewrite: ${err.message}`);
+    }
+  }
+
+  if (!parsed.projects || typeof parsed.projects !== 'object') {
+    parsed.projects = {};
+  }
+  if (parsed.projects[name]) {
+    throw new Error(`Project "${name}" already exists`);
+  }
+
+  parsed.projects[name] = {
+    path: projectPath,
+    ...(defaultTheme ? { defaultTheme } : {}),
+    ...(defaultCommand ? { defaultCommand } : {})
+  };
+
+  // Backup before overwrite.
+  if (fs.existsSync(CONFIG_PATH)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const bak = `${CONFIG_PATH}.${ts}.bak`;
+    try {
+      fs.copyFileSync(CONFIG_PATH, bak);
+    } catch (err) {
+      console.warn('[config] Could not write backup before adding project:', err.message);
+    }
+  }
+
+  const out = yaml.stringify(parsed);
+  fs.writeFileSync(CONFIG_PATH, out, 'utf-8');
+  console.log(`[config] Added project "${name}" → ${projectPath}`);
+
+  return parsed.projects;
+}
+
 module.exports = {
   loadConfig,
+  addProject,
   // exported for tests / introspection
   _parseDotenv: parseDotenv,
   _substituteEnv: substituteEnv,
