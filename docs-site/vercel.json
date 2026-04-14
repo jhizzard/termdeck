@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "astro",
-  "buildCommand": "pnpm run sync-content && pnpm run build",
+  "buildCommand": "npm run sync-content && npm run build",
   "outputDirectory": "dist"
 }

@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Browser-based terminal multiplexer with metadata overlays, panel flashback memory recall, and AI-aware session management",
   "bin": {
     "termdeck": "./packages/cli/src/index.js"
@@ -27,14 +27,15 @@
     "install:app": "bash install.sh"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "ws": "^8.16.0",
     "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",
     "better-sqlite3": "^12.9.0",
-    "uuid": "^9.0.0",
-    "yaml": "^2.3.4",
     "chalk": "^5.3.0",
-    "open": "^10.0.0"
+    "express": "^4.18.2",
+    "open": "^10.0.0",
+    "pg": "^8.20.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0",
+    "yaml": "^2.3.4"
   },
   "keywords": [
     "terminal",
