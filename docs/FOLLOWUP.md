@@ -78,6 +78,25 @@ The proactive-memory feature (T1.4 server event → T2.4 WebSocket push → clie
 - [ ] **Local telemetry.** Log every Flashback event to SQLite: trigger, query, top hit id, fired_at, dismissed_at, clicked. Enables tuning the 30s rate limit and trigger heuristics later. Local only — never phones home.
 - [ ] **GIF capture for launch.** 12-second screen recording of a Flashback firing on a real error. Drop in `docs/screenshots/flashback-demo.gif`. Lead with this on the README, above the fold.
 
+## Sprint 3 — launch polish and new features
+
+Added 2026-04-15 after the onboarding tour and launch-strategy session.
+
+- [ ] **Wire `status` and `config` top-toolbar buttons** to modal views of `GET /api/status` and `GET /api/config`. Placeholders today.
+- [ ] **Deploy docs-site to Vercel.** `cd docs-site && vercel deploy --prod`. Get a `termdeck.dev` or `*.vercel.app` URL. Update the `help` button href in `index.html` and the final step of the onboarding tour to point at it. Blocker for the launch credibility signal.
+- [ ] **Capture launch marketing assets.** `docs/screenshots/flashback-demo.gif` (12-14 second Flashback firing), `dashboard-4panel.png`, `drawer-open.png`, `switcher.png`. See `docs/FLASHBACK_LAUNCH_ANGLE.md` for the storyboard and `docs/LAUNCH_STRATEGY_2026-04-15.md` for the list.
+- [ ] **Rewrite README top-to-bottom** with Flashback-first structure. Hero GIF, one-line pitch, three quickstart commands, "How Flashback works" in 4 sentences, "What it is not" honest-limits section, architecture diagram linking to Engram and Rumen, install/dev/contrib at bottom. See `FLASHBACK_LAUNCH_ANGLE.md` §README restructure.
+- [ ] **Write launch assets:** `docs/launch/show-hn-post.md`, `docs/launch/x-thread.md`, `docs/launch/comment-playbook.md`. See `LAUNCH_STRATEGY_2026-04-15.md` for templates and content.
+- [ ] **Publish dev.to blog post** from `FLASHBACK_LAUNCH_ANGLE.md` blog outline. 800–1200 words. Cross-post to Hashnode. Schedule 24h after Show HN.
+- [ ] **Flashback rename propagation.** Update toast header from `ENGRAM — POSSIBLE MATCH` to `FLASHBACK · <project>`, rename the WebSocket event from `proactive_memory` to `flashback`, update README feature list and CHANGELOG. See `FLASHBACK_LAUNCH_ANGLE.md` §The naming decision.
+- [ ] **Top-bar session recall counter** `🧠 N recalls this session`. Increments on every Flashback fired.
+- [ ] **Manual Flashback keyboard shortcut** `Cmd+K` / `Ctrl+K` on the active panel runs the auto-trigger's synthesis query on demand.
+- [ ] **Flashback history drawer tab.** New per-panel tab listing every Flashback fired this session with re-open buttons.
+- [ ] **Per-panel Flashback silence toggle.** Bell icon in panel header. Persist via `PATCH /api/sessions/:id` into `meta.flashbackEnabled`.
+- [ ] **Local Flashback telemetry.** Log fire/dismiss/click events to SQLite for future rate-limit and trigger heuristic tuning. Local only — never phones home.
+- [ ] **Claude bot Q&A (nice-to-have).** Haiku-powered chat surface embedded in the docs site or in a new `?` modal in TermDeck. Pre-trained via system prompt on the full README + CHANGELOG + FAQ. Budget caps: ~100 calls/day soft, 500/day hard, using a server-side proxy (Vercel edge function) so no API key is shipped client-side. Use the Anthropic SDK with prompt caching on the static context block. Defer to Sprint 4 if Sprint 3 runs long.
+- [ ] **Editable per-panel labels.** Double-click panel header to rename, persist `meta.label`, propagate to reply dropdown (replacing `#N` fallback when custom label is set). Was parked in Sprint 2 F1.3 as option 2.
+
 ## Cross-project
 
 - [ ] **Publish decisions.** Engram v0.2, Rumen v0.2, TermDeck rename are staged but NOT versioned or `npm publish`-ed. Decide per-package when to tag.
