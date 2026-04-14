@@ -2986,13 +2986,14 @@
         else if (s.meta.status === 'thinking') thinking++;
         else if (s.meta.status === 'idle') idle++;
 
-        // Update individual panel metadata from broadcast
+        // Update existing panels from broadcast. NOTE: we deliberately do NOT
+        // createTerminalPanel for sessions that aren't in state.sessions —
+        // that creates a race between the immediate createTerminalPanel call
+        // from launchTerminal and the 2s status_broadcast cycle, producing
+        // duplicate WebSockets per session and breaking terminal input
+        // rendering. External-session auto-discover is parked for Sprint 3.
         if (state.sessions.has(s.id)) {
           updatePanelMeta(s.id, s.meta);
-        } else if (s.meta.status !== 'exited') {
-          // New session created externally (API, demo script, etc.) — auto-add panel
-          createTerminalPanel(s);
-          updateEmptyState();
         }
       }
       document.getElementById('stat-active').textContent = active;
@@ -3418,18 +3419,13 @@
       }
     }, { capture: true });
 
-    // Poll for new sessions created externally (API, demo script, etc.)
-    setInterval(async () => {
-      try {
-        const serverSessions = await api('GET', '/api/sessions');
-        for (const s of serverSessions) {
-          if (!state.sessions.has(s.id) && s.meta.status !== 'exited') {
-            createTerminalPanel(s);
-            updateEmptyState();
-          }
-        }
-      } catch (err) { console.error('[client] session poll failed:', err); }
-    }, 3000);
+    // External-session auto-discover disabled. The poller raced with the
+    // immediate createTerminalPanel call in launchTerminal and caused
+    // duplicate WebSocket connections per session, which broke terminal
+    // input rendering (session.ws on the server got overwritten by the
+    // second connect and term.onData output stopped reaching the visible
+    // panel). Parked for Sprint 3 — needs an idempotent creation path
+    // AND a way to suppress the race window during POST → createPanel.
 
     // Refresh "opened X ago" timestamps every 30s
     setInterval(() => {
