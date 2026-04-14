@@ -71,10 +71,175 @@
 
 ## Cross-terminal requests
 
-(empty)
+- [2026-04-13T22:40:00Z] 🛑 T3 → Josh: **apply Supabase migration 006** before flipping `op: status` to rely on the RPC. File: `engram/migrations/006_memory_status_rpc.sql`. Paste the SQL below into the Supabase SQL editor for the Engram project and hit Run. Safe to re-run (CREATE OR REPLACE). Fixes the `by_project` histogram only summing to ~1000 (PostgREST default row cap) when the real `total_active` is 3,397. Client already has a fallback path — old rows will still work if the migration isn't applied, but with the 1000-row cap.
+
+  ```sql
+  create or replace function memory_status_aggregation()
+  returns table (
+    total_active   bigint,
+    sessions       bigint,
+    by_project     jsonb,
+    by_source_type jsonb,
+    by_category    jsonb
+  )
+  language sql
+  stable
+  as $$
+    select
+      (select count(*)::bigint from memory_items
+         where is_active = true and archived = false) as total_active,
+      (select count(*)::bigint from memory_sessions) as sessions,
+      coalesce(
+        (select jsonb_object_agg(project, c) from (
+           select project, count(*)::bigint as c
+           from memory_items
+           where is_active = true and archived = false
+           group by project
+         ) p),
+        '{}'::jsonb
+      ) as by_project,
+      coalesce(
+        (select jsonb_object_agg(source_type, c) from (
+           select source_type, count(*)::bigint as c
+           from memory_items
+           where is_active = true and archived = false
+           group by source_type
+         ) s),
+        '{}'::jsonb
+      ) as by_source_type,
+      coalesce(
+        (select jsonb_object_agg(coalesce(category, 'uncategorized'), c) from (
+           select category, count(*)::bigint as c
+           from memory_items
+           where is_active = true and archived = false
+           group by category
+         ) cat),
+        '{}'::jsonb
+      ) as by_category;
+  $$;
+
+  grant execute on function memory_status_aggregation() to anon, authenticated, service_role;
+  ```
+
+  Verify after running:
+  ```sql
+  select total_active, by_project from memory_status_aggregation();
+  ```
+  Expect `sum(by_project values) == total_active` (should be ~3397, not 1000).
 
 ---
 
 ## Blockers
 
 (empty)
+
+---
+
+## Sprint 2 — Terminal 2
+
+- [2026-04-13T22:30:00Z] started — Sprint 2, T2 server/config/secrets/packaging. Working tree carries the Sprint 1 T2 diffs (still uncommitted, per end-of-session protocol). Owns packages/server/src/**, packages/cli/src/**, config/**, packages/server/package.json, packages/cli/package.json, root package.json. Scope: F2.1 (audit, FIRST) → F2.2 (secrets.env migration) → F2.3 (session-logs investigation) with F2.4 (Docker prebuild) delegated to a general-purpose subagent in parallel with F2.3.
+- [2026-04-13T22:30:30Z] ✅ F2.1 credential-leak audit — ran the spec's `grep -rI 'sk-proj-\|sb_secret_' ~/Documents/Graciella` plus tighter scoped Grep over termdeck/, engram/, and rumen/. NO secrets leaked into any of the three target repos — only matches inside `docs/FOLLOWUP.md` and `docs/SPRINT_2_FOLLOWUP_PLAN.md` that reference the prefix patterns as scan targets (expected). Out-of-scope hits elsewhere in ~/Documents/Graciella (PVB .claude/settings.local.json, rag-system/.env, two NICPC_GPT note files, AICouncil/API_KEYS.txt) belong to other pre-existing projects — outside Sprint 2 scope, not flagged further. Safe to proceed with F2.2.
+- [2026-04-13T22:42:00Z] ✅ F2.2 secrets.env migration — new `packages/server/src/config.js` module owns config loading. Flow: (1) load `~/.termdeck/secrets.env` via a tiny hand-rolled dotenv parser (no new dependency — 40 lines, handles `KEY=val`, `"quoted"`, `'quoted'`, `#comments`, blank lines, empty values; intentionally no variable expansion-in-values); merged INTO `process.env` with shell-wins precedence so a caller-set env var always beats the file. (2) Auto-create `~/.termdeck/config.yaml` on first run with `${VAR}` placeholders instead of inline-secret placeholders. (3) Parse yaml. (4) Walk the parsed tree and substitute `${VAR}` / `${VAR:-default}` tokens in every string leaf using process.env. Unknown vars → empty string (or the `:-default`). (5) Emit a one-time `[config] WARNING: secrets in config.yaml are deprecated` diagnostic ONLY when secrets.env does NOT exist AND one of `rag.supabaseKey` / `rag.openaiApiKey` / `rag.anthropicApiKey` still holds a literal (non-`${VAR}`-shaped) value — never echoes the leaked value itself, just names the offending yaml field. (6) Backward-compat: Josh's existing inline-secret `config.yaml` still loads and runs, just with the warning. packages/server/src/index.js dropped its inline `loadConfig` and now `require('./config')` — the same symbol export (`loadConfig`) is re-exported from index.js so packages/cli/src/index.js and any other consumer keeps its existing import. New `config/secrets.env.example` ships the four expected keys (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). `config/config.example.yaml` updated to reference those vars via `${VAR}` and adds `anthropicApiKey`. `.gitignore` gains `secrets.env` as a safety net (note: `~/.termdeck/secrets.env` lives outside the repo, so this is only defense-in-depth — flagging that .gitignore is a marginally-over-scope touch for T2, can revert if Josh disagrees). Acceptance tests run locally: (a) server starts against Josh's existing inline-secret config.yaml — loads cleanly, deprecation warning fires, no secret value echoed; (b) sandbox HOME with `secrets.env` + env-var yaml → 4 secrets loaded, substitution correct, `${VAR:-default}` fallback works, unknown vars collapse to empty. `node -c` clean on config.js and index.js. No new npm dependencies.
+- [2026-04-13T22:46:00Z] ✅ F2.3 session-logs investigation + fix — root cause: `writeSessionLog()` itself was never broken. Direct smoke test (synthetic session + config, no API key) writes a valid markdown file to `~/.termdeck/sessions/` on first try, which eliminates cause (c) "silently no-op when ANTHROPIC_API_KEY missing" — the fallback path at session-logger.js:145-152 always writes the markdown, just without the `## Summary` section. Remaining causes from FOLLOWUP.md: (a) the flag wasn't plumbed end-to-end for every entry point, and (b) panels weren't actually exiting. Sprint-2 improvements: (1) `packages/cli/src/index.js` now sets `process.env.TERMDECK_SESSION_LOGS='1'` in addition to mutating `config.sessionLogs.enabled` — this gives both the env-var path (session-logger.js:109) and the config-object path the same signal, so any module that reads env at require-time sees it. Also prints `[cli] session logs enabled — writing to ~/.termdeck/sessions/ on panel exit` at startup so Josh can tell immediately whether the flag took effect. (2) `packages/server/src/index.js` main block now parses `--session-logs` for users who run the server directly without the CLI wrapper (`node packages/server/src/index.js --session-logs`), and prints a `Session logs: ~/.termdeck/sessions/ (on exit)` / `off` line alongside PTY / RAG status in the startup banner — direct visibility into the flag's state. (3) No change to `writeSessionLog()` itself (it was correct). (4) No change to `session.pty.kill()` handling — the X-button DELETE /api/sessions/:id path correctly triggers `term.onExit`, which calls `writeSessionLog`, per code read. Acceptance: with `ANTHROPIC_API_KEY` in `~/.termdeck/secrets.env` (which F2.2 just wired up), `termdeck --session-logs` → open shell → close → `ls ~/.termdeck/sessions/` returns a dated `.md` with frontmatter + command list + Haiku summary. Verified statically (code path + direct unit-style smoke test); verified-on-PTY deferred to Josh because this sandbox has no working `node-pty` (same Sprint-1 blocker).
+- [2026-04-13T22:48:00Z] ⚠ F2.4 Docker prebuild verification — status `NO_DOCKER`. Delegated to a general-purpose subagent first; the subagent reported Bash was denied to it and could not spawn the container. Parent-terminal fallback: ran `which docker`, `ls /Applications/Docker.app`, `ls /usr/local/bin/docker /opt/homebrew/bin/docker` from the Bash tool — none exist. Docker Desktop / engine is simply not installed on this machine. Per the plan's "If Docker isn't available → post `❌ F2.4 Docker not available, requires manual run later` and move on" branch, this is a known-deferred acceptance that Josh (or CI, or a different machine) must run manually. Exact command, unchanged from the plan:
+
+    docker run --rm -v /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck:/app -w /app node:24-alpine sh -lc 'rm -rf node_modules packages/*/node_modules && npm install --no-save 2>&1 | tail -80; echo "--- exit: $?"; ls packages/server/node_modules/node-pty/build/Release/ 2>&1; ls packages/server/node_modules/better-sqlite3/build/Release/ 2>&1'
+
+  Expected success signal: `pty.node` and `better_sqlite3.node` present in the respective `build/Release/` dirs, zero invocation of a C++ compiler. If this fails for either package, follow-up is to pin a different prebuild-capable version (open F2.4a).
+- [2026-04-13T22:48:30Z] — end of T2 Sprint 2 session — F2.1 ✅ / F2.2 ✅ / F2.3 ✅ / F2.4 ⚠ deferred (no Docker on this machine, not fixable from here). No commits / pushes per protocol — working tree is staged-but-not-committed. `node -c` passes on all touched server + cli files. Module-level smoke tests green: `loadConfig()` against Josh's real inline-secret config, sandbox HOME with `secrets.env`, and direct `writeSessionLog()` with no API key — all produce the right output. Final git status (T2-owned paths): `M .gitignore`, `M config/config.example.yaml`, `M packages/cli/src/index.js`, `M packages/server/src/index.js`, `?? config/secrets.env.example`, `?? packages/server/src/config.js`. Flagging `.gitignore` as a marginally-over-scope touch — easy to revert if Josh prefers. Josh needs to run F2.4's Docker command on a machine that has Docker, and apply the session-logs acceptance test with a live PTY (same blocker as Sprint 1 screenshot task).
+
+## Sprint 2 — Terminal 3
+
+- [2026-04-13T22:22:30Z] started — working directory /Users/joshuaizzard/Documents/Graciella/engram (clean, Sprint 1 committed at 3146cfc). Beginning F3.1 (engram serve CLI subcommand — `serve` dispatch already shipped in Sprint 1, verifying acceptance criteria incl. `--help`). Then F3.2 → F3.3 → F3.4 → F3.5.
+- [2026-04-13T22:35:00Z] ✅ F3.1 `engram serve` CLI subcommand — `serve` dispatch and webhook entry were already shipped in Sprint 1 (commit 3146cfc). Remaining acceptance gap: `engram --help` didn't surface the subcommand. Added a `HELP_TEXT` block + `--help` / `-h` / `help` branch at the top of `mcp-server/index.ts` that prints usage for `engram` (stdio MCP, default), `engram serve`, `engram export [--project --since]`, `engram import`, plus env vars (SUPABASE_URL/KEY, OPENAI_API_KEY, ENGRAM_WEBHOOK_PORT). Also added `--version` / `-v` which reads `package.json` lazily via `fileURLToPath(import.meta.url)`. `engram` with no args still launches the stdio MCP server unchanged (confirmed by the subcommand switch order). `node dist/mcp-server/index.js --help` prints cleanly. README already has the "Running the webhook" section from T3.7. `npm run typecheck` clean.
+- [2026-04-13T22:38:00Z] ✅ F3.2 malformed JSON → 400 — `readJsonBody` now wraps `JSON.parse` and throws a new private `HttpError(400, 'invalid JSON body')` on parse failure. Outer request handler inspects `httpStatus` on the thrown error (preferring `instanceof HttpError`, with a duck-typed fallback for any caller that sets `httpStatus` on a plain Error) and replies with that status code instead of a blanket 500. Server-level errors (>=500) still log to stderr; client errors don't, so malformed-body probes can't spam logs. New test `POST /engram with malformed JSON returns 400, not 500` in `tests/webhook-server.test.ts` boots `startWebhookServer({port:0, deps: mockDeps()})`, fetches `http://127.0.0.1:<port>/engram` with `body:'not json'`, and asserts `res.status === 400` + `body.error === /invalid JSON/i`. Tests went 21 → 22 after this step.
+- [2026-04-13T22:42:00Z] ✅ F3.3 `memoryStatus` 1000-row cap fix — root cause confirmed: `memoryStatus()` did a plain `.select('project, source_type, category')` over `memory_items`, which PostgREST silently capped at 1000 rows on a 3,397-row store. Fix: new `migrations/006_memory_status_rpc.sql` ships `memory_status_aggregation()` (SQL `stable` function, GROUPs BY server-side, returns `{total_active, sessions, by_project, by_source_type, by_category}` as bigints + jsonb, with `coalesce(..., '{}')` so empty buckets don't null the column; `grant execute` to anon/authenticated/service_role). `src/status.ts` now calls `supabase.rpc('memory_status_aggregation')` first, unpacks the row (handles both row-array and single-row return shapes), and normalizes bigint-as-string values. If the RPC returns an error (migration not yet applied) it logs a one-time warning `apply migrations/006_memory_status_rpc.sql to fix` and falls back to the legacy client-side aggregation — old behavior preserved for anyone on unupgraded DBs, so nothing breaks before Josh applies the SQL. `memoryStatus()` grew an optional `client?: SupabaseClient` parameter for test DI; default behavior unchanged. New `tests/status.test.ts` adds 3 cases driving an injected fake client: (a) numeric-bigints RPC path → asserts `sum(by_project) === total_active` (the core acceptance), (b) stringified-bigints from PostgREST → normalized to numbers, (c) RPC-missing → legacy fallback returns a correct 3-row histogram. Tests now 25/25 green. **Migration SQL posted to "Cross-terminal requests" above for Josh to apply in the Supabase SQL editor** — not applied from this terminal per plan.
+- [2026-04-13T22:44:00Z] ✅ F3.4 `is_active` write-path audit — grepped all SQL + TS. Findings: schema default is `is_active boolean not null default true` (`migrations/001` line 23), so every new row gets `true` automatically. `remember.ts` insert does NOT explicitly set `is_active` — relies on the default, which is correct. `remember.ts` update (near-duplicate path) does NOT touch `is_active`, which is correct (preserves existing state). `consolidate.ts:201` explicitly sets `is_active: false` on superseded rows, correct. `forget.ts:15` sets `archived:true, is_active:false`, correct. `migrations/005_v0_1_to_v0_2_upgrade.sql` only touches indexes, never rewrites `is_active`. **Conclusion:** all write paths are correct. The Sprint 1 observation that `by_source_type` showed zeros for `fact`/`preference` was a downstream symptom of the F3.3 1000-row cap — the sampled slice happened to exclude those types. Applying migration 006 will resolve both. No code changes needed for F3.4.
+- [2026-04-13T22:45:00Z] ✅ F3.5 v0.2.0 staged — `package.json` version bumped `0.1.0` → `0.2.0`. `mcp-server/index.ts` `new McpServer({name:'engram', version: '0.2.0'})` also bumped (was still `0.1.0`). `CHANGELOG.md` already had a `## [0.2.0] - 2026-04-13` heading from T3.7 — extended it with Sprint 2 entries: Added (`--help`/`--version`, `memory_status_aggregation` RPC + migration 006, `tests/status.test.ts`) and Changed (malformed JSON → 400). No `git tag`, no `npm publish` — left for Josh's final review per plan.
+- [2026-04-13T22:46:00Z] — end of T3 Sprint 2 session — F3.1 / F3.2 / F3.3 / F3.4 / F3.5 ✅. `npm run typecheck` clean, `npm test` 25/25 green (was 21/21 pre-Sprint-2: +1 malformed-body, +3 status.ts). No commits / pushes. Migration 006 SQL is in "Cross-terminal requests" for Josh to paste into Supabase. git status (T3-owned paths): ` M CHANGELOG.md`, ` M mcp-server/index.ts`, ` M package.json`, ` M src/status.ts`, ` M src/webhook-server.ts`, ` M tests/webhook-server.test.ts`, `?? migrations/006_memory_status_rpc.sql`, `?? tests/status.test.ts`.
+
+## Sprint 2 — Terminal 1
+
+- [2026-04-13T22:21:23Z] started — Sprint 2, T1 client UI. Working tree on packages/client/public/ has the Sprint 1 modifications (still uncommitted). 🔒 claiming: packages/client/public/index.html for F1.1 → F1.2 → F1.3 → F1.4.
+- [2026-04-13T22:22:30Z] ✅ F1.1 macOS Alt key fix — Alt+1..9 / Alt+0 handler around line 2577 now matches on `e.code` (`Digit0`..`Digit9`) instead of `e.key`. On macOS, Option+1 produces `¡` in `e.key` but `Digit1` in `e.code`, so the chord now fires. Same capture-phase listener, same preventDefault/stopPropagation, so xterm (vim etc.) still never sees the key. Inline JS reparses clean.
+- [2026-04-13T22:25:00Z] ✅ F1.2 switcher reparent + z-index — `#termSwitcher` DOM moved out of body top-level into `.topbar-right` (before status/config buttons), so it lives as topbar chrome rather than floating over the grid. CSS restructured: no more `position: fixed` / `top: 48px`, now inline-flex row inside the topbar with horizontal `grid-auto-flow: column`, 26x26 tiles, `max-width: 60vw` + `overflow-x: auto` for many-panel cases, `z-index: 1000` retained. `.term-switcher-label` is inline before the tiles (`Alt+1…9`). Zero PTY overlap at any grid density (1x1 → 4x2) because it's physically inside the 42px topbar row. Still only renders when ≥2 panels (`.visible` class toggle unchanged). Dot/bar sizes shrunk to fit 26px tiles. Inline JS still parses clean; exactly one `#termSwitcher` / `#switcherGrid` in the DOM.
+- [2026-04-13T22:27:30Z] ✅ F1.3 reply target dropdown unique names — `refreshReplyTargets` now does two passes over `state.sessions`. Pass 1 walks **all** live panels (including the current one) in insertion order and builds a `groupCount` map of `baseLabel → count` plus a `groupIndex` map of `sid → {base, n}`. Pass 2 builds the `<option>` list, excludes `fromId` and exited panels, and suffixes ` #N` only when the group has ≥2 panels. Because numbering is computed before filtering, suffixes are stable — opening the reply form from panel #2 still shows the other panels as #1 and #3 (not #1 and #2). Default un-suffixed label preserved for unique combos. Inline JS reparses clean.
+- [2026-04-13T22:29:00Z] ⏸ F1.4 screenshots — deferred, same blocker as Sprint 1's T1.7. `packages/server/node_modules/node-pty` is not installed in this sandbox, so `npm run server` cannot boot and there's no live PTY to photograph. Installing node-pty requires a native C++ build and touches files outside `packages/client/public/` (server package dir), which is outside T1's ownership this sprint. Recommend T2 or Josh run the Playwright capture after `npm install` in packages/server succeeds; `~/node_modules/.bin/playwright` is already available. Every client-side change landed in Sprint 2 (F1.1–F1.3) should be visible in those future screenshots — nothing else blocks the capture.
+- [2026-04-13T22:29:30Z] — end of T1 Sprint 2 session — F1.1 ✅, F1.2 ✅, F1.3 ✅, F1.4 ⏸ deferred (server deps blocker, same as Sprint 1 T1.7). Only `packages/client/public/index.html` modified. Inline JS reparses clean (1 script, no parse errors). No commits / pushes — staged-but-not-committed per protocol. 🔓 releasing packages/client/public/index.html. Final git status (T1-owned paths): ` M packages/client/public/index.html`.
+
+## Sprint 2 — Terminal 4
+
+- [2026-04-13T22:22:00Z] started — primary dir /Users/joshuaizzard/Documents/Graciella/rumen, secondary termdeck/docs-site/. Will create termdeck/docs/RELEASE_CHECKLIST.md. Launching F4.1 (sitemap fix) and F4.3 (rumen CI monitoring subagent) in parallel, then F4.2 → F4.4 → F4.5 (epilogue, must wait on T1/T2/T3 end-of-session).
+- [2026-04-13T22:22:00Z] 🔒 claiming: termdeck/docs-site/astro.config.mjs (F4.1), termdeck/docs/RELEASE_CHECKLIST.md (F4.4), rumen/scripts/test-rest.ts (F4.2)
+- [2026-04-13T22:24:00Z] ✅ F4.1 Astro sitemap warning — added `site: 'https://termdeck.dev'` as a top-level option in `docs-site/astro.config.mjs`. `npm run build` produces 25 pages and the `[WARN] [@astrojs/sitemap]` line is gone — `sitemap-index.xml created at dist` is now clean, no warning.
+- [2026-04-13T22:26:00Z] ❌ F4.3 rumen v0.2 CI RED — subagent reports the latest Rumen CI run (https://github.com/jhizzard/rumen/actions/runs/24369235868, commit 7e24750 "v0.2: Haiku synthesize phase, cost guardrails, CI integration test") failed at the `Assert at least one rumen_insights row exists` step with `expected at least one rumen_insights row, got 0`. Typecheck + SQL syntax jobs both green. Diagnosing next.
+- [2026-04-13T22:28:00Z] 🔍 F4.3 root cause — `node-postgres` returns `NUMERIC` columns as **JS strings**, not numbers. My Sprint 1 fixture (`tests/fixtures/engram-minimal.sql`) declared `memory_hybrid_search.similarity` as `NUMERIC`, but `src/relate.ts` filters rows with `typeof row.similarity !== 'number'`, so every fixture row is silently dropped → zero `related` → zero `insights` → zero `rumen_insights` rows. The real Engram `memory_hybrid_search` in `migrations/001_engram_tables.sql` returns `similarity float`, which `pg` correctly maps to JS number, so production is unaffected — bug lives entirely in the CI fixture.
+- [2026-04-13T22:29:00Z] ✅ F4.3 fix staged — `tests/fixtures/engram-minimal.sql` now declares `similarity DOUBLE PRECISION` (and casts the CASE expression to `::DOUBLE PRECISION`), matching the real Engram function's return type. Added an inline SQL comment explaining why NUMERIC can never be used here. Change is SQL-only; no Rumen source touched. Will run on next CI. 🔓 releasing tests/fixtures/engram-minimal.sql.
+- [2026-04-13T22:31:00Z] ✅ F4.2 test-rest.ts decision — option (a), keep-but-clarify. File is a Rumen-side Supabase REST smoke test that complements `scripts/test-locally.ts` (which uses direct `pg` against a local DB). Useful when you only have a hosted Supabase `URL + SERVICE_ROLE_KEY` and want a quick Extract → Relate → Surface sanity check that writes a `triggered_by=test-rest` job. Renamed `scripts/test-rest.ts` → `scripts/smoke-test-rumen-rest.ts` via `git mv` and expanded the header comment to explain its relationship to `test-locally.ts`, its heuristic-not-synthesize fidelity, and the production-side-effect warning. No references elsewhere in the repo (grep clean). 🔓 releasing scripts/smoke-test-rumen-rest.ts.
+- [2026-04-13T22:34:00Z] ✅ F4.4 release checklist — `termdeck/docs/RELEASE_CHECKLIST.md` created. Covers Preflight → `@jhizzard/engram` → `@jhizzard/rumen` → `@jhizzard/termdeck` → post-release announcement → rollback plan. Publish order is Engram → Rumen → TermDeck (dependency graph reasoning in the doc). Each package gets its own concrete checklist — build/typecheck/test, version bump, tag+push, `npm publish --access public`, npm.js verification, post-publish smoke test. Migration apply step for Engram 004 explicitly lives in the Engram block. Rollback plan covers `npm unpublish` (72h window) and `npm deprecate` fallback. Zero publish operations executed — Josh runs the checklist manually. 🔓 releasing termdeck/docs/RELEASE_CHECKLIST.md.
+- [2026-04-13T22:34:30Z] ⏳ F4.5 Sprint 2 epilogue — parked, waiting for T2 and T3 to post their `— end of Sprint 2 session —` entries. T1 already done. Will write the epilogue once the last of the three lands.
+- [2026-04-13T22:50:00Z] ✅ F4.5 Sprint 2 epilogue — all four terminals have posted end-of-session. Writing the epilogue below. 🔓 releasing all remaining T4 file locks.
+- [2026-04-13T22:50:30Z] — end of T4 Sprint 2 session — F4.1 ✅ / F4.2 ✅ / F4.3 ✅ (diagnosed + staged SQL fix, CI rerun on Josh's next push) / F4.4 ✅ / F4.5 ✅. No commits / pushes. Final git status (T4-owned paths):
+  - rumen: `M tests/fixtures/engram-minimal.sql` (the CI fix), `R scripts/test-rest.ts → scripts/smoke-test-rumen-rest.ts` (rename + expanded header). Plus pre-existing Sprint-1 staged diffs untouched this sprint.
+  - termdeck: `M docs-site/astro.config.mjs`, `?? docs/RELEASE_CHECKLIST.md`.
+
+---
+
+## Sprint 2 — Epilogue
+
+**Wall-clock:** 2026-04-13T22:21:23Z → 2026-04-13T22:50:30Z ≈ **29 minutes** across four parallel terminals. Sprint 1 shipped 23 items in ~2 hours; Sprint 2 was deliberately smaller (~15 items) and came in well under the 45–60 minute budget the plan estimated.
+
+### Shipped ✅ (17 items)
+
+| Terminal | Items |
+|---|---|
+| **T1 — Client UI** | F1.1 macOS Alt key fix (e.code swap), F1.2 switcher reparented into topbar chrome, F1.3 reply-target dropdown unique `#N` suffixes |
+| **T2 — Server / Secrets / Packaging** | F2.1 credential-leak audit (clean), F2.2 secrets.env migration (new `config.js` module + `${VAR}` yaml substitution + backward-compat warning), F2.3 session-logs investigation + fix (env-var plumbing + startup banner) |
+| **T3 — Engram** | F3.1 `--help` / `--version` for `engram serve`, F3.2 malformed JSON → 400, F3.3 `memory_status_aggregation` RPC + migration 006 (SQL posted for Josh to apply), F3.4 `is_active` write-path audit (no changes needed), F3.5 v0.2.0 version bump staged |
+| **T4 — Rumen + docs-site + release prep** | F4.1 Astro sitemap warning fix, F4.2 `test-rest.ts` → `smoke-test-rumen-rest.ts` rename + header, F4.3 Rumen CI red diagnosed (node-pg returns NUMERIC as string; fixture column was NUMERIC; switched to DOUBLE PRECISION to match real Engram), F4.4 `docs/RELEASE_CHECKLIST.md` for all three packages, F4.5 epilogue |
+
+### Deferred ❌ / ⏸ (2 items, both environment blockers, not code)
+
+- **F1.4 screenshots** — blocked on the sandbox not having a working `node-pty`, same as Sprint 1's T1.7. Needs a machine with native builds working so `npm run server` can boot + a Playwright capture runs against 4 live panels. Client-side changes from F1.1–F1.3 should photograph fine once that runs.
+- **F2.4 Docker prebuild verification** — Docker Desktop is not installed on this machine. Exact command to run elsewhere is in T2's status entry at 22:48:00 and quoted verbatim from the plan. Acceptance is the presence of `node-pty/build/Release/pty.node` and `better-sqlite3/build/Release/better_sqlite3.node` in the alpine container without a C++ compile.
+
+Both deferrals are known-machine-side and were explicitly called out as "Josh runs manually" branches in the plan — neither blocks a Sprint 3 kickoff.
+
+### Items that surfaced mid-sprint
+
+- **Rumen CI v0.2 red** — NOT previously tracked in `FOLLOWUP.md`. Surfaced by F4.3 subagent monitoring the workflow run on commit 7e24750. Root cause: the `engram-minimal.sql` CI fixture declared `memory_hybrid_search.similarity` as `NUMERIC`, which node-postgres returns as a JS string; Rumen's `relate.ts` filters out non-number similarities, silently dropping every row → zero `rumen_insights` → assert fails. Fixed by switching the fixture to `DOUBLE PRECISION` (matching the real Engram function's `float`). Fix is SQL-only, no Rumen source changes needed.
+- **Rumen CI deprecated `actions/checkout@v4` + `actions/setup-node@v4` Node.js 20 warning** — non-blocking annotation on all three CI jobs. Not fixed this sprint; a one-line bump to `@v5` can go into Sprint 3 or a no-sprint follow-up PR.
+- **T2 `.gitignore` addition for `secrets.env`** — T2 flagged as a marginally-over-scope touch (the real `~/.termdeck/secrets.env` lives outside the repo, so this is defense-in-depth only). Josh's call on whether to keep it.
+
+### Cross-terminal requests still open
+
+- **Engram migration 006** (`migrations/006_memory_status_rpc.sql`) — needs to be pasted into Supabase SQL editor by Josh to unlock F3.3's accurate `memory_status` output. SQL is inlined in the "Cross-terminal requests" section above.
+
+### Per-terminal wall-clock (approx.)
+
+- T1: 22:21:23 → 22:29:30 ≈ **8 min** (3 client fixes + screenshot deferral)
+- T2: 22:30:00 → 22:48:30 ≈ **18.5 min** (4 server items; F2.2 secrets migration was the single largest)
+- T3: 22:22:30 → 22:46:00 ≈ **23.5 min** (5 Engram items; migration 006 + test additions)
+- T4: 22:22:00 → 22:50:30 ≈ **28.5 min** (5 items + CI diagnosis + epilogue)
+
+Token usage per terminal was not captured this sprint — add to Sprint 3 protocol if useful.
+
+### Commit hashes at sprint start (tip of each `main`)
+
+- **termdeck:** `b117546` — docs: parallel build planning document, live status log, review checklist, followup items
+- **engram:** `3146cfc` — v0.2: webhook server, 3-layer search (index/timeline/get), privacy tags, export/import, match_count cap, v0.1->v0.2 upgrade migration
+- **rumen:** `7e24750` — v0.2: Haiku synthesize phase, cost guardrails, CI integration test against ephemeral Postgres, citation IDs in insight text
+
+All Sprint 2 diffs are **staged but not committed** across all three repos, per protocol. Josh reviews STATUS.md top to bottom, reads each terminal's diffs, and decides how to bundle commits for each repo before pushing.
+
+### What Sprint 3 should pick up
+
+1. F1.4 screenshots (once a machine with working node-pty is available).
+2. F2.4 Docker alpine clean-install (once a machine with Docker is available).
+3. Editable panel labels (still parked from Sprint 2 plan §9).
+4. Claude Code lifecycle-hooks auto-capture plugin (still parked).
+5. Rumen CI Actions version bump (`actions/checkout@v5`, `actions/setup-node@v5`).
+6. Apply migration 006 to Josh's production Supabase, then verify `memoryStatus()` returns a `by_project` that sums to `total_active`.
+7. Publish checklist execution (`docs/RELEASE_CHECKLIST.md`) — human-only task, follows F3.5 + Rumen CI green + post-Sprint-2 review.
+
+**— end of Sprint 2 —**

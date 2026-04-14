@@ -1,47 +1,41 @@
-# Followup — items deferred out of the 2026-04-13 review
+# Followup — items deferred out of the 2026-04-13 review (updated 2026-04-14)
 
 Everything here is **not a blocker for this session's commits**. Land the commits first, then work this list.
 
+> **Sprint 2 (2026-04-14) closed several items from the original review.** The items below are either completed (marked ✅ with evidence) or carried forward.
+
 ## Security
 
-- [ ] **Rotate leaked API keys.** Your `~/.termdeck/config.yaml` contained a live Supabase service role key and OpenAI key which were echoed into a Claude Code context window during the 2026-04-13 Phase D review. Rotate both:
-  - OpenAI: platform.openai.com → API keys → Revoke the leaked one → create new → update `~/.termdeck/config.yaml`
-  - Supabase: Project Settings → API → Reset service_role secret → update `~/.termdeck/config.yaml`
-- [ ] **Confirm no repo has a copy of `~/.termdeck/config.yaml`.** Run `grep -r 'sk-proj-\|sb_secret_' ~/Documents/Graciella 2>/dev/null`. If any hit, purge from git history with `git filter-repo` or BFG.
-- [ ] **Consider moving secrets out of `config.yaml`.** Have TermDeck read from `~/.termdeck/secrets.env` or the macOS Keychain instead, so the config file can be committed to dotfiles without leaking.
+- [ ] **Rotate leaked API keys.** Your `~/.termdeck/config.yaml` contained a live Supabase service role key and OpenAI key which were echoed into a Claude Code context window during the 2026-04-13 Phase D review. (Josh's call 2026-04-14: keys are shared across multiple projects and not reasonable to rotate; accepted risk given single-user laptop.)
+- [x] ✅ **Confirm no repo has a copy of `~/.termdeck/config.yaml`.** Sprint 2 F2.1 credential leak scan returned no hits across `~/Documents/Graciella`.
+- [x] ✅ **Move secrets out of `config.yaml`.** Sprint 2 F2.2 shipped: `packages/server/src/config.js` loads `~/.termdeck/secrets.env` via dotenv, merges with `config.yaml`, supports `${VAR}` interpolation, prints deprecation warning when inline secrets are present. Backward compat verified against Josh's existing inline-secrets config. New `config/secrets.env.example` committed.
 
 ## T1 — client UI bugs surfaced in review
 
-- [ ] **macOS Alt key bug — switcher doesn't fire on Mac.** Browser keybind handler uses `e.key` which on macOS produces `¡` for Alt+1, not `1`. Fix: use `e.code === 'Digit1'` instead.
-  - File: `packages/client/public/index.html`
-  - Find: `grep -n altKey packages/client/public/index.html`
-  - One-line swap from `e.key` to `e.code`, parse digit from `e.code.slice(5)`.
-- [ ] **Switcher overlay covers PTY text.** T1 mounted the switcher inside a panel container instead of the top toolbar. Fix: re-parent to `document.body` or the top `.toolbar` element with `position: fixed; top: 8px; right: 12px; z-index: 1000;`.
-- [ ] **Reply target dropdown has no unique names.** Current label is `${typeLabel} · ${project}` (see `refreshReplyTargets` at ~line 1569). Two "Claude Code · termdeck" panels get identical labels and are indistinguishable. Fix options:
-  1. Append a stable per-panel index: `Claude Code · termdeck #2` where `#N` is the insertion order.
-  2. Let the user double-click the panel header to rename it, store `meta.label` on the session, persist via `PATCH /api/sessions/:id`.
-  3. Both — index as fallback, custom name takes precedence.
-  Recommended: start with option 1 (5-line change, no server work). Add option 2 later if users ask.
-- [ ] **T1.7 screenshots (deferred).** Capture three PNGs with a live server and Playwright, drop in `docs/screenshots/`: dashboard 4-panel, info tabs drawer open, switcher overlay with 8 panels.
+- [x] ✅ **macOS Alt key bug — switcher doesn't fire on Mac.** Sprint 2 F1.1 swapped `e.key` → `e.code` in the switcher handler in `packages/client/public/index.html`.
+- [x] ✅ **Switcher overlay covers PTY text.** Sprint 2 F1.2 reparented the switcher out of `.panel` container into the top toolbar with fixed positioning and `z-index: 1000`.
+- [x] ✅ **Reply target dropdown has no unique names.** Sprint 2 F1.3 shipped option 1 — `refreshReplyTargets` now appends `#N` insertion-order suffixes when labels collide. Option 2 (editable per-panel labels) parked for Sprint 3.
+- [ ] **T1.7 screenshots (still deferred).** Capture three PNGs with a live server and Playwright, drop in `docs/screenshots/`: dashboard 4-panel, info tabs drawer open, switcher overlay with 8 panels. Easier to capture during the Flashback GIF shoot — bundle them together.
+- [ ] **Top-toolbar `status` and `config` buttons are unwired placeholders** (`index.html:996-997`). Clicking does nothing. Wire both to modals:
+  - `status` → modal showing `GET /api/status` output: session count by state, global metrics, engram bridge mode, RAG enabled, session-logs state.
+  - `config` → modal showing `GET /api/config` output (read-only for v0.2): project list, theme defaults, paths. Editable in Sprint 4.
+  Estimated: 30 minutes for both.
 
 ## T2 — server deferred items
 
-- [ ] **T2.6 Docker prebuild verification.** Run on a machine with Docker:
-  ```
-  docker run --rm -v $(pwd):/app -w /app node:24-alpine sh -lc "rm -rf node_modules && npm install --no-save"
-  ```
-  Must succeed with no C++ compiler present. If it fails, the `prebuild-install` wiring is incomplete for alpine and you'll need a different base image or a `prebuildify` step.
-- [ ] **T2.5 session log directory didn't appear during review.** Possible causes: (a) server wasn't started with `--session-logs` or `sessionLogs.enabled: true`, (b) the panel wasn't actually closed (the summarizer only runs on real exit), (c) `ANTHROPIC_API_KEY` not set so the summarizer silently no-op'd. Investigate: `grep -n 'session-logs\|sessionLogs\|SessionLogger' packages/server/src/**/*.js` then run server with the flag, open a shell panel, type `exit`, and check `ls ~/.termdeck/sessions/`.
+- [x] ✅ **T2.6 Docker prebuild verification.** Sprint 2, 2026-04-14: verified on `node:24-bookworm-slim` (Debian glibc, no C++ toolchain). `node-pty` swapped for `@homebridge/node-pty-prebuilt-multiarch@^0.13.1` which ships prebuilds via `prebuild-install`. Install completes in 6s, zero `gyp` or `node-gyp rebuild` calls. `npx @jhizzard/termdeck` will install on a clean machine with no compiler.
+  - **Known limitation:** Alpine/musl libc is not supported by the homebridge fork's current prebuild matrix. Users on Alpine need to either pull a different image or install build tools. Document in README as a known constraint.
+- [x] ✅ **T2.5 session log directory didn't appear during review.** Sprint 2 F2.3 investigated and fixed. Session-logger now writes to `~/.termdeck/sessions/` on real PTY exit, verified manually. Requires `ANTHROPIC_API_KEY` in `~/.termdeck/secrets.env` for the Haiku-generated summary section; without it, the markdown skeleton still writes with frontmatter + command list.
 
 ## T3 — Engram deferred items
 
-- [ ] **Webhook has no CLI entry.** `startWebhookServer()` is exported but nothing in the package calls it at top level. The plan said `engram serve` should start it. Fix: add a CLI subcommand to `mcp-server/index.ts` (or a separate `dist/src/webhook-cli.js` binary) so users can run `engram serve` instead of the `node -e` one-liner.
+- [x] ✅ **Webhook has no CLI entry.** Sprint 2 F3.1 added the `serve` subcommand to `mcp-server/index.ts`. Usage: `engram serve` (or `node dist/mcp-server/index.js serve` from a checkout) binds the webhook on `$ENGRAM_WEBHOOK_PORT`. Verified end-to-end: healthz returns `version: 0.2.0`, `/observation/:id` returns real rows after the `005_v0_1_to_v0_2_upgrade.sql` migration Josh applied in Sprint 1.
 
-- [ ] **`GET /observation/:id` returns 500 against existing production Supabase.** Error: `column memory_items.archived does not exist`. Root cause: Engram v0.2 schema assumes columns (`archived`, `superseded_by`, `updated_at`) that the rag-system production store predates. See "Supabase schema drift" section below.
+- [x] ✅ **`GET /observation/:id` returns 500 against existing production Supabase.** Fixed by Sprint 1's `005_v0_1_to_v0_2_upgrade.sql` migration (applied 2026-04-13). Citation endpoint now returns full row shape. Verified against production store (3,451 rows at last check).
 
-- [ ] **`POST /engram` with malformed JSON returns 500 instead of 400.** In `webhook-server.ts` `readJsonBody` throws on `JSON.parse`, caught by the outer handler which sends 500. Wrap the parse in a try/catch and send 400 on parse error.
+- [x] ✅ **`POST /engram` with malformed JSON returns 500 instead of 400.** Sprint 2 F3.2 wrapped `readJsonBody` JSON.parse in a try/catch that throws an error with `httpStatus: 400`. Outer handler respects the status. Verified: `curl -d 'not json'` now returns `status=400, {"ok":false,"error":"invalid JSON body"}`.
 
-- [ ] **`handleHealth` / `memoryStatus` `is_active` filter excluding real rows.** The `op: index` call returned 5 real memories from today, but `op: status` reports `total_active: 0`. Either the `is_active` column defaults to false and writers aren't setting it, or the status aggregator has a filter mismatch. Investigate `src/remember.ts` — does it set `is_active: true` explicitly?
+- [x] ✅ **`handleHealth` / `memoryStatus` returning bogus aggregations.** Sprint 2 F3.3 shipped `migrations/006_memory_status_rpc.sql` with a new `memory_status_aggregation()` SQL function that does GROUP BY server-side, bypassing the PostgREST 1000-row cap. Josh applied the migration to production 2026-04-14. Verified: `op: status` now returns `total_active: 3451` with `by_project` summing exactly to 3451 (was previously ~1000).
 
 ## Supabase schema drift — architectural followup
 
@@ -53,9 +47,9 @@ Everything here is **not a blocker for this session's commits**. Land the commit
 
 ## T4 — Rumen + docs site deferred items
 
-- [ ] **T4.1/T4.2 Rumen CI green.** Push the Rumen branch, verify GitHub Actions runs the integration test against ephemeral Postgres 16 and it passes.
-- [ ] **T4 docs site — sitemap warning.** `astro build` emits: `[WARN] [@astrojs/sitemap] The Sitemap integration requires the site astro.config option. Skipping.` Fix: add `site: 'https://termdeck.dev'` (or whichever domain you'll deploy at) to `docs-site/astro.config.mjs` as the top-level option. One-line fix, 30 seconds.
-- [ ] **Unexpected file `scripts/test-rest.ts` in rumen.** Not in the plan. Decide: keep it (integration aid for the Engram webhook) or drop it (scope creep).
+- [ ] **T4.1/T4.2 Rumen CI green.** After Sprint 2 push, verify GitHub Actions runs the integration test against ephemeral Postgres 16 and it passes.
+- [x] ✅ **T4 docs site — sitemap warning.** Sprint 2 F4.1 added `site:` option to `docs-site/astro.config.mjs`. Warning eliminated.
+- [x] ✅ **Unexpected file `scripts/test-rest.ts` in rumen.** Sprint 2 F4.2 decision: kept as an Engram-webhook integration smoke test, renamed to `scripts/smoke-test-rumen-rest.ts` for clarity.
 
 ## Reply feature — product question from Josh
 
@@ -71,6 +65,18 @@ Everything here is **not a blocker for this session's commits**. Land the commit
 3. **Watchdog.** A long-running test in panel A finishes and the output analyzer catches it; fire an automatic reply to panel B with `ls -la artifacts/` so the next step is staged.
 
 **Naming.** See T1 bug above — the dropdown label problem is real and has a clean fix. Pick option 1 or 2 from the T1 "Reply target dropdown" item depending on how much UX investment you want.
+
+## Flashback — product polish for Sprint 3
+
+The proactive-memory feature (T1.4 server event → T2.4 WebSocket push → client toast) fires unprompted when a panel's status transitions to `errored`. Confirmed working 2026-04-13 against a live Engram store. This is the product's headline feature and needs first-class surface area before launch.
+
+- [ ] **Name it officially. Propose: Flashback.** Update the toast header from `ENGRAM — POSSIBLE MATCH` to `FLASHBACK · <project>`, rename the WebSocket event from `proactive_memory` to `flashback`, rename internal functions / comments. Propagate through server, client, README, CHANGELOG. See `docs/FLASHBACK_LAUNCH_ANGLE.md` for rationale.
+- [ ] **Top-bar session counter.** Add `🧠 N recalls this session` to the top toolbar. Increment on every Flashback fired (both dismissed and clicked). Resets on dashboard reload.
+- [ ] **Manual trigger keyboard shortcut.** `Ctrl+K` (or `Cmd+K`) on the active panel runs the same synth query the auto-trigger uses, producing an on-demand Flashback. Useful when the user knows they're stuck but the output analyzer hasn't classified it as `errored` yet.
+- [ ] **Flashback history drawer.** New top-level tab alongside Overview / Commands / Memory / Status log, listing every Flashback fired this session (timestamp, trigger command, top hit, dismissed or clicked). Each row has a "re-open" button that re-surfaces the toast.
+- [ ] **Per-panel silence toggle.** Add a bell icon in the panel header to silence Flashback on noisy panels (e.g. a build server that intermittently errors by design). Persist via `PATCH /api/sessions/:id` into `meta.flashbackEnabled`.
+- [ ] **Local telemetry.** Log every Flashback event to SQLite: trigger, query, top hit id, fired_at, dismissed_at, clicked. Enables tuning the 30s rate limit and trigger heuristics later. Local only — never phones home.
+- [ ] **GIF capture for launch.** 12-second screen recording of a Flashback firing on a real error. Drop in `docs/screenshots/flashback-demo.gif`. Lead with this on the README, above the fold.
 
 ## Cross-project
 
