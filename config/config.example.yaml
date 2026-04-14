@@ -23,12 +23,15 @@ projects:
 # RAG Integration (Supabase)
 # Multi-layer memory: session -> project -> developer
 # Events are always recorded to local SQLite.
-# Set supabaseUrl + supabaseKey to enable cloud sync.
+#
+# Secrets live in ~/.termdeck/secrets.env (see config/secrets.env.example).
+# Values below use ${VAR} substitution so this file stays free of secrets.
 rag:
   enabled: false
-  # supabaseUrl: https://your-project.supabase.co
-  # supabaseKey: your-anon-key
-  # openaiApiKey: sk-...   # or set OPENAI_API_KEY env var (direct mode only)
+  supabaseUrl: ${SUPABASE_URL}
+  supabaseKey: ${SUPABASE_SERVICE_ROLE_KEY}
+  openaiApiKey: ${OPENAI_API_KEY}
+  anthropicApiKey: ${ANTHROPIC_API_KEY}
   # developerId: your-username (defaults to OS username)
   syncIntervalMs: 10000
 

@@ -10,7 +10,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "ws": "^8.16.0",
-    "node-pty": "^1.1.0",
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",
     "better-sqlite3": "^12.9.0",
     "uuid": "^9.0.0",
     "yaml": "^2.3.4",

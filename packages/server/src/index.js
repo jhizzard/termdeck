@@ -11,7 +11,7 @@ const { v4: uuidv4 } = require('uuid');
 
 // Conditional imports (graceful fallback if not installed yet)
 let pty, Database;
-try { pty = require('node-pty'); } catch { pty = null; }
+try { pty = require('@homebridge/node-pty-prebuilt-multiarch'); } catch { pty = null; }
 try { Database = require('better-sqlite3'); } catch { Database = null; }
 
 const { SessionManager } = require('./session');
@@ -20,100 +20,7 @@ const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./engram-bridge');
 const { writeSessionLog } = require('./session-logger');
 const { themes, statusColors } = require('./themes');
-
-// Load config
-function loadConfig() {
-  const configDir = path.join(os.homedir(), '.termdeck');
-  const configPath = path.join(configDir, 'config.yaml');
-  const defaults = {
-    port: 3000,
-    host: '127.0.0.1',
-    shell: process.env.SHELL || '/bin/bash',
-    defaultTheme: 'tokyo-night',
-    projects: {},
-    rag: {
-      enabled: false,
-      supabaseUrl: null,
-      supabaseKey: null,
-      developerId: os.userInfo().username,
-      syncIntervalMs: 10000,
-      engramMode: 'direct',
-      engramWebhookUrl: 'http://localhost:37778/engram',
-      tables: {
-        session: 'engram_session_memory',
-        project: 'engram_project_memory',
-        developer: 'engram_developer_memory',
-        commands: 'engram_commands'
-      }
-    },
-    sessionLogs: {
-      enabled: false,
-      summaryModel: 'claude-haiku-4-5'
-    }
-  };
-
-  // Ensure ~/.termdeck/ directory exists
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-  }
-
-  // Auto-create default config if it doesn't exist
-  if (!fs.existsSync(configPath)) {
-    const defaultConfigYaml = `# TermDeck Configuration
-# Documentation: https://github.com/your-org/termdeck
-
-# Server settings
-port: 3000
-host: 127.0.0.1
-
-# Default shell (auto-detected from $SHELL)
-shell: ${process.env.SHELL || '/bin/bash'}
-
-# Default terminal theme
-# Options: tokyo-night, rose-pine-dawn, catppuccin-mocha, github-light,
-#          dracula, solarized-dark, nord, gruvbox-dark
-defaultTheme: tokyo-night
-
-# Project definitions
-# Each project gets a quick-launch entry in the prompt bar dropdown.
-# projects:
-#   my-project:
-#     path: ~/code/my-project
-#     defaultTheme: catppuccin-mocha
-#     defaultCommand: claude
-
-# RAG (Retrieval-Augmented Generation) memory sync
-# Syncs terminal session data to Supabase for cross-session memory.
-rag:
-  enabled: false
-  # supabaseUrl: https://your-project.supabase.co
-  # supabaseKey: your-anon-key
-  # openaiApiKey: sk-... (or set OPENAI_API_KEY env var)
-  syncIntervalMs: 10000
-`;
-    fs.writeFileSync(configPath, defaultConfigYaml, 'utf-8');
-    console.log('[config] Created default config at ~/.termdeck/config.yaml');
-  }
-
-  try {
-    const yaml = require('yaml');
-    if (fs.existsSync(configPath)) {
-      const raw = fs.readFileSync(configPath, 'utf-8');
-      const parsed = yaml.parse(raw);
-      console.log('[config] Loaded from', configPath);
-      return {
-        ...defaults,
-        ...parsed,
-        rag: { ...defaults.rag, ...parsed?.rag },
-        sessionLogs: { ...defaults.sessionLogs, ...parsed?.sessionLogs }
-      };
-    }
-  } catch (err) {
-    console.warn('[config] Could not load config.yaml, using defaults:', err.message);
-  }
-
-  return defaults;
-}
+const { loadConfig } = require('./config');
 
 function createServer(config) {
   const app = express();
@@ -197,7 +104,12 @@ function createServer(config) {
             TERMDECK_SESSION: session.id,
             TERMDECK_PROJECT: project || '',
             TERM: 'xterm-256color',
-            COLORTERM: 'truecolor'
+            COLORTERM: 'truecolor',
+            // Disable macOS Terminal.app's zsh session save/restore. Without
+            // this, new PTYs source ~/.zsh_sessions/<TERM_SESSION_ID>.session
+            // which can contain stale or malformed lines from Terminal.app's
+            // bookkeeping and fail with "command not found: Saving".
+            SHELL_SESSION_HISTORY: '0'
           }
         });
 
@@ -610,7 +522,17 @@ function createServer(config) {
 
 // Start server
 if (require.main === module) {
+  // Minimal flag parsing for direct-invocation users (the CLI wrapper has its own).
+  const argv = process.argv.slice(2);
+  if (argv.includes('--session-logs')) {
+    process.env.TERMDECK_SESSION_LOGS = '1';
+  }
+
   const config = loadConfig();
+  if (process.env.TERMDECK_SESSION_LOGS === '1') {
+    config.sessionLogs = { ...(config.sessionLogs || {}), enabled: true };
+  }
+
   const { server } = createServer(config);
   const port = config.port || 3000;
   const host = config.host || '127.0.0.1';
@@ -621,6 +543,7 @@ if (require.main === module) {
     console.log(`  Database:   ${Database ? 'SQLite OK' : 'unavailable'}`);
     console.log(`  PTY:        ${pty ? 'node-pty OK' : 'unavailable (install node-pty)'}`);
     console.log(`  RAG:        ${config.rag?.supabaseUrl ? 'configured' : 'not configured'}`);
+    console.log(`  Session logs: ${config.sessionLogs?.enabled ? '~/.termdeck/sessions/ (on exit)' : 'off'}`);
     console.log(`\n  WARNING: TermDeck binds to ${host} only.`);
     console.log(`  Do NOT expose this to the network without authentication.`);
     console.log(`  Terminal sessions have full shell access.\n`);

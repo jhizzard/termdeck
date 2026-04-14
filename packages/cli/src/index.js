@@ -44,10 +44,17 @@ for (let i = 0; i < args.length; i++) {
 // Load and start server
 const { createServer, loadConfig } = require(path.join(__dirname, '..', '..', 'server', 'src', 'index.js'));
 
+// Flag-driven env vars must be set BEFORE loadConfig() so any module that
+// reads process.env at require-time sees them.
+if (flags.sessionLogs) {
+  process.env.TERMDECK_SESSION_LOGS = '1';
+}
+
 const config = loadConfig();
 if (flags.port) config.port = flags.port;
 if (flags.sessionLogs) {
   config.sessionLogs = { ...(config.sessionLogs || {}), enabled: true };
+  console.log('[cli] session logs enabled — writing to ~/.termdeck/sessions/ on panel exit');
 }
 
 const { server } = createServer(config);
@@ -60,7 +67,7 @@ server.listen(port, host, async () => {
   ╔══════════════════════════════════════╗
   ║            TermDeck v0.1.0           ║
   ╠══════════════════════════════════════╣
-  ║  ${url.padEnd(36)} ║
+  ║  ${url.padEnd(34)}  ║
   ║                                      ║
   ║  Ctrl+C to stop                      ║
   ╚══════════════════════════════════════╝
