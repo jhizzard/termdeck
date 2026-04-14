@@ -147,6 +147,132 @@
       color: var(--tg-bg) !important;
     }
 
+    #btn-how {
+      border-color: var(--tg-accent-dim) !important;
+      color: var(--tg-accent) !important;
+    }
+    #btn-how:hover {
+      background: var(--tg-accent-dim);
+      color: var(--tg-bg) !important;
+      border-color: var(--tg-accent) !important;
+    }
+
+    /* ===== ONBOARDING TOUR (how this works) ===== */
+    .tour-backdrop {
+      position: fixed;
+      inset: 0;
+      background: transparent;
+      z-index: 2000;
+      pointer-events: auto;
+      display: none;
+    }
+    .tour-backdrop.active { display: block; }
+
+    .tour-spotlight {
+      position: fixed;
+      border-radius: 6px;
+      box-shadow:
+        0 0 0 4px var(--tg-accent),
+        0 0 0 9999px rgba(0, 0, 0, 0.78);
+      transition: top 0.3s ease, left 0.3s ease, width 0.3s ease, height 0.3s ease;
+      pointer-events: none;
+      z-index: 2001;
+    }
+    .tour-spotlight.centered {
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.85);
+      top: 50%;
+      left: 50%;
+      width: 0;
+      height: 0;
+      transform: translate(-50%, -50%);
+    }
+
+    .tour-tooltip {
+      position: fixed;
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-accent-dim);
+      border-radius: 10px;
+      padding: 18px 20px 16px;
+      max-width: 360px;
+      min-width: 280px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+      z-index: 2003;
+      font-family: var(--tg-sans);
+      color: var(--tg-text);
+      transition: top 0.3s ease, left 0.3s ease;
+    }
+    .tour-tooltip.centered {
+      top: 50% !important;
+      left: 50% !important;
+      transform: translate(-50%, -50%);
+      max-width: 440px;
+    }
+    .tour-tooltip h3 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--tg-accent);
+      letter-spacing: 0.2px;
+    }
+    .tour-tooltip p {
+      margin: 0 0 14px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--tg-text-dim);
+    }
+    .tour-tooltip p strong { color: var(--tg-text); font-weight: 600; }
+    .tour-tooltip kbd {
+      display: inline-block;
+      padding: 1px 6px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: 3px;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-accent);
+    }
+    .tour-tooltip .tour-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .tour-tooltip .tour-counter {
+      font-size: 11px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+    }
+    .tour-tooltip .tour-btns { display: flex; gap: 6px; }
+    .tour-tooltip button {
+      background: var(--tg-accent);
+      color: var(--tg-bg);
+      border: none;
+      padding: 6px 14px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--tg-sans);
+      transition: filter 0.15s;
+    }
+    .tour-tooltip button:hover { filter: brightness(1.1); }
+    .tour-tooltip button.tour-skip,
+    .tour-tooltip button.tour-prev {
+      background: transparent;
+      color: var(--tg-text-dim);
+      border: 1px solid var(--tg-border);
+    }
+    .tour-tooltip button.tour-skip:hover,
+    .tour-tooltip button.tour-prev:hover {
+      color: var(--tg-text);
+      border-color: var(--tg-border-active);
+      filter: none;
+    }
+    .tour-tooltip button[disabled] {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
     /* ===== MAIN GRID ===== */
     .grid-container {
       flex: 1;
@@ -1025,6 +1151,8 @@
       </div>
       <button id="btn-status">status</button>
       <button id="btn-config">config</button>
+      <button id="btn-how" title="Walkthrough of every TermDeck feature">how this works</button>
+      <button id="btn-help" title="Open the TermDeck documentation" onclick="window.open('https://github.com/jhizzard/termdeck#readme','_blank','noopener')">help</button>
     </div>
   </div>
 
@@ -1062,6 +1190,22 @@
       </div>
       <div class="notes">
         <span>Press <kbd>/</kbd> to focus the prompt bar, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> to open a shell.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ONBOARDING TOUR elements (hidden by default, shown by startTour()) -->
+  <div class="tour-backdrop" id="tourBackdrop"></div>
+  <div class="tour-spotlight" id="tourSpotlight"></div>
+  <div class="tour-tooltip" id="tourTooltip" style="display:none">
+    <h3 id="tourTitle"></h3>
+    <p id="tourBody"></p>
+    <div class="tour-controls">
+      <span class="tour-counter" id="tourCounter"></span>
+      <div class="tour-btns">
+        <button class="tour-skip" id="tourSkipBtn">skip</button>
+        <button class="tour-prev" id="tourPrevBtn">back</button>
+        <button class="tour-next" id="tourNextBtn">next</button>
       </div>
     </div>
   </div>
@@ -1149,6 +1293,14 @@
       }
 
       updateEmptyState();
+
+      // First-run onboarding tour. Fires on the first visit only; never again
+      // unless the user explicitly clicks "how this works" in the top toolbar.
+      try {
+        if (!localStorage.getItem('termdeck:tour:seen')) {
+          setTimeout(() => { if (!tourState.active) startTour(); }, 1200);
+        }
+      } catch {}
     }
 
     // ===== Create Terminal Panel =====
@@ -2567,6 +2719,172 @@
       }
     }
 
+    // ===== ONBOARDING TOUR =====
+    // Spotlight + tooltip walkthrough of every TermDeck surface. Runs once on
+    // first visit (localStorage gate) and replays on demand via the "how this
+    // works" button. Zero dependencies — vanilla DOM, same philosophy as the
+    // rest of this client.
+    const TOUR_STEPS = [
+      {
+        target: null,
+        title: 'Welcome to TermDeck',
+        body: `TermDeck is a browser-based terminal multiplexer with a persistent memory layer. It lets you run many real terminals side by side, each with rich metadata and automatic recall of similar past errors. This walkthrough takes about 90 seconds and covers every button on the screen. Press <kbd>Esc</kbd> any time to exit.`,
+      },
+      {
+        target: '#topbarQuickLaunch',
+        title: 'Quick launch',
+        body: `These three buttons instantly spawn a new terminal. <strong>shell</strong> opens zsh, <strong>claude</strong> opens Claude Code, <strong>python</strong> starts a Python HTTP server on port 8080. One click — no typing required.`,
+      },
+      {
+        target: '.topbar-center',
+        title: 'Layout modes',
+        body: `Seven preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd> plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Ctrl+Shift+1</kbd> through <kbd>Ctrl+Shift+6</kbd> do the same.`,
+      },
+      {
+        target: '#termSwitcher',
+        title: 'Terminal switcher',
+        body: `When you have 2+ terminals open, this overlay shows numbered tiles. Click a tile to focus that panel, or press <kbd>Alt+1</kbd> through <kbd>Alt+9</kbd>. Color-coded by project, status-dot updates live.`,
+      },
+      {
+        target: '#btn-status',
+        title: 'Status and config',
+        body: `<strong>status</strong> opens a global-metrics modal (session counts by state, RAG mode, memory bridge). <strong>config</strong> shows your loaded project list and theme defaults. Both are in the polish queue for Sprint 3 — buttons are visible but unwired right now.`,
+      },
+      {
+        target: '#btn-how',
+        title: 'Replay this walkthrough',
+        body: `Click <strong>how this works</strong> any time to replay this tour. <strong>help</strong> opens the full TermDeck documentation on GitHub in a new tab.`,
+      },
+      {
+        target: '.panel-header',
+        title: 'Panel header',
+        body: `Every terminal has a header showing a <strong>status dot</strong> (active · thinking · idle · errored · exited), the detected <strong>type</strong> (shell · Claude Code · Python server · etc.), a colored <strong>project tag</strong>, and a <strong>#N index</strong> when multiple panels share the same (type, project). The right side has focus, half-screen, and close buttons.`,
+        fallback: '#topbarQuickLaunch',
+      },
+      {
+        target: '.panel-drawer',
+        title: 'Info tabs',
+        body: `Below every terminal is a drawer with four tabs. <strong>Overview</strong> — live metadata + "Ask about this terminal" input + reply button. <strong>Commands</strong> — scrollable command history (click to copy). <strong>Memory</strong> — every Flashback hit this panel has collected. <strong>Status log</strong> — chronological status transitions with detail chips.`,
+        fallback: '.topbar-center',
+      },
+      {
+        target: '.reply-toggle',
+        title: 'Reply — send text to another panel',
+        body: `Click <strong>reply ▸</strong> on any panel to route text to another open terminal. Pick the target from the dropdown (labels use <kbd>#N</kbd> suffixes to disambiguate same-project duplicates), type your message, hit send. Useful for handing off work to a Claude Code panel, broadcasting a command, or piping errors into a debug agent.`,
+        fallback: '.topbar-center',
+      },
+      {
+        target: '.ctrl-input',
+        title: 'Ask about this terminal',
+        body: `Type a question here and TermDeck queries your <strong>Engram memory store</strong> for relevant context — scoped to the current panel's project. Prefix with <kbd>all:</kbd> to search every project. Results render inline in the terminal with similarity scores.`,
+        fallback: '.topbar-center',
+      },
+      {
+        target: null,
+        title: 'Flashback — proactive recall',
+        body: `When a panel errors out, TermDeck <strong>automatically</strong> queries Engram for similar past errors and surfaces the top match as a toast. You don't have to ask. Rate-limited to one per 30 seconds per panel. Click the toast to open the Memory tab with the full hit expanded.`,
+      },
+      {
+        target: '.prompt-bar',
+        title: 'Prompt bar',
+        body: `Type any command here to launch it as a new terminal — <kbd>claude code ~/myproject</kbd>, <kbd>python3 manage.py runserver</kbd>, <kbd>npm run dev</kbd>. Pick a project from the dropdown to auto-cd into its path and apply its default theme. <kbd>Ctrl+Shift+N</kbd> focuses this bar from anywhere.`,
+      },
+      {
+        target: null,
+        title: 'You are ready.',
+        body: `That's every major surface. Click <strong>how this works</strong> in the top toolbar to replay this walkthrough. <strong>help</strong> opens the full docs. Questions, bugs, feedback: <a href="https://github.com/jhizzard/termdeck/issues" target="_blank" style="color:var(--tg-accent)">github.com/jhizzard/termdeck/issues</a>. Now launch something.`,
+      },
+    ];
+
+    const tourState = { active: false, idx: 0 };
+
+    function tourGetTarget(step) {
+      if (!step.target) return null;
+      let el = document.querySelector(step.target);
+      if (!el && step.fallback) el = document.querySelector(step.fallback);
+      return el;
+    }
+
+    function positionTourElements(step) {
+      const backdrop = document.getElementById('tourBackdrop');
+      const spotlight = document.getElementById('tourSpotlight');
+      const tooltip = document.getElementById('tourTooltip');
+      backdrop.classList.add('active');
+      tooltip.style.display = 'block';
+
+      const target = tourGetTarget(step);
+      if (!target) {
+        // Centered step — no spotlight target
+        spotlight.classList.add('centered');
+        tooltip.classList.add('centered');
+        tooltip.style.top = '';
+        tooltip.style.left = '';
+        return;
+      }
+      spotlight.classList.remove('centered');
+      tooltip.classList.remove('centered');
+
+      // Scroll target into view if off-screen
+      const rect = target.getBoundingClientRect();
+      const padding = 8;
+      spotlight.style.top = `${rect.top - padding}px`;
+      spotlight.style.left = `${rect.left - padding}px`;
+      spotlight.style.width = `${rect.width + padding * 2}px`;
+      spotlight.style.height = `${rect.height + padding * 2}px`;
+
+      // Place tooltip below the target by default; flip to above if it would
+      // overflow the viewport. Clamp horizontally to avoid right-edge clipping.
+      const tooltipRect = tooltip.getBoundingClientRect();
+      let top = rect.bottom + 16;
+      let left = Math.max(12, rect.left);
+      if (top + tooltipRect.height > window.innerHeight - 12) {
+        top = Math.max(12, rect.top - tooltipRect.height - 16);
+      }
+      if (left + tooltipRect.width > window.innerWidth - 12) {
+        left = window.innerWidth - tooltipRect.width - 12;
+      }
+      tooltip.style.top = `${top}px`;
+      tooltip.style.left = `${left}px`;
+    }
+
+    function renderTourStep() {
+      const step = TOUR_STEPS[tourState.idx];
+      if (!step) { endTour(); return; }
+      document.getElementById('tourTitle').innerHTML = step.title;
+      document.getElementById('tourBody').innerHTML = step.body;
+      document.getElementById('tourCounter').textContent =
+        `Step ${tourState.idx + 1} of ${TOUR_STEPS.length}`;
+      document.getElementById('tourPrevBtn').disabled = tourState.idx === 0;
+      document.getElementById('tourNextBtn').textContent =
+        tourState.idx === TOUR_STEPS.length - 1 ? 'done' : 'next';
+      positionTourElements(step);
+    }
+
+    function startTour() {
+      tourState.active = true;
+      tourState.idx = 0;
+      renderTourStep();
+    }
+
+    function nextTourStep() {
+      if (tourState.idx >= TOUR_STEPS.length - 1) { endTour(); return; }
+      tourState.idx += 1;
+      renderTourStep();
+    }
+
+    function prevTourStep() {
+      if (tourState.idx <= 0) return;
+      tourState.idx -= 1;
+      renderTourStep();
+    }
+
+    function endTour() {
+      tourState.active = false;
+      document.getElementById('tourBackdrop').classList.remove('active');
+      document.getElementById('tourTooltip').style.display = 'none';
+      try { localStorage.setItem('termdeck:tour:seen', '1'); } catch {}
+    }
+
     // ===== Event Listeners =====
     document.querySelectorAll('.layout-btn').forEach(btn => {
       btn.addEventListener('click', () => setLayout(btn.dataset.layout));
@@ -2577,13 +2895,34 @@
       if (e.key === 'Enter') launchTerminal();
     });
 
+    // Onboarding tour wiring
+    document.getElementById('btn-how').addEventListener('click', startTour);
+    document.getElementById('tourNextBtn').addEventListener('click', nextTourStep);
+    document.getElementById('tourPrevBtn').addEventListener('click', prevTourStep);
+    document.getElementById('tourSkipBtn').addEventListener('click', endTour);
+    // Clicking the backdrop (but not the spotlight/tooltip) also skips
+    document.getElementById('tourBackdrop').addEventListener('click', (e) => {
+      if (e.target.id === 'tourBackdrop') endTour();
+    });
+
     // Resize handler
     window.addEventListener('resize', () => {
       requestAnimationFrame(() => fitAll());
     });
 
+    // Re-render the tour on viewport changes so the spotlight tracks resizes
+    window.addEventListener('resize', () => {
+      if (tourState.active) renderTourStep();
+    });
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
+      // Tour has priority: Esc exits, ArrowRight/Enter advances, ArrowLeft back
+      if (tourState.active) {
+        if (e.key === 'Escape') { e.preventDefault(); endTour(); return; }
+        if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); nextTourStep(); return; }
+        if (e.key === 'ArrowLeft') { e.preventDefault(); prevTourStep(); return; }
+      }
       // Ctrl+Shift+N → new terminal
       if (e.ctrlKey && e.shiftKey && e.key === 'N') {
         e.preventDefault();
