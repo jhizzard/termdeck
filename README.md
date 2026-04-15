@@ -26,7 +26,7 @@ Enabling Flashback takes **one additional 15-minute setup step** — see Tier 2 
 
 ## How Flashback works
 
-When a panel's status transitions to `errored`, the server's output analyzer fires an event. The engram bridge takes the session context (type, project, last command, error tail) and queries your Engram memory store for the top similar match. If it finds one above the relevance threshold, the result is pushed to the panel's WebSocket as a `proactive_memory` message. The client renders it as a toast anchored to the panel, showing the match's project tag, source type, similarity score, and content snippet. You click the toast to expand into the Memory tab of that panel's drawer.
+When a panel's status transitions to `errored`, the server's output analyzer fires an event. The mnestra bridge takes the session context (type, project, last command, error tail) and queries your Mnestra memory store for the top similar match. If it finds one above the relevance threshold, the result is pushed to the panel's WebSocket as a `proactive_memory` message. The client renders it as a toast anchored to the panel, showing the match's project tag, source type, similarity score, and content snippet. You click the toast to expand into the Memory tab of that panel's drawer.
 
 Rate-limited to once per 30 seconds per panel. Needs RAG enabled and credentials configured (Tier 2+). Fires on **any** terminal panel — shell, Claude Code, Python server, anything.
 
@@ -39,8 +39,8 @@ TermDeck is one piece of a three-tier memory stack. Each tier adds capability; e
 | Tier | Install time | What you get |
 |---|---|---|
 | **1 — TermDeck alone** | 90 seconds | Full multiplexer, metadata, layouts, themes, tour, session history, command logging. Flashback silent. |
-| **2 — + Engram memory store** | ~15 minutes | Flashback actively fires. Cross-session recall. "Ask about this terminal" queries real memories. Optional Engram-as-MCP for Claude Code / Cursor / Windsurf. |
-| **3 — + Rumen async learning** | ~30 minutes | Async learning layer runs on a cron, synthesizes insights across projects, writes them back into Engram. Flashback starts surfacing cross-project patterns, not just direct matches. |
+| **2 — + Mnestra memory store** | ~15 minutes | Flashback actively fires. Cross-session recall. "Ask about this terminal" queries real memories. Optional Mnestra-as-MCP for Claude Code / Cursor / Windsurf. |
+| **3 — + Rumen async learning** | ~30 minutes | Async learning layer runs on a cron, synthesizes insights across projects, writes them back into Mnestra. Flashback starts surfacing cross-project patterns, not just direct matches. |
 
 ### Tier 1 — `npx @jhizzard/termdeck` (you're here)
 
@@ -61,22 +61,22 @@ What's included:
 
 What's excluded at this tier: **Flashback is silent**, the "Ask about this terminal" input returns nothing, and no memories are surfaced. All other features work.
 
-### Tier 2 — Add Engram to light up Flashback
+### Tier 2 — Add Mnestra to light up Flashback
 
-Engram is a separate npm package — `@jhizzard/engram@0.2.0` — that ships a Postgres-backed persistent memory store with an MCP server, a webhook server, six search tools, and six SQL migrations. It can be consumed by TermDeck (for Flashback), by Claude Code (as an MCP memory layer), or by any tool that speaks the MCP protocol.
+Mnestra is a separate npm package — `@jhizzard/mnestra@0.2.0` — that ships a Postgres-backed persistent memory store with an MCP server, a webhook server, six search tools, and six SQL migrations. It can be consumed by TermDeck (for Flashback), by Claude Code (as an MCP memory layer), or by any tool that speaks the MCP protocol.
 
 To enable Flashback in TermDeck:
 
 1. **Provision Postgres with pgvector.** Easiest: create a free Supabase project at supabase.com. Copy the **Project URL** and the **service_role key** from Project Settings → API.
-2. **Apply Engram's migrations** to the database. Run each in order via the Supabase SQL Editor, or via `psql`:
+2. **Apply Mnestra's migrations** to the database. Run each in order via the Supabase SQL Editor, or via `psql`:
    ```bash
-   npm install -g @jhizzard/engram
-   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/001_engram_tables.sql
-   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/002_engram_search_function.sql
-   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/003_engram_event_webhook.sql
-   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/004_engram_match_count_cap_and_explain.sql
-   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/005_v0_1_to_v0_2_upgrade.sql
-   psql "$DATABASE_URL" -f node_modules/@jhizzard/engram/migrations/006_memory_status_rpc.sql
+   npm install -g @jhizzard/mnestra
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/001_mnestra_tables.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/002_mnestra_search_function.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/003_mnestra_event_webhook.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/004_mnestra_match_count_cap_and_explain.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/005_v0_1_to_v0_2_upgrade.sql
+   psql "$DATABASE_URL" -f node_modules/@jhizzard/mnestra/migrations/006_memory_status_rpc.sql
    ```
 3. **Get an OpenAI API key** (text-embedding-3-large).
 4. **Create `~/.termdeck/secrets.env`:**
@@ -93,18 +93,18 @@ To enable Flashback in TermDeck:
      supabaseUrl: ${SUPABASE_URL}
      supabaseKey: ${SUPABASE_SERVICE_ROLE_KEY}
      openaiApiKey: ${OPENAI_API_KEY}
-     engramMode: direct
+     mnestraMode: direct
    ```
 6. **Restart TermDeck** (`Ctrl+C`, then `npx @jhizzard/termdeck` again).
 
 Flashback now fires when panels error. Initially your store is empty, so nothing surfaces. As you use TermDeck day-to-day, the output analyzer captures session events, command history, and error contexts — each one becomes a memory. After a few days of real work, Flashback starts surfacing real hits.
 
-### Tier 2 bonus — Engram as a Claude Code MCP server
+### Tier 2 bonus — Mnestra as a Claude Code MCP server
 
-Independently of TermDeck, install Engram as an MCP server so Claude Code (and Cursor / Windsurf / Cline / Continue) have persistent memory across sessions pointing at the same database TermDeck uses:
+Independently of TermDeck, install Mnestra as an MCP server so Claude Code (and Cursor / Windsurf / Cline / Continue) have persistent memory across sessions pointing at the same database TermDeck uses:
 
 ```bash
-npm install -g @jhizzard/engram
+npm install -g @jhizzard/mnestra
 ```
 
 Edit `~/.claude/mcp.json`:
@@ -112,8 +112,8 @@ Edit `~/.claude/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "engram": {
-      "command": "engram",
+    "mnestra": {
+      "command": "mnestra",
       "env": {
         "SUPABASE_URL": "https://your-project.supabase.co",
         "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_...",
@@ -125,11 +125,11 @@ Edit `~/.claude/mcp.json`:
 }
 ```
 
-Restart Claude Code. Six MCP tools appear: `memory_remember`, `memory_recall`, `memory_search`, `memory_forget`, `memory_status`, `memory_summarize_session`. Your AI assistant can now read and write memories that TermDeck's Flashback will later surface automatically. See [github.com/jhizzard/engram](https://github.com/jhizzard/engram) for full MCP reference.
+Restart Claude Code. Six MCP tools appear: `memory_remember`, `memory_recall`, `memory_search`, `memory_forget`, `memory_status`, `memory_summarize_session`. Your AI assistant can now read and write memories that TermDeck's Flashback will later surface automatically. See [github.com/jhizzard/mnestra](https://github.com/jhizzard/mnestra) for full MCP reference.
 
 ### Tier 3 — Add Rumen for async learning
 
-Rumen is a separate npm package — `@jhizzard/rumen@0.2.0` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Engram: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Engram's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
+Rumen is a separate npm package — `@jhizzard/rumen@0.2.0` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Mnestra: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Mnestra's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
 
 Rumen v0.2 is the current shipped version. Setup is still manual — Sprint 3 (next) ships a `termdeck init --rumen` one-liner that automates the deploy. For now, follow [github.com/jhizzard/rumen#readme](https://github.com/jhizzard/rumen) to deploy via the Supabase CLI.
 
@@ -162,12 +162,12 @@ Honest limits, stated upfront so the skeptic has nothing to chase:
 │  - Express + ws                         │
 │  - node-pty per session                 │
 │  - SQLite persistence                   │
-│  - Engram bridge (direct/webhook/mcp)   │
+│  - Mnestra bridge (direct/webhook/mcp)   │
 └─────────────────┬───────────────────────┘
                   │ hybrid search + embeddings
                   ▼
 ┌─────────────────────────────────────────┐
-│  Engram                                 │
+│  Mnestra                                 │
 │  - Postgres + pgvector                  │
 │  - MCP server (6 tools)                 │
 │  - HTTP webhook                         │
@@ -183,7 +183,7 @@ Honest limits, stated upfront so the skeptic has nothing to chase:
 └─────────────────────────────────────────┘
 ```
 
-All three packages are independent. You can use Engram alone as a Claude Code memory layer. You can run Rumen on any pgvector store with compatible schema. You can use TermDeck with zero memory features. The stack is designed to be progressively adopted.
+All three packages are independent. You can use Mnestra alone as a Claude Code memory layer. You can run Rumen on any pgvector store with compatible schema. You can use TermDeck with zero memory features. The stack is designed to be progressively adopted.
 
 ---
 
@@ -201,7 +201,7 @@ For users who want more than `npx` — cloning from source, building a macOS `.a
 
 ## Related packages
 
-- **[@jhizzard/engram](https://www.npmjs.com/package/@jhizzard/engram)** — persistent dev memory MCP server. pgvector + hybrid search + 3-layer progressive disclosure. Works standalone with any MCP client.
+- **[@jhizzard/mnestra](https://www.npmjs.com/package/@jhizzard/mnestra)** — persistent dev memory MCP server. pgvector + hybrid search + 3-layer progressive disclosure. Works standalone with any MCP client.
 - **[@jhizzard/rumen](https://www.npmjs.com/package/@jhizzard/rumen)** — async learning layer. Extract/Relate/Synthesize loop over any pgvector store. Supabase Edge Function + `pg_cron`.
 
 ---
@@ -218,7 +218,7 @@ npm run dev
 The server runs at `http://127.0.0.1:3000` with file-watch reload. Workspace layout:
 
 - `packages/cli/src/` — the `termdeck` binary launcher
-- `packages/server/src/` — Express + WebSocket + PTY + Engram bridge + session analyzer
+- `packages/server/src/` — Express + WebSocket + PTY + Mnestra bridge + session analyzer
 - `packages/client/public/` — vanilla-JS dashboard (single HTML file, no build step, loads xterm.js from CDN)
 - `config/` — example `config.yaml` and `secrets.env.example`
 - `docs/` — planning documents, launch strategy, install guide, followup items, ship checklist
@@ -258,7 +258,7 @@ MIT © Joshua Izzard. See [LICENSE](LICENSE).
 - GitHub: [github.com/jhizzard/termdeck](https://github.com/jhizzard/termdeck)
 - npm: [@jhizzard/termdeck](https://www.npmjs.com/package/@jhizzard/termdeck)
 - Issues: [github.com/jhizzard/termdeck/issues](https://github.com/jhizzard/termdeck/issues)
-- Engram: [github.com/jhizzard/engram](https://github.com/jhizzard/engram) · [npm](https://www.npmjs.com/package/@jhizzard/engram)
+- Mnestra: [github.com/jhizzard/mnestra](https://github.com/jhizzard/mnestra) · [npm](https://www.npmjs.com/package/@jhizzard/mnestra)
 - Rumen: [github.com/jhizzard/rumen](https://github.com/jhizzard/rumen) · [npm](https://www.npmjs.com/package/@jhizzard/rumen)
 
 Built because every LLM starts from zero, and every terminal starts from zero, and I got tired of re-debugging the same CORS error.

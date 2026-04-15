@@ -141,13 +141,13 @@ function defaultConfig() {
       anthropicApiKey: null,
       developerId: os.userInfo().username,
       syncIntervalMs: 10000,
-      engramMode: 'direct',
-      engramWebhookUrl: 'http://localhost:37778/engram',
+      mnestraMode: 'direct',
+      mnestraWebhookUrl: 'http://localhost:37778/mnestra',
       tables: {
-        session: 'engram_session_memory',
-        project: 'engram_project_memory',
-        developer: 'engram_developer_memory',
-        commands: 'engram_commands'
+        session: 'mnestra_session_memory',
+        project: 'mnestra_project_memory',
+        developer: 'mnestra_developer_memory',
+        commands: 'mnestra_commands'
       }
     },
     sessionLogs: {
@@ -194,8 +194,8 @@ rag:
   openaiApiKey: \${OPENAI_API_KEY}
   anthropicApiKey: \${ANTHROPIC_API_KEY}
   syncIntervalMs: 10000
-  engramMode: direct
-  engramWebhookUrl: http://localhost:37778/engram
+  mnestraMode: direct
+  mnestraWebhookUrl: http://localhost:37778/mnestra
 
 sessionLogs:
   enabled: false

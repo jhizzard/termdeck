@@ -7,9 +7,9 @@ export default defineConfig({
   site: 'https://termdeck.dev',
   integrations: [
     starlight({
-      title: 'TermDeck · Engram · Rumen',
+      title: 'TermDeck · Mnestra · Rumen',
       description:
-        'Docs for the three-tier stack: a browser terminal multiplexer (TermDeck), a long-term memory store (Engram), and an async learning layer (Rumen).',
+        'Docs for the three-tier stack: a browser terminal multiplexer (TermDeck), a long-term memory store (Mnestra), and an async learning layer (Rumen).',
       // TODO: replace with canonical repo URL when one exists.
       // social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/jhizzard' }],
       sidebar: [
@@ -23,11 +23,11 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Engram',
+          label: 'Mnestra',
           items: [
-            { label: 'Introduction', link: '/engram/' },
-            { label: 'Changelog', link: '/engram/changelog/' },
-            { label: 'More docs', autogenerate: { directory: 'engram/docs' } },
+            { label: 'Introduction', link: '/mnestra/' },
+            { label: 'Changelog', link: '/mnestra/changelog/' },
+            { label: 'More docs', autogenerate: { directory: 'mnestra/docs' } },
           ],
         },
         {

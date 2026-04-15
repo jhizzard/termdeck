@@ -2,12 +2,12 @@
 // sync-content.mjs
 //
 // Copies README.md, CHANGELOG.md, and docs/*.md from three sibling repos
-// (TermDeck, Engram, Rumen) into src/content/docs/<repo>/ so Starlight can
+// (TermDeck, Mnestra, Rumen) into src/content/docs/<repo>/ so Starlight can
 // render them. Missing files/repos are skipped with a warning — never throws.
 //
 // Env overrides:
 //   TERMDECK_REPO  absolute path to the termdeck repo    (default: ../)
-//   ENGRAM_REPO    absolute path to the engram repo      (default: sibling)
+//   MNESTRA_REPO    absolute path to the mnestra repo      (default: sibling)
 //   RUMEN_REPO     absolute path to the rumen repo       (default: sibling)
 
 import { promises as fs } from 'node:fs';
@@ -21,11 +21,11 @@ const __dirname = path.dirname(__filename);
 const SITE_ROOT = path.resolve(__dirname, '..');
 
 // TermDeck is the parent of docs-site/.
-// Engram and Rumen live as siblings under ~/Documents/Graciella/.
+// Mnestra and Rumen live as siblings under ~/Documents/Graciella/.
 // From /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs-site
 // up to             /Users/joshuaizzard/Documents/Graciella/ is six levels.
 const DEFAULT_TERMDECK = path.resolve(SITE_ROOT, '..');
-const DEFAULT_ENGRAM = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'engram');
+const DEFAULT_MNESTRA = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'mnestra');
 const DEFAULT_RUMEN = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'rumen');
 
 const REPOS = [
@@ -36,15 +36,15 @@ const REPOS = [
     root: process.env.TERMDECK_REPO || DEFAULT_TERMDECK,
   },
   {
-    slug: 'engram',
-    title: 'Engram',
+    slug: 'mnestra',
+    title: 'Mnestra',
     description: 'Long-term memory store with hybrid search, tiered decay, and MCP tools.',
-    root: process.env.ENGRAM_REPO || DEFAULT_ENGRAM,
+    root: process.env.MNESTRA_REPO || DEFAULT_MNESTRA,
   },
   {
     slug: 'rumen',
     title: 'Rumen',
-    description: 'Async learning layer that extracts, relates, synthesises, and surfaces insights over Engram.',
+    description: 'Async learning layer that extracts, relates, synthesises, and surfaces insights over Mnestra.',
     root: process.env.RUMEN_REPO || DEFAULT_RUMEN,
   },
 ];
@@ -249,7 +249,7 @@ async function main() {
 
   info(
     `copied ${counts.termdeck ?? 0} files from termdeck, ` +
-      `${counts.engram ?? 0} from engram, ` +
+      `${counts.mnestra ?? 0} from mnestra, ` +
       `${counts.rumen ?? 0} from rumen`,
   );
 }

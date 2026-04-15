@@ -1,13 +1,53 @@
 #!/usr/bin/env node
 
 // TermDeck CLI launcher
-// Usage: termdeck [--port 3000] [--no-open]
+// Usage:
+//   termdeck [--port 3000] [--no-open]
+//   termdeck init --mnestra [flags]   # Tier 2 memory setup (wired to init-mnestra.js)
+//   termdeck init --rumen  [flags]   # Tier 3 async learning deploy
+//
+// Note (Sprint 3): the `--mnestra` flag name matches the current init-mnestra.js
+// filename. When the main orchestrator completes the Mnestra → Ingram rename
+// sweep over this repo, both the flag name and the filename should flip to
+// `--ingram` / `init-ingram.js` together.
 
 const path = require('path');
 const { execSync } = require('child_process');
 
 // Parse CLI args
 const args = process.argv.slice(2);
+
+// Subcommand dispatch — handle `termdeck init --mnestra|--rumen` before
+// falling through to the default launcher's flag parsing. The `require` of
+// init-*.js is lazy so users running the normal `termdeck` command never pay
+// the cost of loading pg / supabase helpers at startup.
+if (args[0] === 'init') {
+  const mode = args[1];
+  const rest = args.slice(2);
+  const run = (modPath) => {
+    const fn = require(modPath);
+    return fn(rest).then((code) => process.exit(code || 0));
+  };
+  if (mode === '--mnestra') {
+    run(path.join(__dirname, 'init-mnestra.js')).catch((err) => {
+      console.error('[cli] init --mnestra failed:', err && err.stack || err);
+      process.exit(1);
+    });
+    return;
+  }
+  if (mode === '--rumen') {
+    run(path.join(__dirname, 'init-rumen.js')).catch((err) => {
+      console.error('[cli] init --rumen failed:', err && err.stack || err);
+      process.exit(1);
+    });
+    return;
+  }
+  console.error('Usage: termdeck init --mnestra | --rumen');
+  console.error('  termdeck init --mnestra   Configure Tier 2 memory (Supabase + Ingram)');
+  console.error('  termdeck init --rumen    Deploy Tier 3 async learning (Rumen)');
+  process.exit(1);
+}
+
 const flags = {};
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port' && args[i + 1]) {
@@ -26,6 +66,8 @@ for (let i = 0; i < args.length; i++) {
     termdeck --port 8080        Start on custom port
     termdeck --no-open          Don't auto-open browser
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
+    termdeck init --mnestra      Configure Tier 2 memory (Supabase + Ingram)
+    termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
 
   Keyboard shortcuts (in browser):
     Ctrl+Shift+N                Focus prompt bar
@@ -35,6 +77,7 @@ for (let i = 0; i < args.length; i++) {
 
   Config:
     ~/.termdeck/config.yaml     Server + project + RAG configuration
+    ~/.termdeck/secrets.env     API keys (OpenAI, Anthropic, Supabase)
     ~/.termdeck/termdeck.db     Session history (SQLite)
 `);
     process.exit(0);

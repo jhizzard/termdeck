@@ -1,6 +1,6 @@
 # TermDeck Docs Site
 
-Public documentation site for the **TermDeck / Engram / Rumen** stack.
+Public documentation site for the **TermDeck / Mnestra / Rumen** stack.
 
 Built with [Astro Starlight](https://starlight.astro.build/).
 
@@ -10,7 +10,7 @@ A single docs site that renders the `README.md`, `CHANGELOG.md`, and `docs/` tre
 three sibling repos:
 
 - **TermDeck** — browser-based terminal multiplexer (this repo)
-- **Engram** — long-term memory store (`~/Documents/Graciella/engram`)
+- **Mnestra** — long-term memory store (`~/Documents/Graciella/mnestra`)
 - **Rumen** — async learning layer (`~/Documents/Graciella/rumen`)
 
 Content is **not** hand-duplicated. A sync script copies the source files into
@@ -40,14 +40,14 @@ Output goes to `dist/`. Deploy target is Vercel (see `vercel.json`).
 The `scripts/sync-content.mjs` script reads from three sibling repos. Paths are
 resolved in this order:
 
-1. Env override: `TERMDECK_REPO`, `ENGRAM_REPO`, `RUMEN_REPO`
+1. Env override: `TERMDECK_REPO`, `MNESTRA_REPO`, `RUMEN_REPO`
 2. Default relative paths:
    - TermDeck: `../` (parent of `docs-site/`)
-   - Engram: `~/Documents/Graciella/engram`
+   - Mnestra: `~/Documents/Graciella/mnestra`
    - Rumen: `~/Documents/Graciella/rumen`
 
 Missing repos or missing files are skipped with a warning — the build does not fail
-if Engram or Rumen are at a different commit or temporarily unavailable.
+if Mnestra or Rumen are at a different commit or temporarily unavailable.
 
 ## Layout
 
@@ -64,7 +64,7 @@ docs-site/
 │       ├── architecture.md # Three-tier diagram
 │       ├── roadmap.md      # Points at each changelog
 │       ├── termdeck/       # (generated)
-│       ├── engram/         # (generated)
+│       ├── mnestra/         # (generated)
 │       └── rumen/          # (generated)
 ├── tsconfig.json
 └── vercel.json

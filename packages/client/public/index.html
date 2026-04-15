@@ -1901,7 +1901,7 @@
 
       toast.innerHTML = `
         <button class="t-dismiss" aria-label="Dismiss">×</button>
-        <div class="t-title">Engram — possible match</div>
+        <div class="t-title">Mnestra — possible match</div>
         <div class="t-body">Found a similar error in <b>${proj}</b>${score ? ` · ${score}` : ''} — click to see.</div>
         <div class="t-meta">${snippet}</div>
       `;
@@ -2596,7 +2596,7 @@
       // Early return if AI queries are not available
       if (!state.config.aiQueryAvailable) {
         entry.terminal.write(
-          '\r\n\x1b[33m[engram] AI queries are not available.\x1b[0m\r\n' +
+          '\r\n\x1b[33m[mnestra] AI queries are not available.\x1b[0m\r\n' +
           '\x1b[33mTo enable, add the following to ~/.termdeck/config.yaml:\x1b[0m\r\n' +
           '\x1b[90m  rag:\r\n' +
           '    supabaseUrl: https://your-project.supabase.co\r\n' +
@@ -2618,7 +2618,7 @@
         });
 
         if (result.error) {
-          entry.terminal.write(`\r\n\x1b[33m[engram] ${result.error}\x1b[0m\r\n`);
+          entry.terminal.write(`\r\n\x1b[33m[mnestra] ${result.error}\x1b[0m\r\n`);
         } else if (result.memories && result.memories.length > 0) {
           // Cache hits for the Memory tab
           if (!entry.memoryHits) entry.memoryHits = [];
@@ -2651,7 +2651,7 @@
             return lines;
           };
 
-          entry.terminal.write(`\r\n\x1b[36m━━━ Engram: ${result.total} memories found ━━━\x1b[0m\r\n`);
+          entry.terminal.write(`\r\n\x1b[36m━━━ Mnestra: ${result.total} memories found ━━━\x1b[0m\r\n`);
           for (const m of result.memories) {
             const score = m.similarity ? `${(m.similarity * 100).toFixed(0)}%` : '';
             const proj = m.project ? m.project : '';
@@ -2663,11 +2663,11 @@
           }
           entry.terminal.write(`\r\n\x1b[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\r\n\r\n`);
         } else {
-          entry.terminal.write(`\r\n\x1b[33m[engram] No relevant memories found.\x1b[0m\r\n`);
+          entry.terminal.write(`\r\n\x1b[33m[mnestra] No relevant memories found.\x1b[0m\r\n`);
         }
       } catch (err) {
         console.error('[client] AI query failed:', err);
-        entry.terminal.write(`\r\n\x1b[31m[engram] Query failed: ${err.message}\x1b[0m\r\n`);
+        entry.terminal.write(`\r\n\x1b[31m[mnestra] Query failed: ${err.message}\x1b[0m\r\n`);
       }
 
       inputEl.value = '';
@@ -3073,14 +3073,14 @@
       {
         target: '.ctrl-input',
         title: 'Ask about this terminal',
-        body: `Type a question here and TermDeck queries your <strong>Engram memory store</strong> for relevant context — scoped to the current panel's project. Prefix with <kbd>all:</kbd> to search every project. Results render inline in the terminal with similarity scores.`,
+        body: `Type a question here and TermDeck queries your <strong>Mnestra memory store</strong> for relevant context — scoped to the current panel's project. Prefix with <kbd>all:</kbd> to search every project. Results render inline in the terminal with similarity scores.`,
         onEnter: async () => { await openFirstPanelDrawer('overview'); },
         fallback: '#topbarQuickLaunch',
       },
       {
         target: null,
         title: 'Flashback — proactive recall',
-        body: `When a panel errors out, TermDeck <strong>automatically</strong> queries Engram for similar past errors and surfaces the top match as a toast. You don't have to ask. Rate-limited to one per 30 seconds per panel. Click the toast to open the Memory tab with the full hit expanded.`,
+        body: `When a panel errors out, TermDeck <strong>automatically</strong> queries Mnestra for similar past errors and surfaces the top match as a toast. You don't have to ask. Rate-limited to one per 30 seconds per panel. Click the toast to open the Memory tab with the full hit expanded.`,
       },
       {
         target: '.prompt-bar',

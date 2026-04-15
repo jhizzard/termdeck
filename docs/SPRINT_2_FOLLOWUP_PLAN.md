@@ -28,7 +28,7 @@ Only the *ownership list* and the *task list* change. Everything else is identic
 |---|---|---|
 | **T1 — TermDeck Client UI** | `termdeck` | `packages/client/public/**` (only this directory) |
 | **T2 — TermDeck Server / Config / Secrets / Packaging** | `termdeck` | `packages/server/src/**`, `packages/cli/src/**`, `config/**`, any new `~/.termdeck/secrets.env.example`, root `package.json` |
-| **T3 — Engram** | `engram` | entire `/Users/joshuaizzard/Documents/Graciella/engram/` repo |
+| **T3 — Mnestra** | `mnestra` | entire `/Users/joshuaizzard/Documents/Graciella/mnestra/` repo |
 | **T4 — Rumen + docs-site + release prep** | `rumen` + `termdeck/docs-site/` | entire `/Users/joshuaizzard/Documents/Graciella/rumen/` repo, plus `termdeck/docs-site/` for the one-line sitemap fix |
 
 **Hard rule reminder:** if a file isn't in your list, you cannot touch it. Post cross-terminal requests in STATUS.md if you need something from another terminal.
@@ -126,7 +126,7 @@ After F1.1–F1.3 land and the UI is stable, capture three PNGs for the README a
 **Context to load:**
 1. `docs/FOLLOWUP.md` — sections "T2 — server deferred items" and "Security".
 2. `packages/server/src/session-logger.js` — T2.5 session log summarizer.
-3. `packages/server/src/engram-bridge/index.js` — T2.1 bridge module.
+3. `packages/server/src/mnestra-bridge/index.js` — T2.1 bridge module.
 4. `packages/server/src/index.js` — config loading near the top.
 5. `config/config.example.yaml` — current config shape.
 6. `docs/STATUS.md` — post Sprint 2 start entry.
@@ -202,19 +202,19 @@ While the subagent runs the Docker command, continue with F2.3.
 
 ---
 
-## 4. Terminal 3 — Engram
+## 4. Terminal 3 — Mnestra
 
-**Working dir:** `/Users/joshuaizzard/Documents/Graciella/engram`
+**Working dir:** `/Users/joshuaizzard/Documents/Graciella/mnestra`
 
-**Owns:** entire Engram repo.
+**Owns:** entire Mnestra repo.
 
 **Context to load:**
-1. `docs/FOLLOWUP.md` — "T3 — Engram deferred items" section, and the webhook defects surfaced in Sprint 1 Phase D.
+1. `docs/FOLLOWUP.md` — "T3 — Mnestra deferred items" section, and the webhook defects surfaced in Sprint 1 Phase D.
 2. `src/webhook-server.ts`, `src/status.ts`, `src/remember.ts`, `src/recall.ts`.
 3. `mcp-server/index.ts` — where you'll add the `serve` subcommand.
 4. `/Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/STATUS.md` — the one and only STATUS file, cross-repo.
 
-### F3.1 — `engram serve` CLI subcommand (15 minutes, HIGHEST)
+### F3.1 — `mnestra serve` CLI subcommand (15 minutes, HIGHEST)
 
 `startWebhookServer()` is exported but has no CLI entry. Users have to run the bare `node -e "require('./dist/src/webhook-server.js').startWebhookServer()"` one-liner which is ugly and undiscoverable.
 
@@ -237,18 +237,18 @@ if (arg === 'serve') {
 **Alternatively:** add a separate `bin` entry in `package.json`:
 ```json
 "bin": {
-  "engram": "./dist/mcp-server/index.js",
-  "engram-serve": "./dist/src/webhook-cli.js"
+  "mnestra": "./dist/mcp-server/index.js",
+  "mnestra-serve": "./dist/src/webhook-cli.js"
 }
 ```
 and create a tiny `src/webhook-cli.ts` that just calls `startWebhookServer()`.
 
-**Recommended:** the subcommand approach — `engram serve` reads cleaner than `engram-serve`.
+**Recommended:** the subcommand approach — `mnestra serve` reads cleaner than `mnestra-serve`.
 
 **Acceptance:**
-- `engram serve` on the CLI starts the webhook on `$ENGRAM_WEBHOOK_PORT` (default 37778).
-- `engram` with no args or stdin attached still launches the MCP stdio server (backward compat).
-- `engram --help` mentions the `serve` subcommand.
+- `mnestra serve` on the CLI starts the webhook on `$MNESTRA_WEBHOOK_PORT` (default 37778).
+- `mnestra` with no args or stdin attached still launches the MCP stdio server (backward compat).
+- `mnestra --help` mentions the `serve` subcommand.
 - Update `README.md` tool reference table with a "Running the webhook" section.
 
 ### F3.2 — Malformed JSON → 400 (5 minutes)
@@ -275,7 +275,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 And in the outer handler, respect `httpStatus` if present before defaulting to 500. Add a unit test in `tests/webhook-server.test.ts` covering the malformed-body case.
 
-**Acceptance:** `curl -X POST :37778/engram -d 'not json'` returns 400, not 500.
+**Acceptance:** `curl -X POST :37778/mnestra -d 'not json'` returns 400, not 500.
 
 ### F3.3 — `memoryStatus` 1000-row cap fix (20 minutes)
 
@@ -376,7 +376,7 @@ Add `site: 'https://termdeck.dev'` (or whichever domain you're planning to deplo
 
 Read the file in full. Determine whether it's:
 
-- **(a)** A Rumen-side integration smoke test against Engram's new `:37778` webhook. Keep it. Rename for clarity if needed (e.g., `scripts/smoke-test-engram-webhook.ts`). Add a 1-paragraph header comment explaining its purpose.
+- **(a)** A Rumen-side integration smoke test against Mnestra's new `:37778` webhook. Keep it. Rename for clarity if needed (e.g., `scripts/smoke-test-mnestra-webhook.ts`). Add a 1-paragraph header comment explaining its purpose.
 - **(b)** A generic REST helper unrelated to Rumen's job. Decide: extract to a shared package (probably overkill for v0.2) or delete.
 - **(c)** Scaffolding for v0.3 question generation. The plan parked v0.3 as out-of-scope. Delete or move to a `_future/` branch.
 
@@ -403,7 +403,7 @@ Create `docs/RELEASE_CHECKLIST.md` in the TermDeck repo (yes, T4 owns `docs-site
 Content structure:
 
 ```markdown
-# Release Checklist — TermDeck / Engram / Rumen v0.2
+# Release Checklist — TermDeck / Mnestra / Rumen v0.2
 
 For each package, Josh runs these steps manually when ready to publish.
 
@@ -413,8 +413,8 @@ For each package, Josh runs these steps manually when ready to publish.
 - [ ] CHANGELOG.md has a [0.2.0] heading dated today
 - [ ] README.md install instructions match the package name and bin
 
-## @jhizzard/engram v0.2.0
-- [ ] `cd /Users/joshuaizzard/Documents/Graciella/engram`
+## @jhizzard/mnestra v0.2.0
+- [ ] `cd /Users/joshuaizzard/Documents/Graciella/mnestra`
 - [ ] `npm run build && npm test` — expect 21+ green
 - [ ] `npm version 0.2.0 --no-git-tag-version` (if not already bumped)
 - [ ] `git tag v0.2.0 && git push --tags`
@@ -449,7 +449,7 @@ After every other terminal has posted their `— end of session —` entry, T4 w
 ```
 F1.4 screenshots  ──depends on──►  F2.3 session-logs stable server (soft — can also run against pre-sprint main)
 F3.3 status fix   ──depends on──►  production migration applied (Josh runs it, T3 posts SQL in STATUS.md)
-F4.4 release prep ──depends on──►  F3.5 engram version bump, F4 rumen version bump
+F4.4 release prep ──depends on──►  F3.5 mnestra version bump, F4 rumen version bump
 F4.5 epilogue     ──depends on──►  T1–T3 end-of-session entries
 ```
 
@@ -483,7 +483,7 @@ You are Terminal 2 (TermDeck Server / Secrets) for Sprint 2, referenced in
 
 Execute only the section titled "3. Terminal 2 — TermDeck Server / Config / Secrets /
 Packaging" and nothing else. Do not edit files under packages/client/public/, docs-site/,
-or either of the engram or rumen repos. Read the sprint plan, read docs/STATUS.md, append a
+or either of the mnestra or rumen repos. Read the sprint plan, read docs/STATUS.md, append a
 Sprint 2 "started" entry under a NEW "## Sprint 2 — Terminal 2" header.
 
 Run F2.1 FIRST (5-minute credential-leak audit) — it must complete before anything else in
@@ -495,15 +495,15 @@ met. Do not commit or push without approval.
 ### Terminal 3 prompt
 
 ```
-You are Terminal 3 (Engram) for Sprint 2, referenced in
+You are Terminal 3 (Mnestra) for Sprint 2, referenced in
 /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/SPRINT_2_FOLLOWUP_PLAN.md.
 
-Your working directory is /Users/joshuaizzard/Documents/Graciella/engram. Execute only the
-section titled "4. Terminal 3 — Engram" and nothing else. Read the sprint plan, read
+Your working directory is /Users/joshuaizzard/Documents/Graciella/mnestra. Execute only the
+section titled "4. Terminal 3 — Mnestra" and nothing else. Read the sprint plan, read
 /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/STATUS.md,
 and append a Sprint 2 "started" entry under a NEW "## Sprint 2 — Terminal 3" header.
 
-Start with F3.1 (engram serve CLI subcommand). When that's ✅, proceed with F3.2 → F3.3 →
+Start with F3.1 (mnestra serve CLI subcommand). When that's ✅, proceed with F3.2 → F3.3 →
 F3.4 → F3.5 in order. F3.3 requires writing a migration that Josh must apply to production
 — post the migration SQL in STATUS.md under "Cross-terminal requests" for Josh to run in the
 Supabase SQL editor. Do not apply it yourself. Never mark a task ✅ unless acceptance criteria
@@ -548,7 +548,7 @@ Josh reads STATUS.md top to bottom, reviews each terminal's diffs, commits/squas
 
 - Editable panel labels (requires server `meta.label` + `PATCH` extension — tracked for Sprint 3).
 - Claude Code lifecycle-hooks auto-capture plugin (parked since Sprint 1).
-- Web viewer UI for Engram memories.
+- Web viewer UI for Mnestra memories.
 - Rumen v0.3 question generation.
 - Rumen v0.4 self-tuning.
 - Hub website.

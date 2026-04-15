@@ -3,7 +3,7 @@
 **Date:** 2026-04-15
 **Status:** Post-publish, pre-launch
 **Window:** ~2 hours of hard parallel work across 4 terminals
-**Goal:** Get the full three-tier stack working on Josh's machine + produce every launch asset + nail down the naming story so you can hit HN with TermDeck (article 1) and follow up with Engram (article 2) and Rumen (article 3) knowing every piece works end-to-end.
+**Goal:** Get the full three-tier stack working on Josh's machine + produce every launch asset + nail down the naming story so you can hit HN with TermDeck (article 1) and follow up with Mnestra (article 2) and Rumen (article 3) knowing every piece works end-to-end.
 
 ---
 
@@ -12,19 +12,19 @@
 **Shipped today (2026-04-15):**
 
 - `@jhizzard/termdeck@0.2.0` live on npm — full multiplexer, tour, Flashback wiring, add-project modal, reply button, panel numbering, launch buttons
-- `@jhizzard/engram@0.2.0` live on npm — MCP server + webhook + 3-layer search + privacy tags + export/import + status RPC + six migrations applied to Josh's production Supabase
+- `@jhizzard/mnestra@0.2.0` live on npm — MCP server + webhook + 3-layer search + privacy tags + export/import + status RPC + six migrations applied to Josh's production Supabase
 - `@jhizzard/rumen@0.2.0` live on npm — Extract/Relate/Surface + Haiku synthesize + CI integration test + cost guardrails (code only, not deployed anywhere)
 - All three tagged `v0.2.0` on GitHub
 - README rewritten with Flashback-first tiered install story
 
 **Known gaps blocking launch:**
 
-1. **Josh's own machine is Tier 2-ish at best** — production Supabase has 3,451 memories, Engram v0.2 migrations applied, but nothing verifies Flashback actually fires end-to-end on his hardware. Needs real test with a failing command.
+1. **Josh's own machine is Tier 2-ish at best** — production Supabase has 3,451 memories, Mnestra v0.2 migrations applied, but nothing verifies Flashback actually fires end-to-end on his hardware. Needs real test with a failing command.
 2. **Rumen is not running anywhere in production** — v0.2 code is on npm, but no Supabase Edge Function deployed, no `pg_cron` schedule active, `rumen_insights` table is empty.
 3. **No launch GIF captured** — the Flashback demo GIF is the single most important launch asset and doesn't exist yet.
 4. **Docs-site not deployed** — Astro Starlight scaffold is committed but no production URL. The `help` button in TermDeck points at the GitHub README as a fallback.
 5. **No launch copy written** — no Show HN post, no X thread, no blog post.
-6. **Name dispute risk unaddressed** — "Engram" and "Rumen" and "TermDeck" all have potential conflicts. No fallback plan.
+6. **Name dispute risk unaddressed** — "Mnestra" and "Rumen" and "TermDeck" all have potential conflicts. No fallback plan.
 7. **No `termdeck init` wizard** — Tier 2 setup is manual (6 steps, ~15 min). Ideal is one command.
 
 This sprint closes all seven.
@@ -38,9 +38,9 @@ Same protocol as Sprint 1 and Sprint 2. `docs/STATUS.md` is the append-only coor
 | Terminal | Scope | Exclusive paths |
 |---|---|---|
 | **T1 — Local production verification + Rumen deploy + GIF capture** | Ops on Josh's machine, no source code edits | `docs/tier2-verification.md` (new), `docs/screenshots/**` (new directory), `docs/rumen-deploy-log.md` (new), shell commands against Josh's real Supabase + local TermDeck |
-| **T2 — `termdeck init` setup wizards** | Source code — CLI + server setup helpers | `packages/cli/src/init-engram.js` (new), `packages/cli/src/init-rumen.js` (new), `packages/server/src/setup/**` (new), `packages/cli/src/index.js` (add `init` subcommand parsing) |
+| **T2 — `termdeck init` setup wizards** | Source code — CLI + server setup helpers | `packages/cli/src/init-mnestra.js` (new), `packages/cli/src/init-rumen.js` (new), `packages/server/src/setup/**` (new), `packages/cli/src/index.js` (add `init` subcommand parsing) |
 | **T3 — docs-site deployment + content sync** | `docs-site/**` + Vercel deployment | `docs-site/**`, `packages/client/public/index.html` (one-line update to `help` button href once live URL is known — coordinate with T4 via STATUS.md to avoid collision with T4's launch assets) |
-| **T4 — Launch assets + name dispute + joshuaizzard.com** | Marketing + positioning + naming research | `docs/name-dispute-analysis.md` (new), `docs/launch/show-hn-post.md` (new), `docs/launch/x-thread.md` (new), `docs/launch/comment-playbook.md` (new), `docs/launch/blog-post-termdeck.md` (new), `docs/launch/blog-post-engram.md` (new), `docs/launch/blog-post-rumen.md` (new), `~/Documents/Graciella/joshuaizzard-dev/**` (separate repo — joshuaizzard.com project cards) |
+| **T4 — Launch assets + name dispute + joshuaizzard.com** | Marketing + positioning + naming research | `docs/name-dispute-analysis.md` (new), `docs/launch/show-hn-post.md` (new), `docs/launch/x-thread.md` (new), `docs/launch/comment-playbook.md` (new), `docs/launch/blog-post-termdeck.md` (new), `docs/launch/blog-post-mnestra.md` (new), `docs/launch/blog-post-rumen.md` (new), `~/Documents/Graciella/joshuaizzard-dev/**` (separate repo — joshuaizzard.com project cards) |
 
 **Zero file overlap.** T3 touches `packages/client/public/index.html` only once at the very end with a known-good one-line edit coordinated via STATUS.md. Everything else is disjoint.
 
@@ -52,17 +52,17 @@ Same protocol as Sprint 1 and Sprint 2. `docs/STATUS.md` is the append-only coor
 
 **Owns:** `docs/tier2-verification.md`, `docs/rumen-deploy-log.md`, `docs/screenshots/**`, live shell operations.
 
-**Must not touch:** any source file in `packages/**`, `docs-site/**`, `docs/launch/**`, or the engram/rumen repos.
+**Must not touch:** any source file in `packages/**`, `docs-site/**`, `docs/launch/**`, or the mnestra/rumen repos.
 
-### T1.1 — Verify Engram Tier 2 end-to-end on Josh's machine (15 min)
+### T1.1 — Verify Mnestra Tier 2 end-to-end on Josh's machine (15 min)
 
 Before we trust Flashback for the GIF, we need proof it actually queries the real store and returns real matches. Steps:
 
 1. Confirm `~/.termdeck/secrets.env` has the right keys. Create it if missing using the values from `~/.termdeck/config.yaml` (they're already there inline; migrate to secrets.env).
 2. Edit `~/.termdeck/config.yaml` to use `${VAR}` interpolation for all three credentials instead of inline values. The deprecation warning should disappear on next startup.
 3. Start TermDeck: `node packages/cli/src/index.js`. Confirm startup logs show `[config] Loaded secrets from ~/.termdeck/secrets.env (3 keys)` and no deprecation warning.
-4. Open the dashboard, click `shell`, manually query Engram via the Ask-about-this-terminal input with a question like `"TermDeck v0.2 shipping"`. Expected: 5 real memories render inline with similarity scores.
-5. Force an error in a panel (`cat /nonexistent`). Expected: Flashback toast appears within 2 seconds showing a real match from Engram.
+4. Open the dashboard, click `shell`, manually query Mnestra via the Ask-about-this-terminal input with a question like `"TermDeck v0.2 shipping"`. Expected: 5 real memories render inline with similarity scores.
+5. Force an error in a panel (`cat /nonexistent`). Expected: Flashback toast appears within 2 seconds showing a real match from Mnestra.
 6. Click the toast. Expected: Memory tab opens with the hit expanded.
 7. Write findings to `docs/tier2-verification.md` — which steps passed, any cosmetic issues, how long end-to-end latency was.
 
@@ -108,7 +108,7 @@ This is the biggest single task in Sprint 3 and the one most likely to hit surpr
    cd /Users/joshuaizzard/Documents/Graciella/rumen
    npm run test:local
    ```
-   That reads recent Engram memories from the last 24h and writes insights synchronously, producing content for Flashback to surface later.
+   That reads recent Mnestra memories from the last 24h and writes insights synchronously, producing content for Flashback to surface later.
 9. Write findings to `docs/rumen-deploy-log.md` — deployed function URL, cron schedule, first three `rumen_jobs` rows, any insights produced.
 
 **Subagent delegation:** spawn a `general-purpose` subagent to monitor the `pg_cron` job status every 5 minutes for 30 minutes — polls the database and reports whether jobs are firing on schedule. You handle the deploy steps yourself; the subagent handles the passive monitoring.
@@ -135,7 +135,7 @@ Once Tier 2 + Tier 3 are verified, capture the hero GIF.
 **The shot:**
 
 1. Start screen recording with QuickTime (Cmd+Shift+5 → Record Selected Portion → draw around the browser window, 1920×1080 preferred).
-2. Focus Panel 1. Let the cursor settle for ~1 second. Type a command you know will fail in a way Engram has a memory about — ideally a Postgres migration error or CORS misconfig, something from your real work that produced a memory entry in the store. Example: `psql "$SUPABASE_URL" -c "ALTER TABLE foo ADD CONSTRAINT fk FOREIGN KEY (bar) REFERENCES nonexistent(id);"`
+2. Focus Panel 1. Let the cursor settle for ~1 second. Type a command you know will fail in a way Mnestra has a memory about — ideally a Postgres migration error or CORS misconfig, something from your real work that produced a memory entry in the store. Example: `psql "$SUPABASE_URL" -c "ALTER TABLE foo ADD CONSTRAINT fk FOREIGN KEY (bar) REFERENCES nonexistent(id);"`
 3. The command fails. Pause for ~0.8 seconds — the critical "about to reach for docs" beat.
 4. The Flashback toast fades in from the right edge of Panel 1.
 5. Mouse cursor drifts to the toast. Single click.
@@ -176,23 +176,23 @@ After the GIF is captured, do one last smoke test to confirm nothing regressed:
 
 **Working directory:** `/Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck`
 
-**Owns:** `packages/cli/src/init-engram.js` (new), `packages/cli/src/init-rumen.js` (new), `packages/server/src/setup/**` (new), `packages/cli/src/index.js` (add subcommand routing).
+**Owns:** `packages/cli/src/init-mnestra.js` (new), `packages/cli/src/init-rumen.js` (new), `packages/server/src/setup/**` (new), `packages/cli/src/index.js` (add subcommand routing).
 
-**Must not touch:** `packages/client/public/**`, `docs/launch/**`, `docs-site/**`, anything in the engram/rumen repos.
+**Must not touch:** `packages/client/public/**`, `docs/launch/**`, `docs-site/**`, anything in the mnestra/rumen repos.
 
-### T2.1 — `termdeck init --engram` (40 min, highest priority)
+### T2.1 — `termdeck init --mnestra` (40 min, highest priority)
 
 Turn the 6-step manual Tier 2 setup into a single interactive command.
 
 **CLI flow:**
 
 ```
-$ termdeck init --engram
+$ termdeck init --mnestra
 
-TermDeck Engram Setup
+TermDeck Mnestra Setup
 ─────────────────────
 
-This wizard configures TermDeck's Tier 2 memory layer (Engram) by:
+This wizard configures TermDeck's Tier 2 memory layer (Mnestra) by:
   1. Asking for your Supabase URL and service_role key
   2. Applying six SQL migrations to the database
   3. Asking for an OpenAI API key (embeddings)
@@ -210,17 +210,17 @@ Press Ctrl+C at any time to cancel.
 
 → Connecting to Supabase... ✓
 → Checking for existing memory_items table... ✓ found (3,451 rows)
-→ Applying migration 001_engram_tables.sql... ✓ (no-op, table exists)
-→ Applying migration 002_engram_search_function.sql... ✓
-→ Applying migration 003_engram_event_webhook.sql... ✓
-→ Applying migration 004_engram_match_count_cap_and_explain.sql... ✓
+→ Applying migration 001_mnestra_tables.sql... ✓ (no-op, table exists)
+→ Applying migration 002_mnestra_search_function.sql... ✓
+→ Applying migration 003_mnestra_event_webhook.sql... ✓
+→ Applying migration 004_mnestra_match_count_cap_and_explain.sql... ✓
 → Applying migration 005_v0_1_to_v0_2_upgrade.sql... ✓
 → Applying migration 006_memory_status_rpc.sql... ✓
 → Writing ~/.termdeck/secrets.env... ✓
 → Updating ~/.termdeck/config.yaml (rag.enabled: true)... ✓
 → Verifying memory_status_aggregation()... ✓ (3,451 active memories found)
 
-Engram is configured.
+Mnestra is configured.
 
 Next steps:
   1. Restart TermDeck: termdeck
@@ -231,9 +231,9 @@ Next steps:
 
 **Implementation:**
 
-- New file `packages/cli/src/init-engram.js` exports `async function initEngram(args)`.
+- New file `packages/cli/src/init-mnestra.js` exports `async function initMnestra(args)`.
 - Uses Node's built-in `readline` for prompts — no new deps.
-- Reads each of the six migration SQL files from `node_modules/@jhizzard/engram/migrations/` (or falls back to the repo's `packages/engram-migrations/` if not installed globally — ship a copy in TermDeck's package).
+- Reads each of the six migration SQL files from `node_modules/@jhizzard/mnestra/migrations/` (or falls back to the repo's `packages/mnestra-migrations/` if not installed globally — ship a copy in TermDeck's package).
 - Uses `pg` (node-postgres) to connect via the direct database URL derived from the Supabase URL. **Prompt the user** for the direct URL if the derivation fails.
 - Writes `~/.termdeck/secrets.env` with proper dotenv format — preserves existing values on re-run.
 - Writes `~/.termdeck/config.yaml` via the `yaml` library already a dep — preserves structure, flips `rag.enabled: true`, uses `${VAR}` substitution for secrets.
@@ -247,9 +247,9 @@ const args = process.argv.slice(2);
 const subcommand = args[0];
 if (subcommand === 'init') {
   const mode = args[1];
-  if (mode === '--engram') { await require('./init-engram')(args.slice(2)); return; }
+  if (mode === '--mnestra') { await require('./init-mnestra')(args.slice(2)); return; }
   if (mode === '--rumen')  { await require('./init-rumen')(args.slice(2)); return; }
-  console.error('Usage: termdeck init --engram | --rumen');
+  console.error('Usage: termdeck init --mnestra | --rumen');
   process.exit(1);
 }
 // ... existing flag parsing ...
@@ -259,7 +259,7 @@ if (subcommand === 'init') {
 
 **Acceptance:**
 
-- `termdeck init --engram` on a fresh machine with valid credentials runs start to finish, exits 0, and a subsequent `termdeck` starts with Flashback enabled.
+- `termdeck init --mnestra` on a fresh machine with valid credentials runs start to finish, exits 0, and a subsequent `termdeck` starts with Flashback enabled.
 - Running it twice is idempotent — doesn't clobber existing secrets, reports "already applied" for migrations that exist.
 - Errors are specific ("Could not connect to Supabase: ECONNREFUSED" or "OpenAI API key appears invalid — returned 401"), not generic.
 
@@ -282,7 +282,7 @@ Press Ctrl+C at any time to cancel.
 
 → Checking for supabase CLI... ✓
 → Checking for deno... ✓
-→ Reading Engram config from ~/.termdeck/secrets.env... ✓
+→ Reading Mnestra config from ~/.termdeck/secrets.env... ✓
 → Deriving project ref from SUPABASE_URL... abcdef123456
 ? Proceed with deploy to project abcdef123456? [Y/n]: Y
 → Running: supabase link --project-ref abcdef123456... ✓
@@ -300,7 +300,7 @@ Edge Function URL: https://abcdef123456.supabase.co/functions/v1/rumen-tick
 
 Next steps:
   1. Monitor: psql $DATABASE_URL -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
-  2. Rumen insights flow back into Engram's memory_items via rumen_insights
+  2. Rumen insights flow back into Mnestra's memory_items via rumen_insights
   3. TermDeck's Flashback will surface cross-project patterns automatically
 ```
 
@@ -327,11 +327,11 @@ Next steps:
 After T1 successfully deploys Rumen manually, you run `termdeck init --rumen` against a clean test (or dry-run mode) to confirm the wizard matches the manual flow. Then commit both wizards as one commit:
 
 ```
-git add packages/cli/src/init-engram.js packages/cli/src/init-rumen.js packages/cli/src/index.js packages/server/src/setup/ package.json
-git commit -m "termdeck init: one-command Engram + Rumen setup wizards"
+git add packages/cli/src/init-mnestra.js packages/cli/src/init-rumen.js packages/cli/src/index.js packages/server/src/setup/ package.json
+git commit -m "termdeck init: one-command Mnestra + Rumen setup wizards"
 ```
 
-**Subagent delegation:** spawn a `claude-api` subagent for the prompt design of init-engram's progress messages — they need to be informative without being noisy. Delegate the wording; keep the control flow in the main agent.
+**Subagent delegation:** spawn a `claude-api` subagent for the prompt design of init-mnestra's progress messages — they need to be informative without being noisy. Delegate the wording; keep the control flow in the main agent.
 
 ---
 
@@ -361,12 +361,12 @@ The `docs-site/scripts/sync-content.mjs` script pulls READMEs from the three rep
 node scripts/sync-content.mjs
 ```
 
-Expected output: copies `README.md` from each of termdeck, engram, rumen into `docs-site/src/content/docs/`. Rebuilds. The new TermDeck README with tiered install story is now the docs-site home content.
+Expected output: copies `README.md` from each of termdeck, mnestra, rumen into `docs-site/src/content/docs/`. Rebuilds. The new TermDeck README with tiered install story is now the docs-site home content.
 
 Also add three new content pages that will hold Sprint 3's launch articles:
 
 - `src/content/docs/blog/termdeck-launch.mdx` — placeholder, linked to T4's blog post draft
-- `src/content/docs/blog/engram-deep-dive.mdx` — placeholder for article 2
+- `src/content/docs/blog/mnestra-deep-dive.mdx` — placeholder for article 2
 - `src/content/docs/blog/rumen-deep-dive.mdx` — placeholder for article 3
 
 T4 writes the actual content into these files. T3's job is to make sure they render correctly in the Astro Starlight layout.
@@ -430,7 +430,7 @@ Fresh browser tab → visit the deployed URL. Click through:
 
 - Home page renders
 - TermDeck README page renders with new Flashback-first structure
-- Engram README page renders
+- Mnestra README page renders
 - Rumen README page renders
 - Blog post placeholders exist (even if empty) so T4's articles have somewhere to live
 
@@ -448,7 +448,7 @@ Acceptance: all main navigation works, no broken links, tier 2 setup instruction
 
 ### T4.1 — Name dispute analysis (30 min, do this FIRST — might reshape the launch)
 
-Three names need checking: **TermDeck**, **Engram**, **Rumen**. For each, research and write up findings in `docs/name-dispute-analysis.md`.
+Three names need checking: **TermDeck**, **Mnestra**, **Rumen**. For each, research and write up findings in `docs/name-dispute-analysis.md`.
 
 For each name, document:
 
@@ -457,7 +457,7 @@ For each name, document:
 3. **USPTO / WIPO trademark search** — a brief look at the USPTO trademark search database (https://tmsearch.uspto.gov). Note any active registrations in Class 9 (software), Class 41/42 (services). This is reconnaissance, not legal advice — flag anything that looks real for Josh to consult an IP attorney on.
 4. **General web presence** — top Google / DuckDuckGo results for `"<name>" developer tool`. Are the first 10 results ours, or other products?
 5. **Social handles** — is `@<name>` or `@<name>dev` taken on X?
-6. **Meaning conflicts** — does the name already mean something specific in a neighboring field? (e.g., "Engram keyboard layout" is a thing in the mechanical keyboard community)
+6. **Meaning conflicts** — does the name already mean something specific in a neighboring field? (e.g., "Mnestra keyboard layout" is a thing in the mechanical keyboard community)
 
 **Then rank each name's risk:**
 
@@ -470,7 +470,7 @@ For each name, document:
 **Propose fallback names** for any yellow or red:
 
 - TermDeck fallbacks: **TerminalDeck**, **TermPilot**, **Deckside**, **TermGrid** (previous name), **Paneldeck**
-- Engram fallbacks: **Memoir**, **Graphite Memory**, **Memento**, **Encoded**, **Trace**
+- Mnestra fallbacks: **Memoir**, **Graphite Memory**, **Memento**, **Encoded**, **Trace**
 - Rumen fallbacks: **Reflect**, **Graze**, **Chew**, **Ponder**, **Ruminate** (same root, less collision risk)
 
 **Deliverable:** `docs/name-dispute-analysis.md` with a risk level and recommendation for each name. If any come back 🔴 red, **post a blocker in STATUS.md and pause the launch until Josh decides**. If all are 🟢 or 🟡, proceed to the launch copy.
@@ -483,7 +483,7 @@ Navigate to `/Users/joshuaizzard/Documents/Graciella/joshuaizzard-dev` (or where
 
 - **Title:** TermDeck
 - **Tagline:** "The terminal that remembers what you fixed last month."
-- **Description (2–3 sentences):** "Browser-based terminal multiplexer with proactive memory recall. When a panel hits an error, TermDeck automatically queries your Engram memory store and surfaces similar past fixes as a toast. Part of a three-tier open-source stack — TermDeck, Engram, Rumen — that spans terminal → memory → async learning."
+- **Description (2–3 sentences):** "Browser-based terminal multiplexer with proactive memory recall. When a panel hits an error, TermDeck automatically queries your Mnestra memory store and surfaces similar past fixes as a toast. Part of a three-tier open-source stack — TermDeck, Mnestra, Rumen — that spans terminal → memory → async learning."
 - **Links:**
   - GitHub: https://github.com/jhizzard/termdeck
   - npm: https://www.npmjs.com/package/@jhizzard/termdeck
@@ -491,9 +491,9 @@ Navigate to `/Users/joshuaizzard/Documents/Graciella/joshuaizzard-dev` (or where
 - **Screenshot:** reference `docs/screenshots/dashboard-4panel.png` once T1 captures it (or fall back to the existing `assets/hero.jpg` for launch, update later)
 - **Tags:** `devtools`, `terminal`, `memory`, `rag`, `typescript`, `nodejs`
 
-Also add project cards for Engram and Rumen (linked from the TermDeck card as "part of the three-tier stack"):
+Also add project cards for Mnestra and Rumen (linked from the TermDeck card as "part of the three-tier stack"):
 
-- **Engram:** persistent developer memory MCP server. Works with Claude Code, Cursor, Windsurf, Cline, Continue. pgvector + hybrid search + 3-layer progressive disclosure.
+- **Mnestra:** persistent developer memory MCP server. Works with Claude Code, Cursor, Windsurf, Cline, Continue. pgvector + hybrid search + 3-layer progressive disclosure.
 - **Rumen:** async learning layer. Runs on a cron over any pgvector memory store. Reads, relates, synthesizes insights via Haiku, writes back.
 
 **Deploy:** once content is ready, `git commit && git push`. If joshuaizzard.com is on Vercel, auto-deploy fires.
@@ -547,9 +547,9 @@ Write `docs/launch/blog-post-termdeck.md`. 800–1200 words. Follow the outline 
 
 Target publication: joshuaizzard.com/blog + dev.to + Hashnode.
 
-### T4.7 — Blog post 2: "Engram — a persistent memory MCP for Claude Code and Cursor" (30 min)
+### T4.7 — Blog post 2: "Mnestra — a persistent memory MCP for Claude Code and Cursor" (30 min)
 
-Write `docs/launch/blog-post-engram.md`. 800 words. Angle: Engram as a standalone product for MCP-client users who don't care about TermDeck. Covers:
+Write `docs/launch/blog-post-mnestra.md`. 800 words. Angle: Mnestra as a standalone product for MCP-client users who don't care about TermDeck. Covers:
 
 - Why memory matters for LLM-assisted coding
 - Six MCP tools explained with concrete examples
@@ -569,7 +569,7 @@ Write `docs/launch/blog-post-rumen.md`. 800 words. Angle: Rumen as the novel pie
 - Cost guardrails and budget caps
 - Deployment model: Supabase Edge Function + pg_cron
 - What Rumen v0.3 will add (question generation)
-- Link back to TermDeck + Engram
+- Link back to TermDeck + Mnestra
 
 Target publication: dev.to + Hashnode, ~1 week after the HN launch.
 
@@ -590,7 +590,7 @@ git commit -m "launch: show HN post, X thread, comment playbook, three blog post
 T1.1 Tier 2 verify  ──►  T1.2 Rumen deploy  ──►  T1.3 GIF capture  ──►  T1.4 final smoke
                                                    │
                                                    ▼
-T2.1 init-engram    ──►  T2.2 init-rumen    ──►  T2.3 commit (waits on T1 verifying)
+T2.1 init-mnestra    ──►  T2.2 init-rumen    ──►  T2.3 commit (waits on T1 verifying)
                                                    
 T3.1 build check    ──►  T3.2 sync content  ──►  T3.3 vercel deploy  ──►  T3.4 update help button  ──►  T3.5 publish 0.2.1
 
@@ -622,7 +622,7 @@ create docs/tier2-verification.md, docs/rumen-deploy-log.md, and docs/screenshot
 Before starting: read the sprint plan in full, read docs/STATUS.md, append a
 Sprint 3 "started" entry under "## Sprint 3 — Terminal 1".
 
-Start with T1.1 (verify Engram Tier 2). When ✅, proceed to T1.2 (Rumen deploy),
+Start with T1.1 (verify Mnestra Tier 2). When ✅, proceed to T1.2 (Rumen deploy),
 then T1.3 (GIF capture), then T1.4 (final smoke test). Post each task's result
 to STATUS.md as you go. If you hit a blocker (especially on the Rumen deploy),
 post 🛑 in STATUS.md with the exact error.
@@ -637,7 +637,7 @@ You are Terminal 2 (termdeck init setup wizards) for Sprint 3.
 Plan: /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/SPRINT_3_PLAN.md
 
 Execute only section "3. Terminal 2". You own:
-  packages/cli/src/init-engram.js (new)
+  packages/cli/src/init-mnestra.js (new)
   packages/cli/src/init-rumen.js (new)
   packages/server/src/setup/** (new)
   packages/cli/src/index.js (subcommand routing)
@@ -647,7 +647,7 @@ Do NOT edit packages/client/public/, docs-site/, or docs/launch/.
 Before starting: read the sprint plan, read docs/STATUS.md, append a Sprint 3
 "started" entry under "## Sprint 3 — Terminal 2".
 
-Start with T2.1 (init --engram). When ✅, proceed to T2.2 (init --rumen), then
+Start with T2.1 (init --mnestra). When ✅, proceed to T2.2 (init --rumen), then
 T2.3 (commit). The commit in T2.3 waits on T1 confirming the Rumen deploy
 manual flow works — watch STATUS.md for T1's "✅ T1.2 rumen deploy verified"
 entry before committing.
@@ -718,7 +718,7 @@ When every terminal posts `— end of Sprint 3 session —`:
    - TermDeck repo: T2 wizards, T3 docs-site, T4 launch docs, T1 screenshots
    - joshuaizzard-dev repo: T4 project cards
    - Rumen repo: no changes expected (T1 only deploys, doesn't edit source)
-   - Engram repo: no changes expected
+   - Mnestra repo: no changes expected
 3. Scoped commits per terminal:
    - T1 docs + screenshots → `docs: sprint 3 verification logs and launch screenshots`
    - T2 wizards → (already committed by T2 per section 3.T2.3)

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Public documentation site for the TermDeck / Engram / Rumen stack.",
+  "description": "Public documentation site for the TermDeck / Mnestra / Rumen stack.",
   "engines": {
     "node": ">=20"
   },

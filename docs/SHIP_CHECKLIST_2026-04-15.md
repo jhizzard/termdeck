@@ -126,7 +126,7 @@ After Phase 1 is all-green, I stage and commit everything touched this session a
 - FOLLOWUP.md updates
 - `~/.termdeck/config.yaml` is NOT committed — personal config, lives outside the repo
 
-### Engram
+### Mnestra
 - No further changes this session beyond what's already committed and pushed
 
 ### Rumen
@@ -139,7 +139,7 @@ After Phase 1 is all-green, I stage and commit everything touched this session a
 
 Capture the three visuals the launch needs. These require your actual desktop with real work in the panels.
 
-- **Flashback demo GIF.** 4-panel TermDeck dashboard, run a command that fails in panel 2 (ideally one where Engram has a relevant past memory), wait for the toast, click it, show the expanded Memory tab. QuickTime screen recording or `licecap`, trim to 10–14 seconds, save as `docs/screenshots/flashback-demo.gif`. Max 4 MB.
+- **Flashback demo GIF.** 4-panel TermDeck dashboard, run a command that fails in panel 2 (ideally one where Mnestra has a relevant past memory), wait for the toast, click it, show the expanded Memory tab. QuickTime screen recording or `licecap`, trim to 10–14 seconds, save as `docs/screenshots/flashback-demo.gif`. Max 4 MB.
 - **Dashboard hero PNG.** 4-panel 2x2 layout with real work in each panel. Full browser window screenshot at 1920×1080, save as `docs/screenshots/dashboard-4panel.png`.
 - **Info tabs PNG.** Close-up crop of one panel with the drawer open to the `Commands` or `Memory` tab. Save as `docs/screenshots/info-tabs.png`.
 
@@ -155,7 +155,7 @@ Rewrite `README.md` top-to-bottom per the `docs/FLASHBACK_LAUNCH_ANGLE.md` struc
 3. Quickstart with four labeled install paths (pulled from INSTALL.md): `npx`, global npm, macOS native app via `install.sh`, from source
 4. How Flashback works — 4 sentences
 5. What Flashback is **not** — honest limits section
-6. Architecture: three-tier diagram linking to Engram and Rumen READMEs
+6. Architecture: three-tier diagram linking to Mnestra and Rumen READMEs
 7. Onboarding tour and help button mention
 8. Development / contribution at the bottom
 9. License, links
@@ -167,11 +167,11 @@ Rewrite `README.md` top-to-bottom per the `docs/FLASHBACK_LAUNCH_ANGLE.md` struc
 
 Execute `docs/RELEASE_CHECKLIST.md`:
 
-1. Pre-flight: `npm whoami` → confirm `jhizzard`. `npm view @jhizzard/engram` / `rumen` / `termdeck` → confirm names are available (Engram and Rumen already published at 0.1 — confirm namespace).
+1. Pre-flight: `npm whoami` → confirm `jhizzard`. `npm view @jhizzard/mnestra` / `rumen` / `termdeck` → confirm names are available (Mnestra and Rumen already published at 0.1 — confirm namespace).
 2. Version bumps: `package.json` in each repo → `0.2.0`.
-3. Build + test each repo: Engram `npm run build && npm test` → 25+ green; Rumen `npx tsc --noEmit` → clean; TermDeck nothing to build.
+3. Build + test each repo: Mnestra `npm run build && npm test` → 25+ green; Rumen `npx tsc --noEmit` → clean; TermDeck nothing to build.
 4. Publish in order:
-   - `cd engram && npm publish --access public`
+   - `cd mnestra && npm publish --access public`
    - `cd rumen && npm publish --access public`
    - `cd termdeck && npm publish --access public`
 5. Tag each repo: `git tag v0.2.0 && git push --tags`.
@@ -192,7 +192,7 @@ Update your portfolio site to feature TermDeck front-and-center. Content for the
 
 - Title: **TermDeck**
 - Tagline: "The terminal that remembers what you fixed last month."
-- Description: "Browser-based terminal multiplexer with proactive memory recall. Built with Engram (pgvector memory store) and Rumen (async learning layer). v0.2 shipped April 2026."
+- Description: "Browser-based terminal multiplexer with proactive memory recall. Built with Mnestra (pgvector memory store) and Rumen (async learning layer). v0.2 shipped April 2026."
 - Links: GitHub repo (jhizzard/termdeck), npm package (@jhizzard/termdeck), docs site (once deployed in 3.3)
 - Screenshot: the dashboard hero PNG from 2.2
 - Link below the card to the new blog post from 3.2

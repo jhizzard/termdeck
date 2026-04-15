@@ -17,7 +17,7 @@ try { Database = require('better-sqlite3'); } catch { Database = null; }
 const { SessionManager } = require('./session');
 const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = require('./database');
 const { RAGIntegration } = require('./rag');
-const { createBridge } = require('./engram-bridge');
+const { createBridge } = require('./mnestra-bridge');
 const { writeSessionLog } = require('./session-logger');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject } = require('./config');
@@ -54,10 +54,10 @@ function createServer(config) {
   // Initialize session manager
   const sessions = new SessionManager(db);
 
-  // Initialize RAG + Engram bridge
+  // Initialize RAG + Mnestra bridge
   const rag = new RAGIntegration(config, db);
-  const engramBridge = createBridge(config);
-  console.log(`[engram-bridge] mode=${engramBridge.mode}`);
+  const mnestraBridge = createBridge(config);
+  console.log(`[mnestra-bridge] mode=${mnestraBridge.mode}`);
 
   // Wire RAG to session events
   sessions.on('session:created', (s) => rag.onSessionCreated(s));
@@ -171,11 +171,11 @@ function createServer(config) {
           rag.onStatusChanged(sess, oldStatus, newStatus);
         };
 
-        // Proactive Engram queries on error — fire-and-forget, respects rag.enabled
+        // Proactive Mnestra queries on error — fire-and-forget, respects rag.enabled
         session.onErrorDetected = (sess, ctx) => {
           if (!rag.enabled) return;
           const question = `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
-          engramBridge.queryEngram({
+          mnestraBridge.queryMnestra({
             question,
             project: sess.meta.project,
             searchAll: false,
@@ -196,7 +196,7 @@ function createServer(config) {
               }
             }
           }).catch((err) => {
-            console.warn('[engram-bridge] proactive query failed:', err.message);
+            console.warn('[mnestra-bridge] proactive query failed:', err.message);
           });
         };
 
@@ -415,7 +415,7 @@ function createServer(config) {
     });
   });
 
-  // POST /api/ai/query - query Engram memory via the bridge (direct|webhook|mcp)
+  // POST /api/ai/query - query Mnestra memory via the bridge (direct|webhook|mcp)
   app.post('/api/ai/query', async (req, res) => {
     let { question, sessionId, project } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question' });
@@ -435,7 +435,7 @@ function createServer(config) {
     } : null;
 
     try {
-      const { memories, total } = await engramBridge.queryEngram({
+      const { memories, total } = await mnestraBridge.queryMnestra({
         question,
         project,
         searchAll,
@@ -455,7 +455,7 @@ function createServer(config) {
         total
       });
     } catch (err) {
-      console.error('[engram-bridge] query failed:', err.message);
+      console.error('[mnestra-bridge] query failed:', err.message);
       // Config-shaped errors are 503, everything else 502
       const msg = err.message || 'Query failed';
       const status = /not configured|OPENAI_API_KEY/i.test(msg) ? 503 : 502;

@@ -143,7 +143,7 @@ It's not a tmux replacement. tmux works in a real TTY without a display server. 
 
 ## What's coming
 
-The next phase is the part I'm most excited about. I have a separate project called Engram — a Supabase-backed memory layer that records every session, every command, every status change across all my projects. About a thousand memories so far.
+The next phase is the part I'm most excited about. I have a separate project called Mnestra — a Supabase-backed memory layer that records every session, every command, every status change across all my projects. About a thousand memories so far.
 
 I'm building an async learning layer on top of it called Rumen. Rumen runs as a Supabase Edge Function on a 15-minute cron. It pulls recent session memories, runs hybrid search across all historical memories for prior art, and synthesizes new insights. When I open TermDeck the next morning, there's a "Rumen has 2 insights and 1 question for you" notification. The insight might be "the migration error you hit last night looks like the Stripe webhook race condition you solved in another project three months ago — here's the fix." The question might be "did the lock fix actually work, or did you just work around it?"
 

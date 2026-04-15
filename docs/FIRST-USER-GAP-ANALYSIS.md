@@ -27,7 +27,7 @@
 | # | Gap | Fix |
 |---|---|---|
 | 11 | Blog says "loop is closed" — not fully | Build morning briefing or soften copy |
-| 12 | Engram never tested from clean install | Codespace test |
+| 12 | Mnestra never tested from clean install | Codespace test |
 | 13 | Rumen src/ uses pg but REST API is what works | Rewrite core to REST |
 | 14 | npm name `termdeck` is taken | Scoped package or rename |
 

@@ -1,8 +1,8 @@
-# TermDeck / Engram / Rumen — Parallel Build Plan
+# TermDeck / Mnestra / Rumen — Parallel Build Plan
 
 **Date:** 2026-04-13
 **Owner:** Joshua Izzard
-**Goal:** Close the gap between the three-tier stack (TermDeck → Engram → Rumen) and the bar set by comparable tools (`claude-mem` v6.5), using four Claude Code terminals running in parallel.
+**Goal:** Close the gap between the three-tier stack (TermDeck → Mnestra → Rumen) and the bar set by comparable tools (`claude-mem` v6.5), using four Claude Code terminals running in parallel.
 
 This document is the single source of truth for the next build session. Every terminal reads it at startup, executes only its own section, and writes progress back to `docs/STATUS.md` (see "Coordination protocol" below).
 
@@ -16,7 +16,7 @@ This document is the single source of truth for the next build session. Every te
 |---|---|
 | TermDeck milestones 1–8 | ✅ Complete. PTYs, layouts, themes, metadata, SQLite, local RAG events, auto-reconnect, 8-session stress test passed. |
 | TermDeck `/api/ai/query` | ✅ Wired end-to-end. `client:942 askAI()` → `server:375 POST /api/ai/query` → OpenAI embeddings → Supabase `memory_hybrid_search`. Returns top 5 memories scoped to the panel's project (`all:` prefix = cross-project). |
-| Engram v0.1.0 | ✅ Published as `@jhizzard/engram`. Six MCP tools, hybrid search with tiered recency decay, source-type weighting, project affinity, consolidation via Haiku. 2,600+ memories in the production store. |
+| Mnestra v0.1.0 | ✅ Published as `@jhizzard/mnestra`. Six MCP tools, hybrid search with tiered recency decay, source-type weighting, project affinity, consolidation via Haiku. 2,600+ memories in the production store. |
 | Rumen v0.1.0 | ✅ Published as `@jhizzard/rumen`. Extract + Relate + Surface phases. No LLM calls. Designed as a Supabase Edge Function triggered by `pg_cron` every 15 min. |
 | Portfolio site + blog | ✅ Shipped (joshuaizzard-com.vercel.app), 10 posts, Callout/PullQuote components. |
 | Devcontainers | ✅ All 3 repos have `.devcontainer/devcontainer.json`. |
@@ -33,24 +33,24 @@ This document is the single source of truth for the next build session. Every te
 3. No terminal switcher UI beyond `Ctrl+Shift+[` / `]` cycling. No floating switcher, no quick-jump grid, no click-to-focus target.
 4. No **reply / send-to-terminal** button — you cannot route text from one panel into another, which blocks agent-to-agent workflows.
 5. No centralized control dashboard aggregating activity across panels.
-6. No proactive memory queries — the output analyzer detects errors but never fires an automatic Engram lookup.
+6. No proactive memory queries — the output analyzer detects errors but never fires an automatic Mnestra lookup.
 7. No LLM session-log summarizer (Tier 1 feature from `PLAN-rename-and-architecture.md`).
-8. `/api/ai/query` bypasses the published Engram package — it talks to Supabase directly, which means any improvement to Engram does not flow into TermDeck.
+8. `/api/ai/query` bypasses the published Mnestra package — it talks to Supabase directly, which means any improvement to Mnestra does not flow into TermDeck.
 9. README has no hero screenshot or GIF.
 10. Windows installer exists but is untested.
 
 **From the `claude-mem` parity analysis (this session):**
 
-11. No MCP-shaped 3-layer progressive disclosure search API (`search` → `timeline` → `get_observations`). Engram has `memory_recall` which is close but single-shot and returns full rows — no token-efficient index → drill pattern.
-12. No HTTP event webhook on Engram (Fix 6 second half from `docs/RAG-FIXES-APPLIED.md`). Every TermDeck ingest call spawns an MCP child or hits Supabase directly.
+11. No MCP-shaped 3-layer progressive disclosure search API (`search` → `timeline` → `get_observations`). Mnestra has `memory_recall` which is close but single-shot and returns full rows — no token-efficient index → drill pattern.
+12. No HTTP event webhook on Mnestra (Fix 6 second half from `docs/RAG-FIXES-APPLIED.md`). Every TermDeck ingest call spawns an MCP child or hits Supabase directly.
 13. No privacy tags (`<private>…</private>` exclusion at write time).
 14. No citation endpoint (`GET /observation/:id`) — memories have UUIDs but nothing exposes them for inline citations.
-15. No `memory_export` / `memory_import` CLI (listed in Engram's "Unreleased" section).
-16. No web viewer UI for Engram memories (`claude-mem` ships one on port 37777).
+15. No `memory_export` / `memory_import` CLI (listed in Mnestra's "Unreleased" section).
+16. No web viewer UI for Mnestra memories (`claude-mem` ships one on port 37777).
 17. No documentation site (`claude-mem` ships `docs.claude-mem.ai`).
-18. No Claude Code lifecycle-hooks capture path — Engram only ingests when an MCP client writes. `claude-mem` uses 5 hooks to auto-capture tool usage.
+18. No Claude Code lifecycle-hooks capture path — Mnestra only ingests when an MCP client writes. `claude-mem` uses 5 hooks to auto-capture tool usage.
 
-**From Engram's own CHANGELOG "Unreleased":**
+**From Mnestra's own CHANGELOG "Unreleased":**
 
 19. `match_count` cap + EXPLAIN-friendly variant of `memory_hybrid_search`.
 
@@ -59,7 +59,7 @@ This document is the single source of truth for the next build session. Every te
 20. v0.2 — Claude Haiku synthesis replacing placeholder insight text, confidence scoring, batching.
 21. LLM budget caps (100/day soft, 500/day hard).
 22. Observation-ID citations in `rumen_insights.source_memory_ids` (already schema-ready, unused).
-23. CI only runs `tsc --noEmit` + a basic SQL syntax check — no integration test against a real Engram schema.
+23. CI only runs `tsc --noEmit` + a basic SQL syntax check — no integration test against a real Mnestra schema.
 
 This planning document splits every item above across four terminals such that no two terminals ever touch the same file.
 
@@ -71,7 +71,7 @@ This planning document splits every item above across four terminals such that n
 |---|---|---|
 | **T1 — TermDeck Client UI** | `termdeck` | `packages/client/public/**` (only this directory) |
 | **T2 — TermDeck Server / CLI / Config** | `termdeck` | `packages/server/src/**`, `packages/cli/src/**`, `packages/server/package.json`, `packages/cli/package.json`, `config/**`, root `package.json` |
-| **T3 — Engram** | `engram` | the entire `/Users/joshuaizzard/Documents/Graciella/engram/` repo |
+| **T3 — Mnestra** | `mnestra` | the entire `/Users/joshuaizzard/Documents/Graciella/mnestra/` repo |
 | **T4 — Rumen + shared docs site** | `rumen` + `termdeck/docs-site/` | the entire `/Users/joshuaizzard/Documents/Graciella/rumen/` repo, **plus** the new `termdeck/docs-site/` directory for the public documentation site |
 
 **Shared writable files (append-only, coordinate via timestamps):**
@@ -116,7 +116,7 @@ Status file schema (T4 creates the file if it does not exist):
 ## Terminal 2 — TermDeck Server / CLI
 ...
 
-## Terminal 3 — Engram
+## Terminal 3 — Mnestra
 ...
 
 ## Terminal 4 — Rumen + docs site
@@ -180,7 +180,7 @@ Replace the current single-row control strip at the bottom of each panel with a 
 
 - **Overview** (default): the current metadata strip — project, status, type, port, opened-at, last command.
 - **Commands**: a scrollable list of the last N commands for this panel, sourced from `GET /api/sessions/:id/history`. Click a row to copy to clipboard. Auto-scrolls on new entries.
-- **Memory**: the last N Engram hits for this panel, sourced from a new in-memory cache populated by the existing `askAI` flow plus proactive queries (see T1.4). Each row shows `source_type`, project tag, similarity %, content snippet, timestamp. Click to expand full content inline.
+- **Memory**: the last N Mnestra hits for this panel, sourced from a new in-memory cache populated by the existing `askAI` flow plus proactive queries (see T1.4). Each row shows `source_type`, project tag, similarity %, content snippet, timestamp. Click to expand full content inline.
 - **Status log**: a chronological feed of status transitions (`active → thinking → idle → errored → exited`) sourced from the `status_broadcast` WebSocket messages you already receive. Timestamped. Colored by status.
 
 Drawer starts collapsed (only the overview strip visible). Clicking a tab name expands the drawer to ~180px tall. Clicking the active tab collapses. Drawer state is per-panel, remembered across layout changes.
@@ -231,9 +231,9 @@ T1 → T2: need POST /api/sessions/:id/input accepting { text, source } — T1 w
 
 ### T1.4 — Proactive memory toast
 
-Listen for status transitions to `errored` on the status_broadcast WS messages. When a panel enters `errored`, **automatically** call `POST /api/ai/query` with a synthesized query like `"${session.meta.type} error ${session.meta.lastCommands.slice(-1)[0]}"`. Show the top result as a toast notification anchored to the panel ("Engram found a similar error in project X — click to see"). Clicking opens the Memory tab pre-filtered.
+Listen for status transitions to `errored` on the status_broadcast WS messages. When a panel enters `errored`, **automatically** call `POST /api/ai/query` with a synthesized query like `"${session.meta.type} error ${session.meta.lastCommands.slice(-1)[0]}"`. Show the top result as a toast notification anchored to the panel ("Mnestra found a similar error in project X — click to see"). Clicking opens the Memory tab pre-filtered.
 
-Do not fire more than once per 30 seconds per panel. Respect `state.config.aiQueryAvailable` — if Engram is not configured, do nothing silently.
+Do not fire more than once per 30 seconds per panel. Respect `state.config.aiQueryAvailable` — if Mnestra is not configured, do nothing silently.
 
 **Acceptance criteria:**
 
@@ -254,7 +254,7 @@ Hide the hero as soon as the first panel opens. Show it again if the user closes
 
 ### T1.6 — Centralized control dashboard (stretch)
 
-A new grid layout mode "Control" (button in the layout switcher row). Instead of PTY xterm panes, renders a vertical feed aggregating per-panel status transitions, last commands, recent errors, and recent Engram hits — like a Slack-style activity stream. Clicking a row focuses the source panel and returns to the 2x2 layout.
+A new grid layout mode "Control" (button in the layout switcher row). Instead of PTY xterm panes, renders a vertical feed aggregating per-panel status transitions, last commands, recent errors, and recent Mnestra hits — like a Slack-style activity stream. Clicking a row focuses the source panel and returns to the 2x2 layout.
 
 Only start T1.6 after T1.1–T1.5 are green.
 
@@ -285,43 +285,43 @@ Commit the screenshots to the `termdeck` repo. T4 will reference them from the d
 - `packages/cli/src/**` — `index.js`
 - `packages/server/package.json`, `packages/cli/package.json`, `packages/client/package.json` (name/version only, not public/), root `package.json`
 - `config/**` — `config.example.yaml`, `supabase-migration.sql`
-- any new server subdirectories (e.g. `packages/server/src/engram-bridge/`)
+- any new server subdirectories (e.g. `packages/server/src/mnestra-bridge/`)
 
 **Must not touch:**
 - `packages/client/public/**` — that is T1's.
-- The `engram` or `rumen` repos — those are T3 / T4.
+- The `mnestra` or `rumen` repos — those are T3 / T4.
 
 **Context to load first:**
 
 1. `packages/server/src/index.js` in full.
 2. `packages/server/src/session.js` — the output analyzer and event emitter.
 3. `packages/server/src/rag.js` — the current RAG integration.
-4. Engram's `src/index.ts`, `mcp-server/index.ts`, `README.md` — **read-only**. Understand the published interface you will consume.
+4. Mnestra's `src/index.ts`, `mcp-server/index.ts`, `README.md` — **read-only**. Understand the published interface you will consume.
 5. `docs/STATUS.md`.
 
 **Tasks (in priority order):**
 
-### T2.1 — Engram bridge mode (HIGHEST)
+### T2.1 — Mnestra bridge mode (HIGHEST)
 
-`/api/ai/query` currently embeds and queries Supabase directly, duplicating logic that already exists inside the `@jhizzard/engram` package. This is the single biggest technical-debt item. Fix it by adding a configurable **Engram bridge**.
+`/api/ai/query` currently embeds and queries Supabase directly, duplicating logic that already exists inside the `@jhizzard/mnestra` package. This is the single biggest technical-debt item. Fix it by adding a configurable **Mnestra bridge**.
 
-Introduce a new server module `packages/server/src/engram-bridge/index.js` that exports a single async function:
+Introduce a new server module `packages/server/src/mnestra-bridge/index.js` that exports a single async function:
 
 ```js
-async function queryEngram({ question, project, searchAll, sessionContext }) { ... }
+async function queryMnestra({ question, project, searchAll, sessionContext }) { ... }
 ```
 
-Behind a config toggle `rag.engramMode` (default: `direct`), the bridge supports three modes:
+Behind a config toggle `rag.mnestraMode` (default: `direct`), the bridge supports three modes:
 
 - `direct` — current behavior, unchanged. Preserves backward compat.
-- `webhook` — POSTs to Engram's HTTP event webhook at `rag.engramWebhookUrl` (T3 is building this). Request body `{ op: 'recall', question, project, min_results: 5 }`. Expects `{ memories: [...] }`.
-- `mcp` — spawns the `engram` binary (from `@jhizzard/engram` npm install) on first call, keeps the stdio transport alive, issues `memory_recall` / `memory_search` / `memory_get` via JSON-RPC.
+- `webhook` — POSTs to Mnestra's HTTP event webhook at `rag.mnestraWebhookUrl` (T3 is building this). Request body `{ op: 'recall', question, project, min_results: 5 }`. Expects `{ memories: [...] }`.
+- `mcp` — spawns the `mnestra` binary (from `@jhizzard/mnestra` npm install) on first call, keeps the stdio transport alive, issues `memory_recall` / `memory_search` / `memory_get` via JSON-RPC.
 
-Swap `POST /api/ai/query` to call `queryEngram(...)` instead of inlining the OpenAI + Supabase fetches. Keep the existing response shape — **do not break T1's consumer.**
+Swap `POST /api/ai/query` to call `queryMnestra(...)` instead of inlining the OpenAI + Supabase fetches. Keep the existing response shape — **do not break T1's consumer.**
 
 **Acceptance criteria:**
 
-- [ ] All three modes pass a smoke test against a live Supabase instance (direct mode existing behavior) or against a Engram webhook stub / MCP child.
+- [ ] All three modes pass a smoke test against a live Supabase instance (direct mode existing behavior) or against a Mnestra webhook stub / MCP child.
 - [ ] Mode defaults to `direct` so no existing users break.
 - [ ] Errors from any mode surface the same `{ error: string }` shape client already handles.
 - [ ] The bridge handles MCP child crashes by respawning on next call.
@@ -344,11 +344,11 @@ Ship this **early** — T1.3 is waiting. Post `T2 → T1: /api/sessions/:id/inpu
 
 Add a `source TEXT DEFAULT 'user'` column to `command_history`. Migration runs automatically on server start if the column is missing (`PRAGMA table_info` check). Update `logCommand()` in `database.js` to accept and store `source`. Backfill existing rows with `'user'`.
 
-### T2.4 — Proactive Engram queries from the output analyzer
+### T2.4 — Proactive Mnestra queries from the output analyzer
 
 Currently `session.js` emits `status_changed` events. Add a new event `error_detected` that fires when status transitions into `errored`, carrying the last-command context and a stripped tail of the PTY output (last 200 bytes, ANSI-stripped). In `index.js`, subscribe to this event and:
 
-1. Call `queryEngram({ question: "${meta.type} error ${lastCommand}", project: meta.project, sessionContext })`.
+1. Call `queryMnestra({ question: "${meta.type} error ${lastCommand}", project: meta.project, sessionContext })`.
 2. Push the top hit to the panel's WebSocket as a new message type `{ type: 'proactive_memory', hit }`.
 
 T1.4 already listens for proactive toasts — keep the schema T1 expects.
@@ -420,8 +420,8 @@ Update `config/config.example.yaml` with the new keys:
 ```yaml
 rag:
   enabled: false
-  engramMode: direct  # direct | webhook | mcp
-  engramWebhookUrl: http://localhost:37778/engram
+  mnestraMode: direct  # direct | webhook | mcp
+  mnestraWebhookUrl: http://localhost:37778/mnestra
   # ... existing keys ...
 sessionLogs:
   enabled: false
@@ -436,40 +436,40 @@ sessionLogs:
 
 ---
 
-## 5. Terminal 3 — Engram
+## 5. Terminal 3 — Mnestra
 
-**Working directory:** `/Users/joshuaizzard/Documents/Graciella/engram`
+**Working directory:** `/Users/joshuaizzard/Documents/Graciella/mnestra`
 
-**Owns:** the entire Engram repo.
+**Owns:** the entire Mnestra repo.
 
-**Must not touch:** anything outside `/Users/joshuaizzard/Documents/Graciella/engram/`. That includes `rumen` and `termdeck`.
+**Must not touch:** anything outside `/Users/joshuaizzard/Documents/Graciella/mnestra/`. That includes `rumen` and `termdeck`.
 
 **Context to load first:**
 
 1. `README.md`, `CHANGELOG.md`, `docs/SCHEMA.md`, `docs/SOURCE-TYPES.md`, `docs/INTEGRATION.md`, `docs/RAG-FIXES-APPLIED.md`.
 2. `src/index.ts`, `src/recall.ts`, `src/remember.ts`, `src/search.ts`, `src/consolidate.ts`.
 3. `mcp-server/index.ts`.
-4. `migrations/001_engram_tables.sql`, `migrations/002_engram_search_function.sql`, `migrations/003_engram_event_webhook.sql`.
+4. `migrations/001_mnestra_tables.sql`, `migrations/002_mnestra_search_function.sql`, `migrations/003_mnestra_event_webhook.sql`.
 5. `docs/STATUS.md` in the TermDeck repo (at `/Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/STATUS.md`). Yes, you post cross-repo status to the TermDeck STATUS.md — that is the single coordination surface.
 
 **Tasks (in priority order):**
 
 ### T3.1 — HTTP event webhook server (UNBLOCKS T2.1 webhook mode)
 
-`migrations/003_engram_event_webhook.sql` is currently a placeholder. Ship the server side:
+`migrations/003_mnestra_event_webhook.sql` is currently a placeholder. Ship the server side:
 
-Add a new module `src/webhook-server.ts` that exposes a tiny HTTP server (use `http` core module or `express` — match what Engram already depends on; do not add new deps if avoidable). Port: configurable via `ENGRAM_WEBHOOK_PORT`, default `37778`. Endpoints:
+Add a new module `src/webhook-server.ts` that exposes a tiny HTTP server (use `http` core module or `express` — match what Mnestra already depends on; do not add new deps if avoidable). Port: configurable via `MNESTRA_WEBHOOK_PORT`, default `37778`. Endpoints:
 
-- `POST /engram` — body `{ op, ...args }` where `op` is one of `remember`, `recall`, `search`, `status`. Dispatches to the same functions the MCP server calls.
+- `POST /mnestra` — body `{ op, ...args }` where `op` is one of `remember`, `recall`, `search`, `status`. Dispatches to the same functions the MCP server calls.
 - `GET /healthz` — returns `{ ok: true, version, store: { rows, last_write } }`.
 - `GET /observation/:id` — fetch a single memory by UUID. Returns `{ id, content, source_type, project, created_at, metadata }` or 404. **This is the citation endpoint** (T3.4).
 
-Expose a new CLI subcommand `engram serve` that starts the webhook server. The MCP server keeps working unchanged — the two are additive.
+Expose a new CLI subcommand `mnestra serve` that starts the webhook server. The MCP server keeps working unchanged — the two are additive.
 
 **Acceptance criteria:**
 
-- [ ] `engram serve` binds on `$ENGRAM_WEBHOOK_PORT`, logs startup line `[engram-webhook] listening on :37778`.
-- [ ] `POST /engram` with `{ op: 'recall', question: 'hello' }` returns identical results to `memory_recall` via MCP stdio.
+- [ ] `mnestra serve` binds on `$MNESTRA_WEBHOOK_PORT`, logs startup line `[mnestra-webhook] listening on :37778`.
+- [ ] `POST /mnestra` with `{ op: 'recall', question: 'hello' }` returns identical results to `memory_recall` via MCP stdio.
 - [ ] Graceful shutdown on SIGTERM.
 - [ ] Unit test: mock a recall and assert JSON shape.
 - [ ] Post `T3 → T2: webhook ready at :37778` in STATUS.md the moment this lands, so T2 can flip the bridge.
@@ -516,15 +516,15 @@ Covered by `GET /observation/:id` in T3.1. Verify the `memory_get` MCP tool is t
 
 New CLI subcommands:
 
-- `engram export --project <name> --since <iso> > dump.jsonl` — streams memory_items as JSONL, one row per line.
-- `engram import < dump.jsonl` — reads JSONL, embeds missing embeddings (rows that already have an embedding are upserted as-is), deduplicates against existing rows.
+- `mnestra export --project <name> --since <iso> > dump.jsonl` — streams memory_items as JSONL, one row per line.
+- `mnestra import < dump.jsonl` — reads JSONL, embeds missing embeddings (rows that already have an embedding are upserted as-is), deduplicates against existing rows.
 
-This is the migration path out of Engram — important for credibility. Use streaming IO, do not load the whole store into memory.
+This is the migration path out of Mnestra — important for credibility. Use streaming IO, do not load the whole store into memory.
 
 ### T3.6 — `match_count` cap + EXPLAIN variant
 
 - Cap `match_count` in `memory_hybrid_search` at 200 (configurable). Currently unbounded, which risks expensive queries at scale.
-- Ship an `EXPLAIN (ANALYZE, BUFFERS)` variant as a separate SQL function `memory_hybrid_search_explain` that returns the plan as text. Useful for `engram diagnose`.
+- Ship an `EXPLAIN (ANALYZE, BUFFERS)` variant as a separate SQL function `memory_hybrid_search_explain` that returns the plan as text. Useful for `mnestra diagnose`.
 
 ### T3.7 — Docs updates
 
@@ -548,11 +548,11 @@ Update `README.md` and `CHANGELOG.md` with everything from T3.1–T3.6. Move ite
 
 **Must not touch:**
 - Anything inside `packages/` of the TermDeck repo.
-- The `engram` repo (that is T3).
+- The `mnestra` repo (that is T3).
 
 **Context to load first:**
 
-1. `rumen/README.md`, `rumen/CHANGELOG.md`, `rumen/docs/ENGRAM-COMPATIBILITY.md`.
+1. `rumen/README.md`, `rumen/CHANGELOG.md`, `rumen/docs/MNESTRA-COMPATIBILITY.md`.
 2. `rumen/src/extract.ts`, `relate.ts`, `surface.ts`, `db.ts`.
 3. `rumen/migrations/001_rumen_tables.sql`, `002_pg_cron_schedule.sql`.
 4. `rumen/supabase/functions/rumen-tick/index.ts`.
@@ -584,7 +584,7 @@ Update `package.json` to add `@anthropic-ai/sdk` as a dep. Update `src/types.ts`
 
 ### T4.2 — Rumen CI integration test
 
-Extend the CI workflow to run `scripts/test-locally.ts` against an ephemeral Postgres (GitHub Actions `services: postgres`) seeded with a minimal `memory_items` fixture. Add the fixture under `tests/fixtures/engram-minimal.sql`.
+Extend the CI workflow to run `scripts/test-locally.ts` against an ephemeral Postgres (GitHub Actions `services: postgres`) seeded with a minimal `memory_items` fixture. Add the fixture under `tests/fixtures/mnestra-minimal.sql`.
 
 **Acceptance criteria:**
 
@@ -602,7 +602,7 @@ Minimum pages:
 
 - `/` — landing, one-pager describing the three-tier stack.
 - `/termdeck` — TermDeck README rendered.
-- `/engram` — Engram README rendered.
+- `/mnestra` — Mnestra README rendered.
 - `/rumen` — Rumen README rendered.
 - `/architecture` — the three-tier diagram + how the pieces relate.
 - `/roadmap` — copy of the roadmap sections from each CHANGELOG.
@@ -615,7 +615,7 @@ Deploy target: Vercel. Domain: `termdeck.dev` (stretch — verify Josh owns it; 
 
 - [ ] `pnpm --filter docs-site run dev` serves the site locally.
 - [ ] `pnpm --filter docs-site run build` produces a static build with no broken links.
-- [ ] The sync script runs cleanly even if Engram or Rumen are at different commits.
+- [ ] The sync script runs cleanly even if Mnestra or Rumen are at different commits.
 
 ### T4.5 — Screenshot ingestion from T1
 
@@ -629,7 +629,7 @@ Draft `CHANGELOG.md` entries for the next minor of all three repos reflecting wh
 
 - T4.1 synthesize prompt design — delegate to a `claude-api` skill invocation to produce a well-cached prompt (with the `cache_control` block on the system prompt for reuse across batch calls).
 - T4.4 docs site scaffold — delegate the initial Astro Starlight setup to a `general-purpose` subagent ("scaffold Astro Starlight, wire symlink content sources from three repos, produce a working dev server"). Main agent reviews and customizes.
-- T4.2 CI fixture creation — a small `general-purpose` subagent can pattern-match Engram's existing test setup if there is one.
+- T4.2 CI fixture creation — a small `general-purpose` subagent can pattern-match Mnestra's existing test setup if there is one.
 
 ---
 
@@ -677,7 +677,7 @@ You are Terminal 2 (TermDeck Server / CLI / Config), referenced in
 /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/PLANNING_DOCUMENT.md.
 
 Execute only the section titled "4. Terminal 2 — TermDeck Server / CLI / Config / Packaging"
-and nothing else. Do not edit any files under packages/client/public/ or either of the engram
+and nothing else. Do not edit any files under packages/client/public/ or either of the mnestra
 or rumen repos. Before starting, read docs/PLANNING_DOCUMENT.md in full, read docs/STATUS.md,
 and append a "started" entry under your Terminal 2 header.
 
@@ -690,12 +690,12 @@ Do not commit or push anything without explicit approval.
 ### Terminal 3 prompt
 
 ```
-You are Terminal 3 (Engram), referenced in
+You are Terminal 3 (Mnestra), referenced in
 /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/PLANNING_DOCUMENT.md.
 
-Your working directory is /Users/joshuaizzard/Documents/Graciella/engram. Execute only the
-section titled "5. Terminal 3 — Engram" and nothing else. Do not edit anything outside the
-engram repo. Before starting, read the planning document and the TermDeck STATUS.md file at
+Your working directory is /Users/joshuaizzard/Documents/Graciella/mnestra. Execute only the
+section titled "5. Terminal 3 — Mnestra" and nothing else. Do not edit anything outside the
+mnestra repo. Before starting, read the planning document and the TermDeck STATUS.md file at
 /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/STATUS.md,
 and append a "started" entry under your Terminal 3 header.
 
@@ -715,7 +715,7 @@ Your primary working directory is /Users/joshuaizzard/Documents/Graciella/rumen.
 own /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs-site/
 which you will create from scratch. Execute only the section titled "6. Terminal 4 — Rumen v0.2
 + shared docs site" and nothing else. Do not edit anything inside the packages/ directory of
-TermDeck, and do not edit the engram repo.
+TermDeck, and do not edit the mnestra repo.
 
 Before starting, read the planning document and the TermDeck STATUS.md file at
 /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs/STATUS.md,
@@ -746,8 +746,8 @@ Josh comes back, reads `docs/STATUS.md` top to bottom, reviews each terminal's d
 
 These are real gaps but explicitly parked to keep the four terminals from sprawling. Do not attempt them unless you have finished your whole section and coordinated with Josh first.
 
-- Claude Code lifecycle-hooks auto-capture plugin (Engram-as-a-plugin distribution path, à la `claude-mem` `/plugin install`).
-- Web viewer UI for Engram memories on a local port (parity with `claude-mem`'s `:37777`).
+- Claude Code lifecycle-hooks auto-capture plugin (Mnestra-as-a-plugin distribution path, à la `claude-mem` `/plugin install`).
+- Web viewer UI for Mnestra memories on a local port (parity with `claude-mem`'s `:37777`).
 - TermDeck control dashboard aggregation view (T1.6 is a stretch within T1, but the full Slack-style feed is out of scope).
 - Rumen v0.3 question generation.
 - Rumen v0.4 self-tuning.

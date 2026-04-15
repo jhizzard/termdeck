@@ -35,20 +35,20 @@ rag:
   # developerId: your-username (defaults to OS username)
   syncIntervalMs: 10000
 
-  # Engram bridge — how /api/ai/query talks to @jhizzard/engram.
+  # Mnestra bridge — how /api/ai/query talks to @jhizzard/mnestra.
   #   direct  — server embeds + queries Supabase itself (default, preserves v0.1 behavior)
-  #   webhook — POST to a running `engram serve` HTTP webhook (see engramWebhookUrl)
-  #   mcp     — spawn the local `engram` binary and talk JSON-RPC over stdio
-  engramMode: direct
-  engramWebhookUrl: http://localhost:37778/engram
-  # engramBinary: engram   # override path to the @jhizzard/engram CLI for mcp mode
+  #   webhook — POST to a running `mnestra serve` HTTP webhook (see mnestraWebhookUrl)
+  #   mcp     — spawn the local `mnestra` binary and talk JSON-RPC over stdio
+  mnestraMode: direct
+  mnestraWebhookUrl: http://localhost:37778/mnestra
+  # mnestraBinary: mnestra   # override path to the @jhizzard/mnestra CLI for mcp mode
 
   # Supabase table names (created by config/supabase-migration.sql)
   tables:
-    session: engram_session_memory
-    project: engram_project_memory
-    developer: engram_developer_memory
-    commands: engram_commands
+    session: mnestra_session_memory
+    project: mnestra_project_memory
+    developer: mnestra_developer_memory
+    commands: mnestra_commands
 
 # Per-session markdown logs written to ~/.termdeck/sessions/ on session exit.
 # Zero-config: works without Supabase / OpenAI. Optional LLM summary requires

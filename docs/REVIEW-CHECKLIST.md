@@ -6,12 +6,12 @@ Short, linear, no prose. Tick as you go. Full detail lives in `PLANNING_DOCUMENT
 
 - [X] `cat docs/STATUS.md` — read each terminal's end-of-session summary
 - [X] `cd termdeck && git status --short` — expect T1 client + T2 server/cli/config + T4 docs-site/ changes
-- [X] `cd engram && git status --short` — expect T3 changes
+- [X] `cd mnestra && git status --short` — expect T3 changes
 - [X] `cd rumen && git status --short` — expect T4 rumen changes
 
 ## Phase B — typecheck + unit tests (non-interactive, safe)
 
-- [X] `cd engram && npm run build && npm test` — expect 21/21 green, typecheck clean
+- [X] `cd mnestra && npm run build && npm test` — expect 21/21 green, typecheck clean
 - [X] `cd rumen && npx tsc --noEmit` — expect clean
 - [X] `cd termdeck/docs-site && npm install && npm run build` — expect 25 static pages
   **16:47:48 [WARN] [@astrojs/sitemap] The Sitemap integration requires the `site` astro.config option. Skipping.**
@@ -34,14 +34,14 @@ Short, linear, no prose. Tick as you go. Full detail lives in `PLANNING_DOCUMENT
   - [ ] If RAG is disabled in your config, skip this (toast stays silent by design)
 - [ ] **T2.5 session logs:** kill the server, restart with `--session-logs`, open + close a panel, check `ls ~/.termdeck/sessions/` for new markdown file **Couldn't find this directory**
 
-## Phase D — Engram webhook live test (requires Supabase creds)
+## Phase D — Mnestra webhook live test (requires Supabase creds)
 
 **Important — path correction:** T3 built the webhook at `dist/src/webhook-server.js`, not `dist/webhook-server.js`. Also, the webhook module exports `startWebhookServer()` but has no top-level CLI entry — start it with a one-liner.
 
-**Credentials:** Engram reads `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `OPENAI_API_KEY` from the environment. TermDeck stores these in `~/.termdeck/config.yaml` under `rag.*`. Export them from there into the shell without echoing the values:
+**Credentials:** Mnestra reads `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `OPENAI_API_KEY` from the environment. TermDeck stores these in `~/.termdeck/config.yaml` under `rag.*`. Export them from there into the shell without echoing the values:
 
 ```
-cd /Users/joshuaizzard/Documents/Graciella/engram
+cd /Users/joshuaizzard/Documents/Graciella/mnestra
 
 export SUPABASE_URL="$(python3 -c "import yaml; print(yaml.safe_load(open(\"$HOME/.termdeck/config.yaml\"))['rag']['supabaseUrl'])")"
 export SUPABASE_SERVICE_ROLE_KEY="$(python3 -c "import yaml; print(yaml.safe_load(open(\"$HOME/.termdeck/config.yaml\"))['rag']['supabaseKey'])")"
@@ -54,7 +54,7 @@ export OPENAI_API_KEY="$(python3 -c "import yaml; print(yaml.safe_load(open(\"$H
 
 ```
 # 1. Start webhook in background
-ENGRAM_WEBHOOK_PORT=37778 node -e "require('./dist/src/webhook-server.js').startWebhookServer()" &
+MNESTRA_WEBHOOK_PORT=37778 node -e "require('./dist/src/webhook-server.js').startWebhookServer()" &
 WEBHOOK_PID=$!
 sleep 1   # one-time startup wait, not a poll loop
 
@@ -62,12 +62,12 @@ sleep 1   # one-time startup wait, not a poll loop
 curl -s http://localhost:37778/healthz | python3 -m json.tool
 
 # 3. Recall op — should return a hits array
-curl -s -X POST http://localhost:37778/engram \
+curl -s -X POST http://localhost:37778/mnestra \
   -H 'Content-Type: application/json' \
   -d '{"op":"recall","question":"TermDeck architecture","min_results":3}' | python3 -m json.tool
 
 # 4. Index op (T3.2 three-layer API — progressive disclosure)
-curl -s -X POST http://localhost:37778/engram \
+curl -s -X POST http://localhost:37778/mnestra \
   -H 'Content-Type: application/json' \
   -d '{"op":"index","query":"TermDeck","limit":5}' | python3 -m json.tool
 
@@ -96,7 +96,7 @@ git commit -m "T1: panel info tabs, switcher, reply, proactive toast, empty stat
 
 # 2. T2 server/cli/config
 git add packages/server packages/cli config/ README.md package.json packages/server/package.json packages/cli/package.json
-git commit -m "T2: engram bridge, POST /api/sessions/:id/input, session logs, @jhizzard/termdeck rename"
+git commit -m "T2: mnestra bridge, POST /api/sessions/:id/input, session logs, @jhizzard/termdeck rename"
 
 # 3. T4 docs-site portion
 git add docs-site/
@@ -106,8 +106,8 @@ git commit -m "docs-site: Astro Starlight scaffold with cross-repo sync"
 git add docs/STATUS.md docs/PLANNING_DOCUMENT.md docs/REVIEW-CHECKLIST.md docs/FOLLOWUP.md
 git commit -m "docs: session status + review checklist + followup"
 
-# 5. Engram v0.2
-cd /Users/joshuaizzard/Documents/Graciella/engram
+# 5. Mnestra v0.2
+cd /Users/joshuaizzard/Documents/Graciella/mnestra
 git add -A
 git commit -m "v0.2: webhook server, 3-layer tools, privacy tags, export/import, match_count cap"
 
@@ -126,12 +126,12 @@ Create `docs/FOLLOWUP.md` with these items:
 - [ ] **T1 switcher z-index / position** — move switcher mount out of `.panel` container into top toolbar
 - [ ] **T2.6 Docker prebuild verify** — run `docker run --rm -v $(pwd):/app -w /app node:24-alpine sh -lc "rm -rf node_modules && npm install --no-save"` and confirm no C++ compile
 - [ ] **T4.1/T4.2 Rumen CI green** — push rumen branch, verify GitHub Actions integration test passes
-- [ ] **Publish decisions** — Engram v0.2, Rumen v0.2, TermDeck rename are staged but NOT versioned or published; decide per-package when to tag + `npm publish`
+- [ ] **Publish decisions** — Mnestra v0.2, Rumen v0.2, TermDeck rename are staged but NOT versioned or published; decide per-package when to tag + `npm publish`
 
 ## Phase G — after commits
 
 - [ ] Save memories via `memory_remember`:
   - Four-terminal parallel playbook (file-ownership + STATUS.md protocol worked)
   - Pinned versions: `node-pty@1.1.0-beta11`, `better-sqlite3@12.9.0`, Starlight 0.38 + Astro 6
-  - Engram webhook contract: `POST :37778/engram {op,...}`
+  - Mnestra webhook contract: `POST :37778/mnestra {op,...}`
   - macOS Alt key → use `e.code` not `e.key` in browser keybind handlers

@@ -21,7 +21,7 @@ Thanks for your interest in TermDeck. This is a small solo project right now, bu
 - Major architectural changes (e.g., introducing a build step, switching the client to React, etc.)
 - New external dependencies
 - Anything that changes the WebSocket protocol
-- Anything that touches the RAG/Engram integration (it's unstable and being rewritten)
+- Anything that touches the RAG/Mnestra integration (it's unstable and being rewritten)
 
 ## Local setup
 

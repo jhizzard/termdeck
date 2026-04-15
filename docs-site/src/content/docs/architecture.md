@@ -1,9 +1,9 @@
 ---
 title: Architecture
-description: How TermDeck, Engram, and Rumen fit together — data flow, write path, and the async learning loop.
+description: How TermDeck, Mnestra, and Rumen fit together — data flow, write path, and the async learning loop.
 ---
 
-The TermDeck / Engram / Rumen stack is three small services with one shared
+The TermDeck / Mnestra / Rumen stack is three small services with one shared
 storage layer (Supabase / Postgres). Each piece is useful on its own; the
 combination gives you a control-room terminal that remembers and learns.
 
@@ -12,17 +12,17 @@ combination gives you a control-room terminal that remembers and learns.
 - **TermDeck** — the human-facing surface. A browser dashboard of real PTY
   terminals. Each panel has live metadata (project, status, last command, AI
   agent state). TermDeck is where work happens.
-- **Engram** — the memory store. A durable, searchable log of what happened in
+- **Mnestra** — the memory store. A durable, searchable log of what happened in
   every session. Hybrid search (keyword + semantic + recency), tiered decay,
   project affinity. Exposed over MCP and over HTTP.
-- **Rumen** — the learner. A scheduled worker that reads Engram, extracts facts,
+- **Rumen** — the learner. A scheduled worker that reads Mnestra, extracts facts,
   relates them to prior memories, synthesises insights, and writes those
   insights back for future sessions to find.
 
 ## Data flow
 
 ```
-Browser ──► TermDeck server ──► Engram (write + recall)
+Browser ──► TermDeck server ──► Mnestra (write + recall)
                                   │
                                   ▼
                                 Rumen (async: extract → relate → synthesize → surface)
@@ -36,18 +36,18 @@ Browser ──► TermDeck server ──► Engram (write + recall)
 3. The **session analyzer** (server-side, in
    `packages/server/src/session.js`) watches stdout and classifies events:
    command start, command output, file edit, status change, error.
-4. For each salient event, the analyzer fires an **Engram webhook** (HTTP POST,
-   fire-and-forget). Engram writes to `memory_items` in Supabase.
-5. TermDeck never blocks on the write. If Engram is down, the event is
+4. For each salient event, the analyzer fires an **Mnestra webhook** (HTTP POST,
+   fire-and-forget). Mnestra writes to `memory_items` in Supabase.
+5. TermDeck never blocks on the write. If Mnestra is down, the event is
    dropped — there is no retry queue in the hot path.
 
 ### Read path (on demand)
 
 1. A panel's "Ask this terminal" box calls `POST /api/ai/query` on the TermDeck
    server.
-2. TermDeck calls Engram's `memory_recall` (over MCP or HTTP) scoped to the
+2. TermDeck calls Mnestra's `memory_recall` (over MCP or HTTP) scoped to the
    current project.
-3. Engram runs hybrid search against `memory_items` and returns the top
+3. Mnestra runs hybrid search against `memory_items` and returns the top
    matches, already ranked with tiered recency decay and project affinity.
 4. TermDeck renders the hits back into the panel.
 
@@ -60,7 +60,7 @@ interaction.
 1. **Extract.** Rumen reads new rows from `memory_items` since its last cursor.
    It uses deterministic rules (no LLM) to pull structured facts: commands,
    file paths, error signatures, port numbers, agent states.
-2. **Relate.** For each extracted fact, Rumen searches Engram for similar
+2. **Relate.** For each extracted fact, Rumen searches Mnestra for similar
    prior facts and builds a lightweight graph of "seen this before" edges.
 3. **Synthesize.** (Rumen v0.2) A cached Haiku prompt takes a cluster of
    related facts and writes a short insight — "same CORS fix as last week",
@@ -74,7 +74,7 @@ interaction.
 
 All three tiers share a single Supabase project:
 
-- `memory_items` — the canonical memory table, owned by Engram.
+- `memory_items` — the canonical memory table, owned by Mnestra.
 - `memory_embeddings` — vector index for semantic search.
 - `rumen_insights` — derived insights, owned by Rumen.
 - `termdeck_sessions`, `termdeck_command_history` — TermDeck-local state,
@@ -82,21 +82,21 @@ All three tiers share a single Supabase project:
 
 The source of truth for TermDeck's own runtime state is SQLite on the
 developer's machine (`~/.termdeck/termdeck.db`); Supabase is an async replica.
-For memory (Engram) and insights (Rumen), Supabase **is** the source of truth.
+For memory (Mnestra) and insights (Rumen), Supabase **is** the source of truth.
 
 ## Why three services and not one
 
 Each tier has a different latency budget and a different failure mode, and
 keeping them separate makes each one easier to reason about:
 
-- TermDeck must never block on the network. If Engram is slow, your terminal
+- TermDeck must never block on the network. If Mnestra is slow, your terminal
   is still fast.
-- Engram must never do expensive work on write. Indexing and decay run in the
+- Mnestra must never do expensive work on write. Indexing and decay run in the
   background; the write path is a single insert.
 - Rumen can take seconds per batch. It runs on its own schedule and nothing
   waits for it.
 
-The tiers also evolve at different speeds. TermDeck ships weekly; Engram ships
+The tiers also evolve at different speeds. TermDeck ships weekly; Mnestra ships
 on a need-to-fix basis; Rumen's prompt and extraction rules iterate constantly.
 Keeping them in separate repos (and on separate release cadences) avoids the
 coupling trap where a tiny Rumen prompt change forces a full TermDeck release.

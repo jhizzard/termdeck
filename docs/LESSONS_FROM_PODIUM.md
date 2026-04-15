@@ -31,7 +31,7 @@ All `console.error` calls in TermDeck must now use a tag prefix:
 - `[pty]` — node-pty operations
 - `[ws]` — WebSocket lifecycle
 - `[db]` — SQLite operations
-- `[rag]` — RAG / Engram / Rumen operations
+- `[rag]` — RAG / Mnestra / Rumen operations
 - `[config]` — config loading
 - `[cli]` — CLI launcher
 - `[client]` — browser-side errors

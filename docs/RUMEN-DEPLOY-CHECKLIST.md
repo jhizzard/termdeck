@@ -147,9 +147,9 @@ If any of these fail, the `[rumen-*]` tagged logs should make it obvious which p
 
 ## Production Database Safety
 
-CRITICAL: Rumen v0.1 runs only against TermDeck's embedded Supabase instance, NOT the production Engram database with ~1000 existing memories. The production DB stays untouched until Rumen has been validated for at least two weeks of clean runs.
+CRITICAL: Rumen v0.1 runs only against TermDeck's embedded Supabase instance, NOT the production Mnestra database with ~1000 existing memories. The production DB stays untouched until Rumen has been validated for at least two weeks of clean runs.
 
-When Rumen graduates to the production Engram DB, the migration is non-destructive: it only ADDS new memories with `source_type='insight'` or `'question'`. Existing memories are never modified or deleted.
+When Rumen graduates to the production Mnestra DB, the migration is non-destructive: it only ADDS new memories with `source_type='insight'` or `'question'`. Existing memories are never modified or deleted.
 
 ## Reference
 

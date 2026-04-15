@@ -11,7 +11,7 @@
 | Product | npm name | Risk level | Key concern | Recommendation |
 |---|---|---|---|---|
 | **TermDeck** | `@jhizzard/termdeck` (published) | 🟡 Yellow | The unscoped `termdeck` on npm is owned by an unrelated "Stream Deck Electron app" by user Junielton. Brand confusion with Elgato's "Stream Deck" hardware line. | Stand with scoped `@jhizzard/termdeck`. Launch with clear positioning ("browser-based terminal multiplexer" — not a hardware thing) to minimize confusion. Never try to claim the unscoped name. |
-| **Engram** | `@jhizzard/engram` (published) | 🟡 Yellow | Name is used by an **ergonomic keyboard layout project** (Engram layout, oxeylyzer.io). Also used by multiple biotech companies. No direct devtools conflict, but top Google results for "Engram" are keyboard-related. | Stand. Positioning is "persistent developer memory MCP server" — doesn't overlap with keyboards. Accept that SEO will take work. |
+| **Mnestra** | `@jhizzard/mnestra` (published) | 🟡 Yellow | Name is used by an **ergonomic keyboard layout project** (Mnestra layout, oxeylyzer.io). Also used by multiple biotech companies. No direct devtools conflict, but top Google results for "Mnestra" are keyboard-related. | Stand. Positioning is "persistent developer memory MCP server" — doesn't overlap with keyboards. Accept that SEO will take work. |
 | **Rumen** | `@jhizzard/rumen` (published) | 🟢 Green | Biological term (the first stomach chamber of ruminants). No known software product conflicts. Very specific and unusual in a devtools context. | Stand with full confidence. |
 
 ---
@@ -46,33 +46,33 @@
 
 ---
 
-## Engram — detailed notes
+## Mnestra — detailed notes
 
-**Primary risk: the Engram keyboard layout.** The mechanical keyboard / ergo-layout community has a popular layout called "Engram" by Arno Klein (https://engram.dev and https://keyboard.arnoklein.org). It's an alternative to Dvorak/Colemak/Workman optimized for English text frequency. Not a software product, but shares the exact name.
+**Primary risk: the Mnestra keyboard layout.** The mechanical keyboard / ergo-layout community has a popular layout called "Mnestra" by Arno Klein (https://mnestra.dev and https://keyboard.arnoklein.org). It's an alternative to Dvorak/Colemak/Workman optimized for English text frequency. Not a software product, but shares the exact name.
 
-**Top Google results for "Engram" today (preliminary check):**
+**Top Google results for "Mnestra" today (preliminary check):**
 
-1. Wikipedia — "Engram (neuropsychology)" — the neuroscience term
-2. The Engram keyboard layout
-3. Various biotech/pharma companies using "Engram" (cancer research, neuroscience startups)
-4. A VR fitness product called "Engram" on Steam
-5. An "Engram" memory foam mattress brand (!)
+1. Wikipedia — "Mnestra (neuropsychology)" — the neuroscience term
+2. The Mnestra keyboard layout
+3. Various biotech/pharma companies using "Mnestra" (cancer research, neuroscience startups)
+4. A VR fitness product called "Mnestra" on Steam
+5. An "Mnestra" memory foam mattress brand (!)
 
 **Nothing in the devtools / RAG / memory-for-LLM space as of April 2026.** Your positioning ("persistent developer memory MCP server") is a completely different semantic category from all of the above.
 
 **Why stand:**
 
-1. The name IS the pitch — "engram" is the neuroscience term for a memory trace stored in the brain, which is exactly what your product does with developer memory. Any rename loses that narrative.
-2. You've published `@jhizzard/engram@0.2.0` — 48 KB of code, six migrations, six MCP tools. Renaming means a full republish under a new name.
+1. The name IS the pitch — "mnestra" is the neuroscience term for a memory trace stored in the brain, which is exactly what your product does with developer memory. Any rename loses that narrative.
+2. You've published `@jhizzard/mnestra@0.2.0` — 48 KB of code, six migrations, six MCP tools. Renaming means a full republish under a new name.
 3. The keyboard layout community and the devtools community have zero audience overlap. Different venues, different search paths.
-4. The biotech companies using "Engram" are trademark-registered in pharmaceutical classes (Nice Classification 5), not software (Class 9). No direct conflict.
+4. The biotech companies using "Mnestra" are trademark-registered in pharmaceutical classes (Nice Classification 5), not software (Class 9). No direct conflict.
 
 **Launch positioning safeguards:**
 
-- Always call it **"Engram memory MCP server"** or **"Engram — persistent developer memory"** in the first mention. Never just "Engram" in isolation without the category.
-- README open: "Engram is a persistent developer-memory MCP server." (which it already is — good)
-- Blog post title: "Engram — a persistent memory MCP for Claude Code, Cursor, and every other LLM tool." The `memory MCP` anchor immediately disambiguates from keyboard layouts.
-- Dedicate one sentence in the README FAQ to: "This is not the Engram keyboard layout. That's a separate project by Arno Klein."
+- Always call it **"Mnestra memory MCP server"** or **"Mnestra — persistent developer memory"** in the first mention. Never just "Mnestra" in isolation without the category.
+- README open: "Mnestra is a persistent developer-memory MCP server." (which it already is — good)
+- Blog post title: "Mnestra — a persistent memory MCP for Claude Code, Cursor, and every other LLM tool." The `memory MCP` anchor immediately disambiguates from keyboard layouts.
+- Dedicate one sentence in the README FAQ to: "This is not the Mnestra keyboard layout. That's a separate project by Arno Klein."
 
 **Fallback names if a trademark issue surfaces:**
 
@@ -122,13 +122,13 @@
 
 ## Net recommendation for launch
 
-**Ship with all three current names — TermDeck, Engram, Rumen.** No renames. The yellows (TermDeck, Engram) are brand-confusion risks manageable through positioning, not legally actionable risks requiring renames. The green (Rumen) needs nothing.
+**Ship with all three current names — TermDeck, Mnestra, Rumen.** No renames. The yellows (TermDeck, Mnestra) are brand-confusion risks manageable through positioning, not legally actionable risks requiring renames. The green (Rumen) needs nothing.
 
 **Launch-day defenses for the two yellow names:**
 
-1. Always use the full product name + category in the first sentence of any public post ("TermDeck — browser-based terminal multiplexer", "Engram — persistent developer memory MCP server")
-2. Add FAQ entries to the docs site disambiguating from Stream Deck (TermDeck) and the Engram keyboard layout (Engram)
-3. Pre-write the HN comment playbook response to "how is this different from [Stream Deck / Engram layout / claude-mem]" so you can paste in 30 seconds when the question comes up
+1. Always use the full product name + category in the first sentence of any public post ("TermDeck — browser-based terminal multiplexer", "Mnestra — persistent developer memory MCP server")
+2. Add FAQ entries to the docs site disambiguating from Stream Deck (TermDeck) and the Mnestra keyboard layout (Mnestra)
+3. Pre-write the HN comment playbook response to "how is this different from [Stream Deck / Mnestra layout / claude-mem]" so you can paste in 30 seconds when the question comes up
 
 ---
 
@@ -137,10 +137,10 @@
 `docs/name-dispute-analysis.md` (the full deep-dive) should expand each section with:
 
 - Actual USPTO / WIPO trademark database screenshots showing registered classes
-- A list of all currently-active npm packages containing "engram" or "rumen" in their name
+- A list of all currently-active npm packages containing "mnestra" or "rumen" in their name
 - A list of all GitHub repos with those names and their star counts
-- X handle availability for `@termdeck`, `@engramdev`, `@rumendev`
-- Domain name availability for `termdeck.dev`, `engram.dev`, `rumen.dev`, `.com` variants
+- X handle availability for `@termdeck`, `@mnestradev`, `@rumendev`
+- Domain name availability for `termdeck.dev`, `mnestra.dev`, `rumen.dev`, `.com` variants
 - A final signed-off recommendation: green/yellow/red per name, with at least two concrete fallback names pre-researched and verified available
 
 But **the preliminary assessment above is strong enough to proceed with Sprint 3 without waiting for the deep dive.** T4 can do T4.2 through T4.9 in parallel with T4.1 — the worst case is a T4 agent writing a blog post with "TermDeck" and needing to find-replace if a red risk surfaces.

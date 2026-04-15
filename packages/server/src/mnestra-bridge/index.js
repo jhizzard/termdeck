@@ -1,7 +1,7 @@
-// Engram bridge — routes TermDeck memory queries through one of three backends:
+// Mnestra bridge — routes TermDeck memory queries through one of three backends:
 //   - direct:  talk to Supabase + OpenAI from the server (pre-bridge behavior)
-//   - webhook: POST to Engram's HTTP webhook server (T3.1) at rag.engramWebhookUrl
-//   - mcp:     spawn the @jhizzard/engram binary and talk JSON-RPC over stdio
+//   - webhook: POST to Mnestra's HTTP webhook server (T3.1) at rag.mnestraWebhookUrl
+//   - mcp:     spawn the @jhizzard/mnestra binary and talk JSON-RPC over stdio
 //
 // All three modes return the same shape:
 //   { memories: Array<{ content, source_type, project, similarity, created_at }>, total }
@@ -11,7 +11,7 @@
 const { spawn } = require('child_process');
 
 function createBridge(config) {
-  const mode = config.rag?.engramMode || 'direct';
+  const mode = config.rag?.mnestraMode || 'direct';
   const state = { mcpChild: null, mcpQueue: [], mcpNextId: 1, mcpBuffer: '' };
 
   async function queryDirect({ question, project, searchAll }) {
@@ -40,7 +40,7 @@ function createBridge(config) {
     });
     if (!embeddingRes.ok) {
       const err = await embeddingRes.text();
-      console.error('[engram-bridge:direct] embedding failed:', err);
+      console.error('[mnestra-bridge:direct] embedding failed:', err);
       throw new Error('Embedding generation failed');
     }
     const embeddingData = await embeddingRes.json();
@@ -68,7 +68,7 @@ function createBridge(config) {
     });
     if (!searchRes.ok) {
       const err = await searchRes.text();
-      console.error('[engram-bridge:direct] supabase search failed:', err);
+      console.error('[mnestra-bridge:direct] supabase search failed:', err);
       throw new Error('Memory search failed');
     }
     const rows = await searchRes.json();
@@ -85,7 +85,7 @@ function createBridge(config) {
   }
 
   async function queryWebhook({ question, project, searchAll }) {
-    const url = config.rag?.engramWebhookUrl || 'http://localhost:37778/engram';
+    const url = config.rag?.mnestraWebhookUrl || 'http://localhost:37778/mnestra';
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -98,8 +98,8 @@ function createBridge(config) {
     });
     if (!res.ok) {
       const err = await res.text();
-      console.error('[engram-bridge:webhook] request failed:', err);
-      throw new Error(`Engram webhook returned ${res.status}`);
+      console.error('[mnestra-bridge:webhook] request failed:', err);
+      throw new Error(`Mnestra webhook returned ${res.status}`);
     }
     const data = await res.json();
     const rows = data.memories || [];
@@ -118,7 +118,7 @@ function createBridge(config) {
   function ensureMcpChild() {
     if (state.mcpChild && !state.mcpChild.killed) return state.mcpChild;
 
-    const bin = config.rag?.engramBinary || 'engram';
+    const bin = config.rag?.mnestraBinary || 'mnestra';
     const child = spawn(bin, ['serve', '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
     state.mcpChild = child;
     state.mcpBuffer = '';
@@ -135,24 +135,24 @@ function createBridge(config) {
           const pending = state.mcpQueue.find((p) => p.id === msg.id);
           if (pending) {
             state.mcpQueue = state.mcpQueue.filter((p) => p !== pending);
-            if (msg.error) pending.reject(new Error(msg.error.message || 'Engram MCP error'));
+            if (msg.error) pending.reject(new Error(msg.error.message || 'Mnestra MCP error'));
             else pending.resolve(msg.result);
           }
         } catch (err) {
-          console.error('[engram-bridge:mcp] parse error:', err.message, line);
+          console.error('[mnestra-bridge:mcp] parse error:', err.message, line);
         }
       }
     });
 
     child.stderr.on('data', (chunk) => {
-      console.error('[engram-bridge:mcp]', chunk.toString('utf-8').trim());
+      console.error('[mnestra-bridge:mcp]', chunk.toString('utf-8').trim());
     });
 
     child.on('exit', (code, signal) => {
-      console.warn(`[engram-bridge:mcp] child exited (code=${code}, signal=${signal}); will respawn on next call`);
+      console.warn(`[mnestra-bridge:mcp] child exited (code=${code}, signal=${signal}); will respawn on next call`);
       state.mcpChild = null;
       for (const pending of state.mcpQueue) {
-        pending.reject(new Error('Engram MCP child exited'));
+        pending.reject(new Error('Mnestra MCP child exited'));
       }
       state.mcpQueue = [];
     });
@@ -177,7 +177,7 @@ function createBridge(config) {
         const pending = state.mcpQueue.find((p) => p.id === id);
         if (pending) {
           state.mcpQueue = state.mcpQueue.filter((p) => p !== pending);
-          pending.reject(new Error('Engram MCP call timed out'));
+          pending.reject(new Error('Mnestra MCP call timed out'));
         }
       }, 15000);
     });
@@ -214,7 +214,7 @@ function createBridge(config) {
     }
   }
 
-  async function queryEngram({ question, project, searchAll }) {
+  async function queryMnestra({ question, project, searchAll }) {
     switch (mode) {
       case 'webhook':
         return queryWebhook({ question, project, searchAll });
@@ -226,7 +226,7 @@ function createBridge(config) {
     }
   }
 
-  return { mode, queryEngram };
+  return { mode, queryMnestra };
 }
 
 module.exports = { createBridge };

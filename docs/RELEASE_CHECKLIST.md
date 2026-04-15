@@ -1,4 +1,4 @@
-# Release Checklist — TermDeck / Engram / Rumen v0.2
+# Release Checklist — TermDeck / Mnestra / Rumen v0.2
 
 Manual checklist for Josh. Every step assumes the Sprint 2 diffs have been
 reviewed, committed, and pushed to `main` for each repo. None of this is
@@ -7,12 +7,12 @@ automated — publishing is deliberately a human-in-the-loop gate.
 Working directory references use Josh's local layout:
 
 - `~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck`
-- `~/Documents/Graciella/engram`
+- `~/Documents/Graciella/mnestra`
 - `~/Documents/Graciella/rumen`
 
-Order recommended for a clean cut: **Engram → Rumen → TermDeck**. TermDeck
-depends on Engram (via `@jhizzard/engram` at runtime when the bridge is in
-`mcp` mode) and Rumen reads Engram's schema, so publishing the layer
+Order recommended for a clean cut: **Mnestra → Rumen → TermDeck**. TermDeck
+depends on Mnestra (via `@jhizzard/mnestra` at runtime when the bridge is in
+`mcp` mode) and Rumen reads Mnestra's schema, so publishing the layer
 underneath first keeps the dependency graph clean.
 
 ---
@@ -32,10 +32,10 @@ Run these for every repo before touching `npm version`:
 
 ---
 
-## 1. `@jhizzard/engram` v0.2.0
+## 1. `@jhizzard/mnestra` v0.2.0
 
 ```bash
-cd ~/Documents/Graciella/engram
+cd ~/Documents/Graciella/mnestra
 ```
 
 - [ ] `git pull --ff-only`
@@ -45,13 +45,13 @@ cd ~/Documents/Graciella/engram
 - [ ] `npm run build` — verify `dist/mcp-server/index.js` and `dist/src/webhook-server.js` exist
 - [ ] Smoke test stdio MCP: `node dist/mcp-server/index.js < /dev/null` exits cleanly
 - [ ] Smoke test webhook: `node dist/mcp-server/index.js serve &` then `curl -s :37778/healthz` returns `{"ok":true,...}`; kill the background proc
-- [ ] Apply production migration: open Supabase SQL editor, paste `migrations/004_engram_match_count_cap_and_explain.sql`, run, confirm "Success"
+- [ ] Apply production migration: open Supabase SQL editor, paste `migrations/004_mnestra_match_count_cap_and_explain.sql`, run, confirm "Success"
 - [ ] `npm version 0.2.0 --no-git-tag-version` (skip if the CHANGELOG bump already synced `package.json`)
 - [ ] Commit any version bump: `git add package.json package-lock.json && git commit -m "chore: release v0.2.0"`
 - [ ] `git tag v0.2.0 && git push origin main --tags`
 - [ ] `npm publish --access public`
-- [ ] Verify on https://www.npmjs.com/package/@jhizzard/engram — version 0.2.0 listed, README rendered
-- [ ] Post-publish smoke: in a scratch dir, `npx @jhizzard/engram serve` starts the webhook on :37778
+- [ ] Verify on https://www.npmjs.com/package/@jhizzard/mnestra — version 0.2.0 listed, README rendered
+- [ ] Post-publish smoke: in a scratch dir, `npx @jhizzard/mnestra serve` starts the webhook on :37778
 
 ---
 
@@ -64,7 +64,7 @@ cd ~/Documents/Graciella/rumen
 - [ ] `git pull --ff-only`
 - [ ] `rm -rf node_modules && npm install`
 - [ ] `npx tsc --noEmit` — clean
-- [ ] GitHub Actions integration-test job is green on the tip of `main` (was red on commit 7e24750; Sprint 2 fix is in the Engram fixture)
+- [ ] GitHub Actions integration-test job is green on the tip of `main` (was red on commit 7e24750; Sprint 2 fix is in the Mnestra fixture)
 - [ ] `npx tsc` — builds `dist/`
 - [ ] `DATABASE_URL=... npx tsx scripts/test-locally.ts` against a throwaway DB, confirm at least one `rumen_insights` row written
 - [ ] Bump `CHANGELOG.md` `[Unreleased]` → `[0.2.0] - 2026-04-13`

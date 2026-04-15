@@ -1,4 +1,4 @@
-# Launch Strategy — TermDeck / Engram / Rumen v0.2
+# Launch Strategy — TermDeck / Mnestra / Rumen v0.2
 
 **Date:** 2026-04-15
 **Author:** Joshua Izzard + planning session
@@ -14,7 +14,7 @@ First comparison lived in the 2026-04-13 planning session at "70% of claude-mem'
 
 | Axis | claude-mem v6.5 | TermDeck v0.2 (2026-04-15) | Who's ahead |
 |---|---|---|---|
-| **Code architecture** | Mature single plugin, 5 lifecycle hooks + worker | Three-package integrated stack (TermDeck → Engram → Rumen), MCP webhook bridge, async learning layer | **TermDeck** — more ambitious surface, more moving parts but integrated |
+| **Code architecture** | Mature single plugin, 5 lifecycle hooks + worker | Three-package integrated stack (TermDeck → Mnestra → Rumen), MCP webhook bridge, async learning layer | **TermDeck** — more ambitious surface, more moving parts but integrated |
 | **Unique killer feature** | Progressive-disclosure search (query-on-demand) | **Flashback** — proactive recall, automatic on error | **TermDeck** — nobody else ships passive surfacing |
 | **Visual product** | Utilitarian web viewer on :37777 | Full browser dashboard with 8 themes, 7 layouts, per-panel metadata overlays, drawer tabs, terminal switcher, onboarding tour | **TermDeck** — substantially |
 | **Onboarding** | Docs site + install wizard | Onboarding tour (just shipped), first-run auto-trigger, 13 steps covering every button | **TermDeck** — interactive beats static |
@@ -22,7 +22,7 @@ First comparison lived in the 2026-04-13 planning session at "70% of claude-mem'
 | **Install story** | `npx claude-mem install`, `/plugin install` marketplace | `@jhizzard/termdeck` via npm, once published. Prebuilds verified on Debian+macOS. No Claude Code plugin distribution | claude-mem ahead on plugin marketplace reach; TermDeck matches on core npm install |
 | **Version maturity** | v6.5 — iterated for ~6 months | v0.2 — fresh, validated by one developer | claude-mem ahead, only time fixes this |
 | **Community** | Discord, X @Claude_Memory, awesome-claude-code listing, several thousand stars | Zero today. Cold launch. | claude-mem ahead, but this is exactly what this document is about |
-| **Test coverage** | Unclear from README | Engram 25+ unit tests green, Rumen CI integration test, TermDeck manual verification | roughly even |
+| **Test coverage** | Unclear from README | Mnestra 25+ unit tests green, Rumen CI integration test, TermDeck manual verification | roughly even |
 | **License** | AGPL-3.0 + PolyForm (commercial moat) | MIT across all three | different bets — TermDeck prioritizes adoption over moat |
 | **Novel architecture** | Plugin that adds memory to Claude Code | **Platform that remembers while you work**, usable with any terminal-based agent (Claude Code, Codex, Gemini CLI, plain shell) | **TermDeck** — broader substrate |
 
@@ -30,7 +30,7 @@ First comparison lived in the 2026-04-13 planning session at "70% of claude-mem'
 
 1. **Flashback** — passive, unsolicited memory recall on error detection. claude-mem is query-on-demand. This is the single largest conceptual differentiation in the memory-for-devs space.
 2. **Visual surface** — a dashboard people can share a screenshot of. claude-mem users can only describe what it does; TermDeck users can post a picture.
-3. **Integrated three-tier stack** — TermDeck (display) + Engram (memory) + Rumen (async learning) as one coherent system. claude-mem is a single plugin.
+3. **Integrated three-tier stack** — TermDeck (display) + Mnestra (memory) + Rumen (async learning) as one coherent system. claude-mem is a single plugin.
 4. **Agent-agnostic** — any terminal tool works. claude-mem locks you into Claude Code.
 5. **Async learning layer** (Rumen v0.2) — nothing in the memory-for-devs space runs reflection jobs while the developer is away. This is a Sprint 3 feature but worth mentioning in the pitch as "what's coming."
 6. **Interactive onboarding tour** — shipped today. claude-mem doesn't have one.
@@ -83,9 +83,9 @@ None of this is magic. It's discipline.
 **Day -2 (tomorrow, 2026-04-16):**
 
 1. **Deploy the docs site to Vercel.** `cd docs-site && vercel deploy`. Get a `*.vercel.app` URL. Point the "help" button in TermDeck at it. Pin the production URL into the README and the tour's final step.
-2. **Capture the Flashback demo GIF.** Set up a 4-panel TermDeck dashboard in Tokyo Night, run a real command that fails (a known error like a CORS misconfiguration or a Postgres migration syntax error with a memory actually in your Engram store), let the toast fire, click it, show the expanded Memory tab. Use QuickTime or `asciinema` + `agg`. Target 10–14 seconds, <4 MB, 15 fps minimum. Save to `docs/screenshots/flashback-demo.gif`.
+2. **Capture the Flashback demo GIF.** Set up a 4-panel TermDeck dashboard in Tokyo Night, run a real command that fails (a known error like a CORS misconfiguration or a Postgres migration syntax error with a memory actually in your Mnestra store), let the toast fire, click it, show the expanded Memory tab. Use QuickTime or `asciinema` + `agg`. Target 10–14 seconds, <4 MB, 15 fps minimum. Save to `docs/screenshots/flashback-demo.gif`.
 3. **Take three still screenshots**: 4-panel dashboard, drawer tabs open, switcher overlay with 8 panels. Use them throughout the README and the docs site landing.
-4. **Rewrite the README top-to-bottom.** Hero GIF first, one-line pitch ("The terminal that remembers what you fixed last month"), three quickstart commands, "How Flashback works" in four sentences, "What it is not" honest limits section, architecture diagram linking to Engram and Rumen READMEs, install + dev + contribution at the bottom. This is the 2026-04-13 `FLASHBACK_LAUNCH_ANGLE.md` plan; execute it now.
+4. **Rewrite the README top-to-bottom.** Hero GIF first, one-line pitch ("The terminal that remembers what you fixed last month"), three quickstart commands, "How Flashback works" in four sentences, "What it is not" honest limits section, architecture diagram linking to Mnestra and Rumen READMEs, install + dev + contribution at the bottom. This is the 2026-04-13 `FLASHBACK_LAUNCH_ANGLE.md` plan; execute it now.
 5. **Quietly ship v0.2.0 of all three packages to npm.** Run through `RELEASE_CHECKLIST.md`. Tag each repo. Do not announce yet.
 6. **Share the repo with 5 trusted people** — friends, former colleagues, anyone who writes dev tools. One-sentence ask: "This is not public yet. Install it, run it for 15 minutes, tell me if Flashback fires for you and whether anything is broken." Explicitly ask whether the demo GIF conveys the feature in one viewing. That feedback is worth more than your own testing.
 
@@ -151,7 +151,7 @@ That last one is underrated. The HN skeptic will ask the same 5–10 questions e
 - **`docs/FLASHBACK_LAUNCH_ANGLE.md`** — full positioning document. Use it as source of truth for messaging.
 - **`docs/FOLLOWUP.md`** — the honest gap assessment, including the list of known limitations you should preemptively disclose in the "What Flashback is not" README section.
 - **`docs/PLANNING_DOCUMENT.md` + `docs/SPRINT_2_FOLLOWUP_PLAN.md`** — evidence of disciplined shipping. Not public marketing assets, but useful if anyone asks "how did you build this so fast?" The answer is: four parallel Claude Code terminals coordinating via a shared status file. That is itself a good dev.to blog post and a real TermDeck use case.
-- **The two production Supabase migrations applied during the build** — evidence that Engram's v0.2 upgrade path is real and has been exercised against a 3,451-memory production store.
+- **The two production Supabase migrations applied during the build** — evidence that Mnestra's v0.2 upgrade path is real and has been exercised against a 3,451-memory production store.
 - **Two complete sprints in one day** — you shipped 10 commits across 3 repos in under 2 hours of focused work. That itself is a story. Title: "I used Claude Code to parallelize a 4-terminal sprint and shipped two days of work in two hours." Publishing that story on dev.to is both marketing and a real demo of TermDeck's target workflow.
 
 ---
@@ -194,7 +194,7 @@ Based on historical Show HN performance for devtools launches from unknown-to-th
 Measure at **72 hours post-launch**, not immediately:
 
 - GitHub stars count
-- npm weekly downloads for `@jhizzard/termdeck`, `@jhizzard/engram`, `@jhizzard/rumen`
+- npm weekly downloads for `@jhizzard/termdeck`, `@jhizzard/mnestra`, `@jhizzard/rumen`
 - Whether any third-party developer has documented a Flashback moment in a blog, tweet, or HN comment
 - Whether the Show HN thread is still getting new comments at hour 72 (a tail is a signal)
 - Whether anyone has opened a GitHub issue — issues are a love language

@@ -2,13 +2,13 @@
 
 This is the launch positioning document for TermDeck's proactive memory feature. It is **not a marketing brief** — it is the source of truth for how to describe the feature consistently across README, Show HN post, blog, X thread, and demo GIF narration.
 
-Everything here is derived from the feature actually working in the 2026-04-13 Sprint 1 build and verified with a live Engram store of 3,397 memories.
+Everything here is derived from the feature actually working in the 2026-04-13 Sprint 1 build and verified with a live Mnestra store of 3,397 memories.
 
 ---
 
 ## What it is
 
-**Flashback** is TermDeck's proactive memory recall. When a terminal panel enters an error state, the output analyzer automatically queries Engram for similar errors from the developer's history across all projects and surfaces the top hit as a non-blocking toast on the panel.
+**Flashback** is TermDeck's proactive memory recall. When a terminal panel enters an error state, the output analyzer automatically queries Mnestra for similar errors from the developer's history across all projects and surfaces the top hit as a non-blocking toast on the panel.
 
 The developer doesn't ask. They don't click anything. They don't type a query. The tool notices they hit a wall and offers the memory.
 
@@ -104,7 +104,7 @@ Launch traction in 2024–25 tooling has been single-GIF-driven. Copilot was tab
 **Capture how:**
 - 1920×1080 viewport, browser chrome cropped out.
 - `puppeteer-screen-recorder` or QuickTime screen record.
-- Real Engram store with real memories — do not fake the content.
+- Real Mnestra store with real memories — do not fake the content.
 - Shoot multiple takes; pick the one where the pause in beat 3 is exactly 700ms.
 
 **File:** `docs/screenshots/flashback-demo.gif`. Maximum 4MB for GitHub README embedding. If it exceeds, drop to 900px wide and 15fps.
@@ -124,8 +124,8 @@ The current README puts install first, features second. After Flashback, flip it
 1. **Hero:** Flashback GIF, no title text. The GIF is the title.
 2. **One-line positioning:** "The terminal that remembers what you fixed last month."
 3. **Three quickstart commands:** `npm i -g @jhizzard/termdeck`, `termdeck`, open browser. Nothing more in the hero block.
-4. **"How Flashback works"** — 4 sentences. The output-analyzer → Engram → WebSocket loop. This paragraph is the proof that the GIF wasn't staged.
-5. **Architecture** — the three-tier stack: TermDeck (display) → Engram (memory) → Rumen (async learning). Keep this concise; link out to per-repo READMEs for detail.
+4. **"How Flashback works"** — 4 sentences. The output-analyzer → Mnestra → WebSocket loop. This paragraph is the proof that the GIF wasn't staged.
+5. **Architecture** — the three-tier stack: TermDeck (display) → Mnestra (memory) → Rumen (async learning). Keep this concise; link out to per-repo READMEs for detail.
 6. **Features list** — after Flashback sells the pitch, the rest (layouts, themes, metadata, PTY, session logs) are supporting evidence.
 7. **Install / dev setup / contribution** — at the bottom.
 8. **License / contact / badges.**
@@ -147,7 +147,7 @@ in a git commit message somewhere. I didn't remember I had the fix.
 That is the whole problem.
 
 TermDeck is a browser-based terminal multiplexer with a persistent
-memory layer called Engram (pgvector + hybrid search) and a
+memory layer called Mnestra (pgvector + hybrid search) and a
 proactive recall feature called Flashback. When a panel's status
 transitions to `errored`, Flashback automatically queries your
 memory for similar errors across all your projects and surfaces the
@@ -159,10 +159,10 @@ Architecture is three packages, all MIT:
 
   - TermDeck — browser PTY multiplexer with metadata overlays
     https://github.com/jhizzard/termdeck
-  - Engram — persistent dev-memory MCP server for Claude Code,
+  - Mnestra — persistent dev-memory MCP server for Claude Code,
     Cursor, Windsurf, Cline, Continue. Supabase pgvector, 1536d
     embeddings, hybrid search, recency decay by source_type.
-    https://github.com/jhizzard/engram
+    https://github.com/jhizzard/mnestra
   - Rumen — async learning layer that runs on a cron and
     cross-references new memories against your history.
     https://github.com/jhizzard/rumen
@@ -183,7 +183,7 @@ Happy to answer questions.
 **Do not post until:**
 - F1.4 screenshots and the Flashback GIF are committed.
 - `@jhizzard/termdeck` is actually `npm publish`-ed.
-- Engram v0.2 is published so a fresh install actually works.
+- Mnestra v0.2 is published so a fresh install actually works.
 - At least one other developer has installed it from scratch and Flashback has fired for them.
 
 ---
@@ -200,7 +200,7 @@ Happy to answer questions.
 2. **The problem framing.** "Every session starts from zero." Contrast with how humans remember things — in flashes, triggered by context, not by queries. Modern tooling doesn't work that way. (200 words.)
 3. **What Flashback actually does.** The 4-step loop from this doc, plain language. (200 words.)
 4. **Three real flashbacks.** Screenshots of real toasts against real bugs from your own use. Each one is ~150 words of story. (500 words total.)
-5. **The architecture, briefly.** TermDeck → Engram → Rumen. Why three packages and not one. (150 words.)
+5. **The architecture, briefly.** TermDeck → Mnestra → Rumen. Why three packages and not one. (150 words.)
 6. **Install + invite.** Two lines of install, a link to GitHub, one sentence of "I built it because I needed it."
 
 **Where to publish:**
@@ -236,7 +236,7 @@ I called it Flashback.
 
 3/ The stack:
 - TermDeck — browser multiplexer (Node + WebSocket + xterm.js)
-- Engram — pgvector + hybrid search, 6 MCP tools, consumes MCP
+- Mnestra — pgvector + hybrid search, 6 MCP tools, consumes MCP
   from Claude Code / Cursor / Windsurf / Cline / Continue
 - Rumen — async learning layer, runs on a cron, cross-references
 
@@ -269,7 +269,7 @@ To keep the pitch honest, here is what Flashback is **not**, in the voice of a s
 
 - **Not magic.** It fires on pattern-matched error strings from the PTY analyzer. If the analyzer misses your error class, no Flashback.
 - **Not a replacement for reading docs.** It's shortest-path to a memory *you* already wrote. If the memory isn't there, the feature does nothing.
-- **Not local-only by default.** Engram reaches out to Supabase for storage and OpenAI for embeddings. There is a fully local path (SQLite + local embeddings) planned but not shipped in v0.2.
+- **Not local-only by default.** Mnestra reaches out to Supabase for storage and OpenAI for embeddings. There is a fully local path (SQLite + local embeddings) planned but not shipped in v0.2.
 - **Not free forever.** Embeddings cost fractions of a cent per memory, but you pay OpenAI. Self-hosted embeddings are on the roadmap.
 - **Not proven at scale.** v0.2, validated against 3,397 real memories in one developer's store. No multi-user data yet.
 

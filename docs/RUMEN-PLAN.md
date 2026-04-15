@@ -1,7 +1,7 @@
 # Rumen: Tier 4 Async Learning Layer
 
 **Status:** Planning — 2026-04-09
-**Position in stack:** Tier 4, sits on top of Engram (Tier 3 memory store)
+**Position in stack:** Tier 4, sits on top of Mnestra (Tier 3 memory store)
 **Tagline:** "The LLM is stateless. Rumen isn't."
 
 ---
@@ -17,7 +17,7 @@ A rumen is the first chamber of a ruminant's stomach where food is continuously 
 - **Pronunciation:** ROO-men
 - **Length:** 5 letters, 2 syllables, one unambiguous pronunciation
 - **Availability:** `rumen.dev`, `rumen.ai`, npm `rumen`, `github.com/jhizzard/rumen` — none are claimed as major dev tools (there is a small ruby gem and a few abandoned repos, nothing that would own the namespace)
-- **Theme fit:** biological naming pairs well with Engram (the memory system) and aligns with the "developer brain" vibe
+- **Theme fit:** biological naming pairs well with Mnestra (the memory system) and aligns with the "developer brain" vibe
 - **Gravity:** a real word with meaning, not a coined startup name
 
 ### Names Considered and Ruled Out
@@ -38,15 +38,15 @@ A rumen is the first chamber of a ruminant's stomach where food is continuously 
 ```
 Tier 1: TermDeck          (browser UI, PTY, layouts)
 Tier 2: Local SQLite      (session buffer, commands, events)
-Tier 3: Engram            (Supabase memory store, hybrid search)
+Tier 3: Mnestra            (Supabase memory store, hybrid search)
 Tier 4: Rumen             (async synthesis + follow-up learning)
 ```
 
 Each tier reinforces the ones below it:
 
 - TermDeck captures everything that happens in your terminals
-- Engram stores it durably with semantic search
-- Rumen learns from it asynchronously and writes new insights back into Engram
+- Mnestra stores it durably with semantic search
+- Rumen learns from it asynchronously and writes new insights back into Mnestra
 - TermDeck surfaces those insights proactively in your next session
 
 The loop gets smarter about **you specifically** the longer you use it.
@@ -56,7 +56,7 @@ The loop gets smarter about **you specifically** the longer you use it.
 ## The Rumen Loop
 
 ```
-  [recent sessions in Engram]
+  [recent sessions in Mnestra]
             |
             v
   1. EXTRACT — pull structured events: errors hit, fixes attempted,
@@ -214,7 +214,7 @@ None of them:
 - Ask you follow-up questions about work you thought was done
 - Synthesize insights from raw session logs
 
-The moat is the loop: **TermDeck captures → Engram stores → Rumen learns → insights flow back into TermDeck**. Each tier reinforces the others. The longer you use it, the smarter it gets about you specifically.
+The moat is the loop: **TermDeck captures → Mnestra stores → Rumen learns → insights flow back into TermDeck**. Each tier reinforces the others. The longer you use it, the smarter it gets about you specifically.
 
 ---
 
@@ -246,13 +246,13 @@ Train a small classifier on which insights you acted upon vs ignored. Rumen lear
 
 ---
 
-## Relationship to Engram
+## Relationship to Mnestra
 
-Rumen is **not** a replacement for Engram. Engram is the memory store; Rumen is the reasoning layer that runs on top of it.
+Rumen is **not** a replacement for Mnestra. Mnestra is the memory store; Rumen is the reasoning layer that runs on top of it.
 
-Engram remains unchanged in production. Rumen writes new memories into Engram with special `source_type` values (`insight`, `question`), so every existing Engram consumer automatically benefits from Rumen's output without any code changes.
+Mnestra remains unchanged in production. Rumen writes new memories into Mnestra with special `source_type` values (`insight`, `question`), so every existing Mnestra consumer automatically benefits from Rumen's output without any code changes.
 
-**Critical safety rule:** Rumen v0.1 runs only against TermDeck's embedded Supabase instance, not the production Engram database. The ~1000 existing production memories remain untouched until Rumen has been validated for at least two weeks.
+**Critical safety rule:** Rumen v0.1 runs only against TermDeck's embedded Supabase instance, not the production Mnestra database. The ~1000 existing production memories remain untouched until Rumen has been validated for at least two weeks.
 
 ---
 

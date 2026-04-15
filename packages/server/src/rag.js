@@ -16,10 +16,10 @@ class RAGIntegration {
 
     // Table configuration matching Josh's multi-layer schema
     this.tables = {
-      sessionMemory: config.rag?.tables?.session || 'engram_session_memory',
-      projectMemory: config.rag?.tables?.project || 'engram_project_memory',
-      developerMemory: config.rag?.tables?.developer || 'engram_developer_memory',
-      commandLog: config.rag?.tables?.commands || 'engram_commands'
+      sessionMemory: config.rag?.tables?.session || 'mnestra_session_memory',
+      projectMemory: config.rag?.tables?.project || 'mnestra_project_memory',
+      developerMemory: config.rag?.tables?.developer || 'mnestra_developer_memory',
+      commandLog: config.rag?.tables?.commands || 'mnestra_commands'
     };
 
     if (this.enabled) {
@@ -120,7 +120,7 @@ class RAGIntegration {
       }
     } catch (err) {
       // Will be retried by sync loop
-      console.error('[engram] Push failed:', err.message);
+      console.error('[mnestra] Push failed:', err.message);
     }
   }
 
@@ -163,7 +163,7 @@ class RAGIntegration {
           markRagEventsSynced(this.db, synced);
         }
       } catch (err) {
-        console.error('[engram] Sync cycle error:', err.message);
+        console.error('[mnestra] Sync cycle error:', err.message);
       }
     }, this.syncInterval);
   }

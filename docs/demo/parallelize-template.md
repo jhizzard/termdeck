@@ -190,8 +190,8 @@ Never `git add -A` inside a multi-terminal repo — it would mix file-ownership 
 Sprint 1 planning doc split 23 outstanding items across:
 
 - **T1** — `packages/client/public/**` — info tabs, switcher, reply, proactive toast, first-run empty state, screenshots
-- **T2** — `packages/server/src/**`, `packages/cli/src/**`, `config/**` — Engram bridge, POST /api/sessions/:id/input, session logs, prebuilds, npm rename
-- **T3** — `/Users/.../engram/` (entire repo) — HTTP webhook, 3-layer MCP tools, privacy tags, export/import, match_count cap
+- **T2** — `packages/server/src/**`, `packages/cli/src/**`, `config/**` — Mnestra bridge, POST /api/sessions/:id/input, session logs, prebuilds, npm rename
+- **T3** — `/Users/.../mnestra/` (entire repo) — HTTP webhook, 3-layer MCP tools, privacy tags, export/import, match_count cap
 - **T4** — `/Users/.../rumen/` + `termdeck/docs-site/` — Haiku synthesize phase, CI integration test, Astro Starlight scaffold, release prep
 
 Wall-clock time from planning-doc complete to all 6 commits pushed: **~1 hour 45 minutes**. Human coordination effort: applying 2 Supabase migrations when T3 posted them as `🛑` blockers in STATUS.md, plus reviewing and committing diffs at the end.
@@ -206,7 +206,7 @@ This pattern works on any terminal multiplexer. It works especially well in Term
 
 1. **Panel numbering (`#1`, `#2`)** makes it trivial to tell agents apart at a glance when they share the same type and project
 2. **Status log drawer tab** on each panel shows the output analyzer's real-time reads of what that agent is doing (`thinking` / `editing` / `idle` / `errored`)
-3. **Flashback** fires when any agent errors, automatically surfacing similar past errors from your Engram memory — frequently unblocking an agent before you notice it stalled
+3. **Flashback** fires when any agent errors, automatically surfacing similar past errors from your Mnestra memory — frequently unblocking an agent before you notice it stalled
 4. **Control layout** aggregates all four agents' activity into one feed
 5. **Reply button** lets you route a correction into a specific panel without losing the agent's context
 6. **Terminal switcher** with `Alt+1..9` lets you flip between agents in under 200ms
