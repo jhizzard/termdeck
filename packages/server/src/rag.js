@@ -41,7 +41,13 @@ class RAGIntegration {
         payload,
         project,
         timestamp: new Date().toISOString()
-      }).catch(() => {}); // Silent fail, sync will retry
+      }).catch((err) => {
+        // Non-fatal — the periodic sync loop will retry this event on its next
+        // tick because it's still marked unsynced in the outbox. Log at debug
+        // level so the first failure is visible in verbose logs without
+        // flooding stdout on routine transient errors.
+        console.debug('[mnestra] immediate push failed (sync loop will retry):', err && err.message);
+      });
     }
   }
 

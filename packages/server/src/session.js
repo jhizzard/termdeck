@@ -33,7 +33,16 @@ const PATTERNS = {
     django: /Starting development server/,
     httpServer: /Serving HTTP on/,
     request: /(?:^|\s|")(GET|POST|PUT|DELETE|PATCH)\s+\S+.*?\s(\d{3})/m,
-    port: /(?:port\s+(\d+)|(?:on|at)\s+(?:https?:\/\/)?[\w.\[\]:]*:(\d+))/i
+    // Port detection — matches any of:
+    //   • "port NNNN" phrase (capture group 1)
+    //   • URL with http/https scheme, optionally prefixed with "on " or "at "
+    //     (capture group 2)
+    //   • bare "on HOST:NNNN" or "at HOST:NNNN" even without a scheme
+    //     (capture group 2)
+    // Port must be 2–5 digits to avoid matching timestamps like "23:40".
+    // `_detectPort` reads `match[1] || match[2]`, so both capture groups
+    // are live.
+    port: /(?:\bport\s+(\d{2,5})\b|(?:https?:\/\/|\bon\s+|\bat\s+)[a-zA-Z0-9.\-_\[\]]+:(\d{2,5})\b)/i
   },
   shell: {
     prompt: /[\$#%❯>]\s*$/m,
@@ -370,16 +379,36 @@ class SessionManager {
     return Array.from(this.sessions.values()).map(s => s.toJSON());
   }
 
+  // Fields a client is allowed to modify via PATCH /api/sessions/:id.
+  // Explicit whitelist so a malicious or buggy client cannot inject
+  // arbitrary metadata (e.g. overwriting `pid`, `exitCode`, `lastCommands`,
+  // or mutating internal pattern state). Server-mutable fields like
+  // `status`, `lastActivity`, `detectedPort` are intentionally excluded —
+  // those are driven by the output analyzer, not the client.
+  static PATCHABLE_META_FIELDS = new Set([
+    'theme',
+    'label',
+    'project',
+    'ragEnabled',
+    'flashbackEnabled'
+  ]);
+
   updateMeta(id, updates) {
     const session = this.sessions.get(id);
     if (!session) return null;
+    if (!updates || typeof updates !== 'object') return session;
 
-    Object.assign(session.meta, updates);
+    const applied = {};
+    for (const [key, val] of Object.entries(updates)) {
+      if (!SessionManager.PATCHABLE_META_FIELDS.has(key)) continue;
+      session.meta[key] = val;
+      applied[key] = val;
+    }
 
     // Persist theme changes to SQLite
-    if (updates.theme && this.db) {
+    if (applied.theme && this.db) {
       this.db.prepare('UPDATE sessions SET theme = ? WHERE id = ?')
-        .run(updates.theme, id);
+        .run(applied.theme, id);
     }
 
     this._emit('session:updated', session);
