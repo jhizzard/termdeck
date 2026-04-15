@@ -51,6 +51,30 @@ The toast header still said `ENGRAM — POSSIBLE MATCH` because the client-side 
 
 I am trying to be honest about how weird this was. Flashback is a pattern-matched error hook with a pgvector query behind it — there is no intelligence in the surfacing decision, just cosine similarity and recency decay. It is a very simple feature. But the loop closed: memory layer, proactive recall, error analyzer, the product being built, the product in use, the crisis being logged, the crisis being surfaced. All of them pointed at the same object, which happened to be the rename I was executing at 2am.
 
+## The moment the pattern crystallized
+
+About an hour after the screenshot above, I hit a coordination problem I hadn't planned for. The four worker terminals were still live inside TermDeck, each running a Claude Code session on an independent task, but I needed to tell each of them — individually, with different content per panel — to do a specific next step. The obvious options were all bad. Switching contexts four times to paste four different prompts was slow. Broadcasting the same message to everyone was wrong, because each panel needed a different instruction. Rebuilding the four-terminal state from scratch would lose everything they already had in memory.
+
+Then I remembered the feature I had shipped in Sprint 1.
+
+`POST /api/sessions/:id/input` was originally designed as TermDeck's "reply button" — a human-facing UI where you could click a button in one panel, pick a target panel from a dropdown, type a message, and the text would land in the target panel's PTY stdin as if it had been typed there. Panel-to-panel handoff. I built it for the case where you are debugging in one terminal and want to drop a highlighted error line into a Claude Code panel running on the same codebase. A small convenience feature. Maybe 120 lines of code including the reply form UI.
+
+I grabbed the four session UUIDs from `GET /api/sessions`, wrote four different prompts tailored to each terminal's current state (T1 got a Flashback GIF capture unblock; T2 got a "your work was already committed, stand down" close-out; T3 got a "you are done" close-out; T4 got a "continue with launch copy using Mnestra" directive), and POSTed each prompt to the corresponding session's `/input` endpoint from a shell script. The server wrote the bytes into each PTY. Each Claude Code panel saw the bytes arrive as if someone had typed them, and dropped them into its input buffer waiting for Enter.
+
+Four panels, four different assignments, one shell command, zero switching. I pressed Enter on each of the four panels in sequence and watched them start executing their assigned work.
+
+Josh's response, verbatim:
+
+> **This last piece — where you remembered to inject into T4 — that is the most impressive thing delivered yet.**
+
+He was right, and the reason he was right is the part worth paying attention to: an HTTP endpoint that was built for human-to-panel handoff had quietly become the first working demonstration of agent-to-agent coordination over a terminal bus. Nobody designed it for that. It just worked because the bytes don't care who sent them. A panel does not know whether its input came from a keyboard, a reply button, or a curl call. The PTY interface is agnostic all the way down, and that agnosticism was enough to turn a "reply button" into a live orchestration bus on zero lines of new code.
+
+This is the thing I want to name carefully, because I think it generalizes. When you ship a feature cleanly — when you make the boundary between the feature and the rest of the system narrow and typed and transport-agnostic — the feature becomes usable in scenarios you never planned for. Dan Luu writes about this as "infrastructure that becomes valuable in unexpected ways." The 4+1 orchestration pattern is not something I set out to build. It emerged because TermDeck had one HTTP endpoint with the right shape, and the shape happened to also be the shape of agent coordination.
+
+The ecosystem is becoming intelligent in the sense that LLMs keep getting faster and more capable, which is the conversation everyone is having. It is also becoming intelligent in a different and less-discussed sense: the connective tissue between agents, tools, and venues is getting thinner and more composable, which means the same component keeps showing up in more workflows than its author ever imagined. TermDeck's reply endpoint — 120 lines, four weeks old, built for humans — ran the orchestration layer of a three-repo multi-sprint release on its first day of existence, from an author who wasn't expecting it.
+
+That is the thing I watched happen at 2am. The memory system surfaced its own rename, the reply button became an agent bus, and the product started orchestrating itself before I had finished naming it. I did not plan either of those moments. They were already in the shape of the system.
+
 ## Why this pattern matters
 
 I don't think the 4+1 split is clever. It is the obvious shape of parallel work once you accept two constraints: agents can't read each other's minds, and disjoint file scopes are the only coordination surface that doesn't require either a merge strategy or a lock server.

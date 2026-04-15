@@ -1,15 +1,15 @@
-# Tier 2 (Mnemos) End-to-End Verification
+# Tier 2 (Mnestra) End-to-End Verification
 
 **Sprint:** 3 / Terminal 1
-**Date:** 2026-04-14
+**Date:** 2026-04-14 / 2026-04-15
 **Machine:** Josh's iMac (darwin 22.6.0)
-**Production Supabase:** `https://luvvbrpaopnblvxdxwzb.supabase.co` (Mnemos memory store, ~3,451 memories)
+**Production Supabase:** `https://luvvbrpaopnblvxdxwzb.supabase.co` (Mnestra memory store, ~3,451 memories)
 
-> **Naming note:** This document's narrative uses the new name **Mnemos**. Josh chose that name mid-Sprint-3 after T4.1 flagged the prior name ("E-n-g-r-a-m" — 🔴 red: 138 npm packages already, a 2,500-star same-space competitor). A project-wide mechanical rename ran over this doc after it was drafted, which meant some historical references and literal log strings were also substituted. The actual source-code rename is still in flight at the time of writing, so paths like `packages/server/src/mnestra-bridge/index.js` and runtime log prefixes like `[mnestra-bridge]` in this doc's quoted fixtures refer to the state of the live code, not the renamed target. The underlying SQL (`memory_items`, `memory_sessions`, `memory_hybrid_search`) was already agnostic, so no DB changes are required by the rename.
+> **Rename chain context:** This document survived a three-stage name churn during Sprint 3 — the memory store was called **Engram** when I drafted the original walkthrough, got mechanically renamed to **Mnemos**, then again to **Ingram**, and finally landed on **Mnestra** after Ingram was rejected for a sponsor conflict with Ingram Industries. As of the final sweep, source code is at `packages/server/src/mnestra-bridge/` with runtime log prefix `[mnestra-bridge]`, the client Flashback toast renders `Mnestra — possible match` at `packages/client/public/index.html:1904`, and `@jhizzard/mnestra@0.2.0` + `@jhizzard/termdeck@0.2.3` are live on npm with the earlier `engram`/`mnemos` packages deprecated with redirects. Underlying SQL (`memory_items`, `memory_sessions`, `memory_hybrid_search`) was always naming-agnostic, so the rename required zero DB changes.
 
 ## Summary
 
-**Tier 2 works end-to-end on Josh's machine.** Flashback fires on forced errors, queries the production Mnemos memory store via the direct bridge, and broadcasts a `proactive_memory` WebSocket frame to the panel. Shipping it is unblocked for the launch.
+**Tier 2 works end-to-end on Josh's machine.** Flashback fires on forced errors, queries the production Mnestra memory store via the direct bridge, and broadcasts a `proactive_memory` WebSocket frame to the panel. Shipping it is unblocked for the launch.
 
 Two non-blocking issues surfaced that should go into Sprint 4 / FOLLOWUP:
 
@@ -85,7 +85,7 @@ Startup log (`/tmp/termdeck-t1/server.log`):
 [config] Loaded from /Users/joshuaizzard/.termdeck/config.yaml
 [db] Marked 4 orphaned session(s) as exited
 [db] SQLite initialized
-[mnestra-bridge] mode=direct    # literal runtime log prefix; source code still carries the old name until the mechanical rename lands
+[mnestra-bridge] mode=direct
 
   ╔══════════════════════════════════════╗
   ║            TermDeck v0.2.0           ║
@@ -96,9 +96,11 @@ Startup log (`/tmp/termdeck-t1/server.log`):
   ╚══════════════════════════════════════╝
 ```
 
+(The original test ran against the pre-rename `[engram-bridge]` code on 2026-04-14; after the rename landed in commit `30d04f2` the runtime log prefix became `[mnestra-bridge]` and that's what a re-run on 0.2.3 prints. Behavior is identical — the rename was purely cosmetic.)
+
 Matches the plan's expected startup banner exactly (modulo the `(3 keys)` count — plan said 3, we have 3). ✅
 
-## T1.1 step 4 — direct Mnemos query
+## T1.1 step 4 — direct Mnestra query
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/api/ai/query \
@@ -106,14 +108,14 @@ curl -s -X POST http://127.0.0.1:3001/api/ai/query \
   -d '{"question":"TermDeck v0.2 shipping","project":null}'
 ```
 
-Response (HTTP 200): 5 real hits (top of 10 total), all from the production Mnemos memory store. Top hit:
+Response (HTTP 200): 5 real hits (top of 10 total), all from the production Mnestra memory store. Top hit:
 
 > "TermDeck v0.1 honest gap assessment (2026-04-12): The terminal multiplexer core works (PTYs, layouts, themes, status detection, SQLite). What does NOT work: (1) 'Ask about this terminal' input bar is a console.log stub..."
 > *source_type=`fact`, project=`termdeck`, created_at=`2026-04-12T23:03:20Z`*
 
 All 5 hits are semantically relevant. ✅
 
-**Finding — missing `similarity`:** the response memory objects include `content`, `source_type`, `project`, `created_at` but **not** `similarity`. Looking at `packages/server/src/mnestra-bridge/index.js:75-84` (live file path as of this test — will become `mnemos-bridge/` after the mechanical rename), the bridge does `similarity: m.similarity` from the `memory_hybrid_search` RPC rows — but the rows from the RPC do not appear to include that column (so `m.similarity` is `undefined` and JSON.stringify drops the key). Either the RPC is projecting it out, or the column name differs (e.g. `score`, `rrf_score`). Needs a 5-minute look at the Mnemos repo's `migrations/002_mnestra_search_function.sql` (original filename) to confirm. **Not blocking launch** — the UI renders hits without scores fine.
+**Finding — missing `similarity`:** the response memory objects include `content`, `source_type`, `project`, `created_at` but **not** `similarity`. Looking at `packages/server/src/mnestra-bridge/index.js:75-84`, the bridge does `similarity: m.similarity` from the `memory_hybrid_search` RPC rows — but the rows from the RPC do not appear to include that column (so `m.similarity` is `undefined` and JSON.stringify drops the key). Either the RPC is projecting it out, or the column name differs (e.g. `score`, `rrf_score`). Needs a 5-minute look at the Mnestra repo's `migrations/002_mnestra_search_function.sql` to confirm. **Not blocking launch** — the UI renders hits without scores fine.
 
 ## T1.1 step 5 — force an error and watch for `proactive_memory`
 
@@ -137,20 +139,20 @@ error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentat
 
 Command: `nonexistentcmd-for-flashback-test-xyz`
 Shell output captured: `zsh: command not found: nonexistentcmd-for-flashback-test-xyz`
-**Result: `proactive_memory` frame received** with a real hit from Mnemos. ✅
+**Result: `proactive_memory` frame received** with a real hit from Mnestra. ✅
 
 ```json
 {
   "type": "proactive_memory",
   "hit": {
-    "content": "TermDeck/Mnestra/Rumen first-user experience gap analysis (2026-04-12): TIER 1 BOUNCES: (1) npm install fails without C++ compiler (node-pty, better-sqlite3), (2) empty dashboard with no first-run guidance, (3) npx termdeck doesn't work — npm name taken by \"Junielton\" (Stream Deck Electron app), need scoped @jhizzard/termdeck or rename, (4) no config.y[...]",
+    "content": "TermDeck/Engram/Rumen first-user experience gap analysis (2026-04-12): TIER 1 BOUNCES: (1) npm install fails without C++ compiler (node-pty, better-sqlite3), (2) empty dashboard with no first-run guidance, (3) npx termdeck doesn't work — npm name taken by \"Junielton\" (Stream Deck Electron app), need scoped @jhizzard/termdeck or rename, (4) no config.y[...]",
     "source_type": "decision",
     "project": "termdeck"
   }
 }
 ```
 
-(The quoted `content` above is the raw row stored in production on 2026-04-12 — the literal byte sequence still says "Mnestra" because Mnemos didn't exist yet. Rewriting the quoted string would misrepresent the API response. Future memories written after the rename will use "Mnemos".)
+(The quoted `content` above is the raw row as stored in production on 2026-04-12 — the literal byte sequence still says "Engram" because that was the project's name at the time. Rewriting the quoted string would misrepresent the API response. Future memories written post-rename will use "Mnestra".)
 
 **Latency:**
 
@@ -166,7 +168,7 @@ The full backend chain is confirmed working:
 1. Shell emits `zsh: command not found: ...`
 2. Session output analyzer strips ANSI, runs `PATTERNS.error.test(clean)` → match
 3. Status transitions to `errored`, `_lastErrorFireAt` updated (30s per-session rate limit), `onErrorDetected(session, {lastCommand, tail})` fires
-4. `index.js:175-196` calls `mnestraBridge.queryMnestra({question, project, …})` — live JS symbol name (will become `mnemosBridge.queryMnemos` after the mechanical rename); behavior: fire-and-forget, respects `rag.enabled`
+4. `index.js:175-196` calls `mnestraBridge.queryMnestra({question, project, …})` — fire-and-forget, respects `rag.enabled`
 5. `mnestra-bridge:direct` (runtime log prefix) generates a 1536d OpenAI embedding, calls `memory_hybrid_search` RPC
 6. Top hit is sent over the panel's WS as `{type: 'proactive_memory', hit}`
 7. Client consumes (verified manually in an earlier session via Sprint 2 T1.4)
@@ -181,13 +183,13 @@ The full backend chain is confirmed working:
 - ✅ `secrets.env` migration is clean and reversible (backup on disk)
 - ✅ `config.yaml` uses `${VAR}` interpolation with no deprecation warning
 - ✅ Second server starts on :3001 with expected banner
-- ✅ `POST /api/ai/query` returns real production Mnemos hits
+- ✅ `POST /api/ai/query` returns real production Mnestra hits
 - ✅ Error-triggered `proactive_memory` WS broadcast works end-to-end
 - ✅ Top hit is semantically relevant to the trigger command
 
 ### Yellow (non-blocking, follow-ups)
 - ⚠ `PATTERNS.error` should add `No such file or directory`, `Permission denied`, `Is a directory`, `zsh: no matches found` so common shell errors trigger Flashback (today, only "command not found" / "Error" / "Traceback" etc. do)
-- ⚠ `similarity` is `undefined` on every hit — direct-mode bridge expects a column the RPC isn't projecting. Investigate the Mnemos repo's `migrations/002` `memory_hybrid_search` return columns
+- ⚠ `similarity` is `undefined` on every hit — direct-mode bridge expects a column the RPC isn't projecting. Investigate the Mnestra repo's `migrations/002` `memory_hybrid_search` return columns
 - ⚠ End-to-end Flashback latency is ~5.5s on Josh's machine (plan target: 2s). Primarily OpenAI embedding + Supabase round trip. Perf follow-up — cache question embeddings? precompute during output pause?
 
 ### Red
@@ -195,7 +197,7 @@ The full backend chain is confirmed working:
 
 ### Out of scope for T1
 - Fixing `PATTERNS.error` (source edit — T2 territory; or Sprint 4 FOLLOWUP)
-- Fixing the missing `similarity` column (Mnemos repo change, not TermDeck)
+- Fixing the missing `similarity` column (Mnestra repo change, not TermDeck)
 - Fixing the ~5.5s latency (bridge perf optimization)
 
 ## Recommendation to Josh

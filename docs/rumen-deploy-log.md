@@ -5,7 +5,7 @@
 **Status:** 🛑 **BLOCKED** on Supabase credentials + required manual dashboard steps. See "Blockers" section.
 **Project:** `luvvbrpaopnblvxdxwzb` (inferred from `~/.termdeck/secrets.env` → `SUPABASE_URL`)
 
-> **Naming note:** Narrative uses **Mnemos** (the post-rename name for what was previously called "E-n-g-r-a-m" before the Sprint 3 T4.1 rename decision) when referring to the memory store. A project-wide mechanical rename pass ran over this doc after it was drafted, which means some historical references and literal log strings may appear as `mnemos` even where they refer to pre-rename state. SQL tables (`memory_items`, `memory_sessions`, `memory_hybrid_search`) were already naming-agnostic, so no DB changes are required.
+> **Naming note:** Narrative uses **Mnestra** — the final name for the memory store after a three-stage Sprint 3 rename chain (Engram 🔴 → Mnemos 🔴 → Ingram ❌ → Mnestra 🟢). As of commit `30d04f2` the source code is fully renamed: `packages/server/src/mnestra-bridge/`, runtime log prefix `[mnestra-bridge]`, config field names `mnestraMode` / `mnestraWebhookUrl`, and the client Flashback toast at `packages/client/public/index.html:1904` renders `Mnestra — possible match`. Underlying SQL (`memory_items`, `memory_sessions`, `memory_hybrid_search`) was always naming-agnostic, so no DB changes are required.
 
 ## TL;DR
 
@@ -26,8 +26,8 @@ All probed via the Supabase REST API using `SUPABASE_SERVICE_ROLE_KEY` (the one 
 | `rumen_jobs` | 200 | ≥1 | `eafb64a4-…` triggered_by=`test-rest`, status=`done`, 20 sessions processed, 1 insight, 2026-04-13T00:05:51Z |
 | `rumen_insights` | 200 | ≥1 | `2f2a1f01-…` insight_text=`"Pattern: \"fact\" memories appear across 2 projects (global, termdeck)..."`, confidence=0.7, projects=`[global, termdeck]` — heuristic Relate-phase insight (not Haiku Synthesize) |
 | `rumen_questions` | 200 | 0 | empty (v0.3 feature) |
-| `memory_items` | 200 | ~3,451 | Mnemos memory store |
-| `memory_sessions` | 200 | many | Mnemos sessions |
+| `memory_items` | 200 | ~3,451 | Mnestra memory store |
+| `memory_sessions` | 200 | many | Mnestra sessions |
 
 **Conclusion:** migration 001 is applied. Migration 002 has never been applied (no `cron.job` state accessible over REST, and no `schedule`-triggered rows in `rumen_jobs`).
 

@@ -6,7 +6,7 @@ Sprint 3 T1.3 reference stills + the hero Flashback-demo GIF procedure.
 
 | File | Size | What it is | Who captured | Use in launch |
 |---|---:|---|---|---|
-| `dashboard-4panel.png` | 175 KB | 2x2 layout, four populated panels (termdeck/mnestra/rumen/portfolio), commands visible in each | Playwright via headless chromium on :3001 (Sprint 3 T1) | README hero fallback if GIF can't embed; Show HN post body; blog post 1 architecture section |
+| `dashboard-4panel.png` | 175 KB | 2x2 layout, four populated panels (termdeck/engram/rumen/portfolio — pre-rename, see "Rename context" below), commands visible in each | Playwright via headless chromium on :3001 (Sprint 3 T1, 2026-04-14) | README hero fallback if GIF can't embed; Show HN post body; blog post 1 architecture section |
 | `drawer-open.png` | 372 KB | Same 2x2 layout, first panel's Commands drawer expanded showing `ls` + `git status` + `git log` history with click-to-copy chips | Playwright, Sprint 3 T1 | Blog post 1 "what it looks like" section; X thread tweet 3 (drawer feature) |
 | `switcher.png` | 107 KB | Topbar slice — TermDeck brand + status counts + layout buttons + in-bar terminal switcher tiles (Alt+1..9) + launch buttons + help button | Playwright, Sprint 3 T1 | Blog post 1 tour; tweet 4 (switcher feature) |
 | `flashback-demo.gif` | **NOT YET CAPTURED** | 10–14 s screencast of the Flashback hero moment | Josh (manual, QuickTime + ffmpeg) | README hero image; Show HN hero; blog post 1 lede; X thread tweet 1 |
@@ -105,14 +105,21 @@ This is **the** single most important launch asset. Every launch surface referen
 These will affect the GIF's look-and-feel but are not blockers for launch:
 
 - **End-to-end Flashback latency ~5.5 s** — slower than the 2 s target in the plan. The pause-before-toast will feel longer than ideal. Future perf follow-up: cache question embeddings, pre-emit during the output-buffer-flush pause.
-- **Similarity score is undefined** on `proactive_memory.hit` payloads — the Mnemos-bridge's `memory_hybrid_search` RPC is not projecting a similarity column. Score will not appear in the drawer. UI still renders content/project/source_type/created_at fine. Fix belongs in the Mnemos repo, `migrations/002_mnestra_search_function.sql`.
+- **Similarity score is undefined** on `proactive_memory.hit` payloads — the mnestra-bridge's `memory_hybrid_search` RPC is not projecting a similarity column. Score will not appear in the drawer. UI still renders content/project/source_type/created_at fine. Fix belongs in the Mnestra repo, `migrations/002_mnestra_search_function.sql`.
 - **`PATTERNS.error` miss on "No such file or directory"** — flagged above; use a different trigger command.
 
-## Rename context (Mnestra → Mnemos)
+## Rename context (Engram → Mnestra, via a three-step churn)
 
-The Mnestra → Mnemos rename lands mid-Sprint-3. Project tags in the screenshots still read "mnestra" because that's what's in `~/.termdeck/config.yaml` at the time of capture. After the main-agent's mechanical rename completes:
+The three reference stills were captured on 2026-04-14 against the pre-rename code. Project tags in the panels still read "engram" because that's what was in `~/.termdeck/config.yaml` at the time. After commit `30d04f2` landed the full rename (`engram-bridge/` → `mnestra-bridge/`, client toast `Mnestra — possible match`, `@jhizzard/mnestra@0.2.0` on npm), the fresh-capture options are:
 
-- Josh renames his `~/.termdeck/config.yaml` project from `mnestra` → `mnemos`
-- Rename the local `/Users/joshuaizzard/Documents/Graciella/mnestra` directory → `mnemos`
-- Re-run the Playwright capture (`/tmp/termdeck-t1/playwright-stills.js`) to get updated stills with "mnemos" project tags
+- Josh renames the `engram` project in `~/.termdeck/config.yaml` → `mnestra` (+ rename `/Users/joshuaizzard/Documents/Graciella/engram` → `mnestra` on disk), then re-runs `/tmp/termdeck-t1/playwright-stills.js`
+- OR Josh hand-captures updated stills alongside the hero GIF (same session, since the GIF is manual anyway)
+
+Either approach produces stills with Mnestra-branded project tags and the new Flashback toast header. The three existing PNGs are still good-enough scaffolding for launch copy that mentions the 2x2 layout, the drawer, or the switcher — none of them visually reference the old name in a distracting way.
+
+## Meta-moment screenshot (`flashback-meta-moment.png`) — NEEDED FROM JOSH
+
+The blog post at `docs/launch/blog-post-4plus1-orchestration.md` ("I watched my memory system debug its own rename at 2am") and the X thread at `docs/launch/x-thread-orchestration.md` both reference `docs/screenshots/flashback-meta-moment.png` as their hero image. This is the screenshot Josh captured at 2026-04-15T00:17Z during the Sprint 3 name-dispute crisis, where Flashback surfaced a memory about the team's *own* rename research in response to an error he was typing — and the toast header still read `ENGRAM — POSSIBLE MATCH` because the client-side rename constant hadn't propagated yet.
+
+**T1 cannot produce this file.** It doesn't exist anywhere on disk in the usual locations (`~/Desktop`, `~/Downloads`, `~/Pictures`, the repo). If Josh captured it via CleanShot X, an iOS device, Photos.app, or a clipboard paste, he'll need to export the PNG and drop it at `docs/screenshots/flashback-meta-moment.png` manually. Once that lands, the blog post and X thread render cleanly with the hero image in place.
 - OR Josh hand-captures fresh stills at the same time as the hero GIF
