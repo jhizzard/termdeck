@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-// `termdeck init --engram` — interactive wizard for TermDeck's Tier 2 memory
-// layer. Wraps the six manual Engram setup steps into one command.
+// `termdeck init --mnestra` — interactive wizard for TermDeck's Tier 2 memory
+// layer. Wraps the six manual Mnestra setup steps into one command.
 //
 // Steps:
 //   1. Collect Supabase URL, service_role key, direct DB URL, OpenAI + Anthropic keys
 //   2. Connect via `pg` using the direct URL
-//   3. Apply the six bundled Engram migrations in order
+//   3. Apply the six bundled Mnestra migrations in order
 //   4. Write ~/.termdeck/secrets.env (merge-aware, preserves existing values)
 //   5. Update ~/.termdeck/config.yaml to enable RAG + point at ${VAR} refs
 //   6. Verify with a memory_status_aggregation() call
@@ -35,9 +35,9 @@ const {
 
 const HELP = [
   '',
-  'TermDeck Engram Setup',
+  'TermDeck Mnestra Setup',
   '',
-  'Usage: termdeck init --engram [flags]',
+  'Usage: termdeck init --mnestra [flags]',
   '',
   'Flags:',
   '  --help            Print this message and exit',
@@ -48,10 +48,10 @@ const HELP = [
   'What this does:',
   '  1. Prompts for Supabase URL, service_role key, direct Postgres connection',
   '     string, OpenAI API key, and (optional) Anthropic API key.',
-  '  2. Applies the six Engram schema + RPC migrations via node-postgres.',
+  '  2. Applies the six Mnestra schema + RPC migrations via node-postgres.',
   '  3. Writes ~/.termdeck/secrets.env (merge-aware, preserves existing values).',
   '  4. Updates ~/.termdeck/config.yaml to enable RAG and reference ${VAR} keys.',
-  '  5. Verifies the Engram store is reachable via memory_status_aggregation().',
+  '  5. Verifies the Mnestra store is reachable via memory_status_aggregation().',
   '',
   'Every secret stays on your machine. Nothing is ever printed once entered.',
   ''
@@ -70,10 +70,10 @@ function parseFlags(argv) {
 
 function printBanner() {
   process.stdout.write(`
-TermDeck Engram Setup
+TermDeck Mnestra Setup
 ─────────────────────
 
-This wizard configures TermDeck's Tier 2 memory layer (Engram) by:
+This wizard configures TermDeck's Tier 2 memory layer (Mnestra) by:
   1. Asking for your Supabase URL and service_role key
   2. Asking for a direct Postgres connection string
   3. Applying six SQL migrations to the database
@@ -166,9 +166,9 @@ async function promptSecretWithValidation(validator) {
 }
 
 async function applyMigrations(client, dryRun) {
-  const files = migrations.listEngramMigrations();
+  const files = migrations.listMnestraMigrations();
   if (files.length === 0) {
-    throw new Error('No Engram migrations found. TermDeck install looks corrupted.');
+    throw new Error('No Mnestra migrations found. TermDeck install looks corrupted.');
   }
 
   for (const file of files) {
@@ -257,7 +257,7 @@ function writeLocalConfig(inputs, dryRun) {
 
 function printNextSteps() {
   process.stdout.write(`
-Engram is configured.
+Mnestra is configured.
 
 Next steps:
   1. Restart TermDeck: termdeck
@@ -280,7 +280,7 @@ async function main(argv) {
   try {
     inputs = await collectInputs({ yes: flags.yes });
   } catch (err) {
-    process.stderr.write(`\n[init --engram] ${err.message}\n`);
+    process.stderr.write(`\n[init --mnestra] ${err.message}\n`);
     return 2;
   }
 
@@ -322,7 +322,7 @@ async function main(argv) {
       }
     }
   } catch (err) {
-    process.stderr.write(`\n[init --engram] ${err.message}\n`);
+    process.stderr.write(`\n[init --mnestra] ${err.message}\n`);
     return 5;
   } finally {
     try { await client.end(); } catch (_err) { /* ignore */ }
@@ -336,7 +336,7 @@ if (require.main === module) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code || 0))
     .catch((err) => {
-      process.stderr.write(`\n[init --engram] unexpected error: ${err && err.stack || err}\n`);
+      process.stderr.write(`\n[init --mnestra] unexpected error: ${err && err.stack || err}\n`);
       process.exit(1);
     });
 }

@@ -7,9 +7,9 @@
 //   termdeck init --rumen  [flags]   # Tier 3 async learning deploy
 //
 // Note (Sprint 3): the `--mnestra` flag name matches the current init-mnestra.js
-// filename. When the main orchestrator completes the Mnestra → Ingram rename
+// filename. When the main orchestrator completes the Mnestra → Mnestra rename
 // sweep over this repo, both the flag name and the filename should flip to
-// `--ingram` / `init-ingram.js` together.
+// `--mnestra` / `init-mnestra.js` together.
 
 const path = require('path');
 const { execSync } = require('child_process');
@@ -43,7 +43,7 @@ if (args[0] === 'init') {
     return;
   }
   console.error('Usage: termdeck init --mnestra | --rumen');
-  console.error('  termdeck init --mnestra   Configure Tier 2 memory (Supabase + Ingram)');
+  console.error('  termdeck init --mnestra   Configure Tier 2 memory (Supabase + Mnestra)');
   console.error('  termdeck init --rumen    Deploy Tier 3 async learning (Rumen)');
   process.exit(1);
 }
@@ -66,7 +66,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck --port 8080        Start on custom port
     termdeck --no-open          Don't auto-open browser
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
-    termdeck init --mnestra      Configure Tier 2 memory (Supabase + Ingram)
+    termdeck init --mnestra      Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
 
   Keyboard shortcuts (in browser):

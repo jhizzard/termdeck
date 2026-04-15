@@ -8,7 +8,7 @@
 // hangs. The event-driven path works for both TTY and piped input, which lets
 // us drive the wizard non-interactively in tests:
 //
-//   printf 'a\nb\nc\n' | termdeck init --engram --dry-run
+//   printf 'a\nb\nc\n' | termdeck init --mnestra --dry-run
 //
 // Secret prompts still mute stdout echo when TTY is attached; on non-TTY
 // stdin they fall back to visible input so piped test runs work.

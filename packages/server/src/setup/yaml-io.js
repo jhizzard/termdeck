@@ -1,4 +1,4 @@
-// Targeted writer for ~/.termdeck/config.yaml that the `init --engram` wizard
+// Targeted writer for ~/.termdeck/config.yaml that the `init --mnestra` wizard
 // uses to flip `rag.enabled: true` and point secret fields at `${VAR}` refs
 // instead of inline values.
 //
@@ -56,8 +56,8 @@ function updateRagConfig(updates) {
     openaiApiKey: updates.openaiApiKey || rag.openaiApiKey || '${OPENAI_API_KEY}',
     anthropicApiKey: updates.anthropicApiKey || rag.anthropicApiKey || '${ANTHROPIC_API_KEY}',
     syncIntervalMs: rag.syncIntervalMs != null ? rag.syncIntervalMs : 10000,
-    engramMode: rag.engramMode || 'direct',
-    engramWebhookUrl: rag.engramWebhookUrl || 'http://localhost:37778/engram'
+    mnestraMode: rag.mnestraMode || 'direct',
+    mnestraWebhookUrl: rag.mnestraWebhookUrl || 'http://localhost:37778/mnestra'
   };
 
   // Preserve any fields we didn't explicitly handle (e.g. tables, developerId).

@@ -2,13 +2,13 @@
 
 // `termdeck init --rumen` — interactive wizard for deploying Rumen as a
 // Supabase Edge Function + pg_cron schedule against the same Supabase
-// project that holds the Mnemos store.
+// project that holds the Mnestra store.
 //
 // Requirements checked at runtime:
 //   - `supabase` CLI on PATH
 //   - `deno` on PATH
 //   - `~/.termdeck/secrets.env` with SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY +
-//     DATABASE_URL + ANTHROPIC_API_KEY populated (run `termdeck init --mnemos` first)
+//     DATABASE_URL + ANTHROPIC_API_KEY populated (run `termdeck init --mnestra` first)
 //
 // Steps:
 //   1. Preflight: which supabase, which deno, read secrets.env
@@ -47,7 +47,7 @@ const HELP = [
   '  --skip-schedule   Deploy the function but do not install the pg_cron schedule',
   '',
   'Requires: Supabase CLI and Deno already installed.',
-  'Requires: `termdeck init --mnemos` has already run (needs secrets.env).',
+  'Requires: `termdeck init --mnestra` has already run (needs secrets.env).',
   ''
 ].join('\n');
 
@@ -112,14 +112,14 @@ function preflight() {
   }
   ok();
 
-  step('Reading Mnemos config from ~/.termdeck/secrets.env...');
+  step('Reading Mnestra config from ~/.termdeck/secrets.env...');
   const secrets = dotenv.readSecrets();
   const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'DATABASE_URL', 'ANTHROPIC_API_KEY'];
   const missing = required.filter((k) => !secrets[k]);
   if (missing.length > 0) {
     fail(`missing keys: ${missing.join(', ')}`);
     process.stderr.write(
-      '\nRun `termdeck init --mnemos` first — it writes the keys this wizard needs.\n'
+      '\nRun `termdeck init --mnestra` first — it writes the keys this wizard needs.\n'
     );
     return null;
   }
@@ -363,7 +363,7 @@ Next steps:
   1. Monitor:  psql "$DATABASE_URL" -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
   2. Store the service_role key in Supabase Vault as \`rumen_service_role_key\`
      so the cron call in migrations/002_pg_cron_schedule.sql can authenticate.
-  3. Rumen insights flow back into Mnemos's memory_items via rumen_insights.
+  3. Rumen insights flow back into Mnestra's memory_items via rumen_insights.
   4. TermDeck's Flashback will surface cross-project patterns automatically.
 `);
 }

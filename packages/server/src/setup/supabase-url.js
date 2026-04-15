@@ -1,7 +1,7 @@
 // Parse + validate Supabase URLs and derive what we can from them without the
 // database password. Useful for both init wizards:
 //
-//   - init-engram needs the project ref to show in status output and also
+//   - init-mnestra needs the project ref to show in status output and also
 //     needs a full DATABASE_URL to apply migrations; since the DB password
 //     cannot be derived from the project URL alone, the wizard prompts for
 //     the direct connection string separately.

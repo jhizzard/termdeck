@@ -1,15 +1,15 @@
 // Discover the SQL migration files that ship bundled inside the TermDeck
-// package. Both init wizards call this — init-engram for the six Engram
+// package. Both init wizards call this — init-mnestra for the six Mnestra
 // migrations, init-rumen for the two Rumen migrations.
 //
-// The wizards intentionally do NOT fall back to a sibling `../../engram`
+// The wizards intentionally do NOT fall back to a sibling `../../mnestra`
 // working copy. Resolution order:
 //
-//   1. Files bundled at `packages/server/src/setup/engram-migrations/*.sql`
+//   1. Files bundled at `packages/server/src/setup/mnestra-migrations/*.sql`
 //      (this directory is covered by the root package.json `files` glob).
-//   2. Files at `node_modules/@jhizzard/engram/migrations/*.sql` if that
+//   2. Files at `node_modules/@jhizzard/mnestra/migrations/*.sql` if that
 //      package is installed alongside TermDeck (future-proof path — shipping
-//      `@jhizzard/engram` as an optional peer would let us drop the bundled
+//      `@jhizzard/mnestra` as an optional peer would let us drop the bundled
 //      copy).
 
 const fs = require('fs');
@@ -44,10 +44,10 @@ function tryNodeModules(packageName, migrationSubdir = 'migrations') {
   }
 }
 
-function listEngramMigrations() {
-  const fromNm = tryNodeModules('@jhizzard/engram');
+function listMnestraMigrations() {
+  const fromNm = tryNodeModules('@jhizzard/mnestra');
   if (fromNm.length > 0) return fromNm;
-  return listBundled('engram-migrations');
+  return listBundled('mnestra-migrations');
 }
 
 function listRumenMigrations() {
@@ -73,7 +73,7 @@ function readFile(filepath) {
 }
 
 module.exports = {
-  listEngramMigrations,
+  listMnestraMigrations,
   listRumenMigrations,
   rumenFunctionDir,
   readFile
