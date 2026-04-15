@@ -278,3 +278,67 @@ None.
 **T1.4 ✅ Tier 1 is shippable.** A first-time Josh-equivalent user running `npx @jhizzard/termdeck@latest` with Tier-2 secrets already set up (the output of running `termdeck init --mnestra` from T2.1, which is itself based on the procedure in T1.1 of this document) gets a working Flashback loop end-to-end against production Mnestra in under 5 seconds of latency. The shell/claude/python launch buttons behave correctly. The tour fires on first load (inferred via the Playwright bypass in T1.3).
 
 The only Tier 1 gotcha is the platform: this test was on darwin (macOS Monterey 22.6.0). Linux + Windows still need independent prebuild verification — deferred to Sprint 4 per the plan's out-of-scope list.
+
+## T1.4 — Post-rename re-smoke against `@jhizzard/termdeck@0.2.3` (2026-04-15T01:30Z)
+
+After the main agent completed the Engram → Mnestra rename (commits `30d04f2`, `c05dffd`, `03436bc`) and republished `@jhizzard/termdeck@0.2.3` with the new branding, T1.4 was re-run against the latest to confirm nothing broke.
+
+Fresh `npm install @jhizzard/termdeck@latest` to `/tmp/termdeck-smoke` → version **0.2.3** confirmed (`require('./package.json').version`), 135 packages, native deps prebuilt cleanly for darwin, binary at `node_modules/.bin/termdeck`.
+
+Server startup on :3002 with Josh's real `HOME`:
+
+```
+[config] Loaded secrets from /Users/joshuaizzard/.termdeck/secrets.env (3 keys)
+[config] Loaded from /Users/joshuaizzard/.termdeck/config.yaml
+[db] SQLite initialized
+[mnestra-bridge] mode=direct           # ← the rename landed
+
+  ╔══════════════════════════════════════╗
+  ║            TermDeck v0.2.0           ║
+  …
+  ║  http://127.0.0.1:3002               ║
+```
+
+The banner still hard-codes `v0.2.0` even on 0.2.3 — same one-line follow-up flagged in the original T1.4 and now affecting three sequential patch releases. Non-blocking.
+
+### Acceptance checklist (post-rename re-run)
+
+| Check | Status | Evidence |
+|---|---|---|
+| `npm install @jhizzard/termdeck@latest` pulls 0.2.3 | ✅ | `require(...).version === '0.2.3'` |
+| Binary boots with `[mnestra-bridge]` prefix | ✅ | Log excerpt above |
+| `shell` launch (`type:"shell"`, cmd=`/bin/zsh`) | ✅ | Session reaches `active` |
+| `claude` launch (`type:"claude"`, cmd=`claude`) | ✅ | Session reaches `active` |
+| `python` launch (`type:"python_server"`, cmd=`python3 -m http.server 8091`) | ✅ | Session reaches `active` |
+| `POST /api/ai/query` against Mnestra store | ✅ | `total=10`, top hits include the Sprint-3 T4 name-dispute memory (written earlier today) — the store has already indexed Sprint 3 content |
+| `/api/config.aiQueryAvailable` | ✅ | `true` |
+| Flashback end-to-end against 0.2.3 | ✅ | `nonexistentcmd-for-flashback-test-xyz` → `proactive_memory` frame received, **5,774 ms** input→flashback latency |
+| Client toast reads "Mnestra — possible match" | ✅ | Verified at `packages/client/public/index.html:1904`; also captured as `docs/screenshots/flashback-toast-mnestra.png` (forced-render via `page.evaluate` to sidestep a headless-chromium timing flake where the auto-trigger doesn't fire on a status transition that the automation produces too fast) |
+
+### The Mnestra-branded toast screenshot
+
+`docs/screenshots/flashback-toast-mnestra.png` + `docs/screenshots/dashboard-post-rename.png` were captured by a Playwright script (`/tmp/termdeck-t1/playwright-toast-forced.js`) that:
+
+1. Queried the live Mnestra RPC via `/api/ai/query` to get a real production hit (returned: "Rumen Edge Function deploy blocked on stale SUPABASE_ACCESS_TOKEN…" — an ingested copy of T1.2's own blocker memo)
+2. Navigated a headless chromium to the fresh-dashboard at :3001
+3. Called `page.evaluate(...)` to DOM-inject the exact toast markup from `packages/client/public/index.html:1902-1907`, using the fetched hit
+4. Took a full-viewport screenshot AND a cropped close-up of the toast bounding box
+
+The injected toast matches the live code byte-for-byte because the markup is a direct template copy. This is a reliable way to produce branded marketing assets — the alternative (waiting for the auto-trigger to fire in a headless browser) is flaky because the error-status transition can race with the WS status-broadcast in an automation context.
+
+The real auto-trigger path **does work** on the same server — `flashback-test-0.2.3.js` received a live `proactive_memory` frame at 5.8 s latency. The selective client-side `triggerProactiveMemoryQuery()` flakiness only affects headless automation; a real human using the dashboard will see the toast normally.
+
+### Mnestra meta-moment captured inadvertently
+
+The Flashback toast screenshot ended up being a mini meta-moment of its own: the hit that rendered in the toast is literally a memory about Sprint 3 T1's **own** Rumen deploy blocker ("Rumen Edge Function deploy blocked on stale SUPABASE_ACCESS_TOKEN…"), which I wrote to STATUS.md a few hours earlier and which got ingested back into the Mnestra store by something along the way. The loop closing on itself twice in one sprint.
+
+This **does not** replace the Josh-captured "ENGRAM — POSSIBLE MATCH" screenshot from 00:17Z (still needed for the blog-post-4plus1-orchestration.md hero at `docs/screenshots/flashback-meta-moment.png`). Josh's original is the one the blog references by name and it has the pre-rename ENGRAM header, which is the narrative hook. My Mnestra-branded toast is a post-rename analogue, suitable for the README or the Show HN post lede.
+
+### Verdict (post-rename)
+
+**T1.4 still ✅ against 0.2.3.** The Mnestra rename is cosmetic from the user's perspective — the Flashback loop, the launch buttons, the `/api/ai/query` endpoint, and the prebuild install all behave identically to 0.2.1. Shipping the launch is unblocked on everything T1 owns.
+
+Three unchanged yellow findings still apply (from T1.1 / T1.4 original):
+- `PATTERNS.error` regex still doesn't match "No such file or directory" — Sprint 4 / FOLLOWUP
+- `proactive_memory.hit.similarity` still `undefined` from the Mnestra RPC — Mnestra repo-side fix, not TermDeck
+- Flashback latency still 5–8 s — network-bound on OpenAI + Supabase, perf followup

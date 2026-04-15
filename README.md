@@ -4,9 +4,7 @@
 
 A browser-based terminal multiplexer with an onboarding tour, rich per-panel metadata, and **Flashback** — automatic recall of similar past errors, surfaced the moment a panel hits a problem. No asking, no querying, no manual search. TermDeck notices you're stuck and offers the memory.
 
-![TermDeck dashboard — browser-based terminal multiplexer with per-panel metadata overlays](assets/hero.jpg)
-
-*(A fresh hero screenshot with a live Flashback toast is coming in v0.2.1 — see [docs/FOLLOWUP.md](docs/FOLLOWUP.md).)*
+![TermDeck Flashback in action — proactive memory recall on panel error, captured live against the production Supabase store](docs/screenshots/flashback-demo.gif)
 
 ---
 
