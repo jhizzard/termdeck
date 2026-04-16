@@ -60,6 +60,7 @@ const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler } = require('./preflight');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject } = require('./config');
+const { createAuthMiddleware, verifyWebSocketUpgrade } = require('./auth');
 
 function createServer(config) {
   const app = express();
@@ -67,6 +68,15 @@ function createServer(config) {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   app.use(express.json());
+
+  // Optional token auth (Sprint 9 T3). Zero-op when no token is configured,
+  // so local users see no behavior change. Mounted before static + routes so
+  // unauthenticated requests never touch app.js / index.html.
+  const authMiddleware = createAuthMiddleware(config);
+  if (authMiddleware) {
+    app.use(authMiddleware);
+    console.log('[auth] Token authentication enabled');
+  }
 
   // Serve client files
   const clientDir = path.join(__dirname, '..', '..', 'client', 'public');
@@ -740,6 +750,13 @@ function createServer(config) {
   // ==================== WebSocket ====================
 
   wss.on('connection', (ws, req) => {
+    // Optional token auth for WS upgrades (Sprint 9 T3). Express middleware
+    // does not run on the upgrade path, so the check has to live here.
+    if (!verifyWebSocketUpgrade(config, req)) {
+      ws.close(4003, 'Unauthorized');
+      return;
+    }
+
     const url = new URL(req.url, `http://${req.headers.host}`);
     const sessionId = url.searchParams.get('session');
 
