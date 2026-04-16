@@ -60,7 +60,7 @@ const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler } = require('./preflight');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject } = require('./config');
-const { createAuthMiddleware, verifyWebSocketUpgrade } = require('./auth');
+const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
 
 function createServer(config) {
   const app = express();
@@ -852,9 +852,22 @@ if (require.main === module) {
     config.sessionLogs = { ...(config.sessionLogs || {}), enabled: true };
   }
 
-  const { server, transcriptWriter } = createServer(config);
   const port = config.port || 3000;
   const host = config.host || '127.0.0.1';
+
+  // Bind guardrail (Sprint 10 T1): refuse to start on a non-localhost
+  // interface unless an auth token is configured. Binding 0.0.0.0 without
+  // auth is equivalent to publishing a root shell on the LAN — fail closed.
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+    if (!hasAuth(config)) {
+      console.error('[security] Refusing to bind to ' + host + ' without auth.token set.');
+      console.error('[security] Set auth.token in ~/.termdeck/config.yaml or TERMDECK_AUTH_TOKEN env var.');
+      console.error('[security] To bind locally only, remove the host setting or set host: 127.0.0.1');
+      process.exit(1);
+    }
+  }
+
+  const { server, transcriptWriter } = createServer(config);
 
   // Graceful shutdown — flush transcript buffer before exit
   let shutdownInProgress = false;

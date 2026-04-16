@@ -156,9 +156,17 @@ function verifyWebSocketUpgrade(config, req) {
   return !!provided && provided === token;
 }
 
+// Whether a usable auth token is configured (via config.auth.token or the
+// TERMDECK_AUTH_TOKEN env var). Used by the bind guardrail in index.js to
+// decide whether binding to a non-localhost interface is permitted.
+function hasAuth(config) {
+  return !!getConfiguredToken(config);
+}
+
 module.exports = {
   createAuthMiddleware,
   verifyWebSocketUpgrade,
   getConfiguredToken,
+  hasAuth,
   loginPage
 };

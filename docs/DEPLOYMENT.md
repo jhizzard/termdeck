@@ -116,9 +116,12 @@ server:
   port: 7700
 ```
 
-Binding to `0.0.0.0` without auth is equivalent to publishing a root shell on
-your LAN. The server refuses to start in that configuration — set
-`auth.token` first.
+Binding to `0.0.0.0` (or any non-localhost interface) without auth is
+equivalent to publishing a root shell on your LAN. The server refuses to
+start in that configuration and exits with a `[security]` error — set
+`auth.token` in `~/.termdeck/config.yaml` or export `TERMDECK_AUTH_TOKEN`
+first. Loopback hosts (`127.0.0.1`, `localhost`, `::1`) are always allowed,
+with or without a token.
 
 ---
 
