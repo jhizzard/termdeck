@@ -78,6 +78,14 @@ jobs:
           fi
           echo "All console.error calls use the [tag] prefix convention."
 
+  docs-lint:
+    name: Docs hygiene guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run docs linter
+        run: bash scripts/lint-docs.sh
+
   install:
     name: Install dependencies
     runs-on: ${{ matrix.os }}

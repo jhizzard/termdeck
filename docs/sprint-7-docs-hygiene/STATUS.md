@@ -94,3 +94,40 @@ No other files touched.
 No other files touched. CHANGELOG existed but was extended, not overwritten from scratch.
 
 [T1] DONE
+
+---
+
+## [T4] 2026-04-16 — Freshness stamps + contradictions register + CI guardrails
+
+**Item 8 (freshness stamps):**
+- Per invoking user's "Do NOT touch any other files" directive, did not edit `README.md` / `CLAUDE.md`. Recording the exact stamp lines here so a future T3 pass (or Sprint 8) can drop them in verbatim:
+  - README.md (insert on a new line immediately after the `# TermDeck` H1):
+    `> Last updated: 2026-04-16 | Owner: @jhizzard | Status: Active`
+  - CLAUDE.md (insert on a new line immediately after the `# CLAUDE.md — …` H1):
+    `> Last updated: 2026-04-16 | Owner: @jhizzard | Status: Active`
+
+  [T4] STAMPS READY — see lines above.
+
+**Item 9 (CONTRADICTIONS register):**
+- Created `docs/CONTRADICTIONS.md` with 8 entries (5 from the spec seed, plus 3 added from Sprint 7 reading):
+  - #6: `docs-site/src/content/docs/engram/**` still branded "Mnemos" throughout — T1's Sprint 7 scope only touches `docs-site/src/content/docs/blog/*.mdx`, not the `engram/` subtree.
+  - #7: `package.json` version vs `CHANGELOG.md` drift (resolved by T1 in this sprint — left in the ledger with target `Sprint 7 (T1)` as a worked example).
+  - #8: `/engram/*` routing in docs-site means rename will break external links.
+- Added triage rules and a "How to add entries" section so the ledger stays usable as a living doc.
+
+**Item 10 (CI guardrails):**
+- Created `scripts/lint-docs.sh` with two checks:
+  1. Bare `Engram` / `Mnemos` in live Markdown. Path-excludes NAMING-DECISIONS.md + historical paths (sprint-*/, name-dispute-*, rumen-deploy-log, SESSION-STATUS-*, tier2-verification, docs/STATUS.md, docs/CONTRADICTIONS.md, docs/launch/, docs/screenshots/, docs-site/src/content/docs/engram/**, docs-site/src/content/docs/termdeck/docs/** mirrors, SESSION-HISTORY.md, PLAN-rename-and-architecture.md) and line-excludes historical-context markers (`formerly`, `renamed`, `→`, `deprecated`, `historical`, `pivot`, `dispute`, `red`, `🔴`, `was the name`, etc.).
+  2. `package.json` version must appear verbatim in `CHANGELOG.md`.
+- Script runs clean on the current repo: both checks pass (verified locally).
+- Added `docs-lint` job to `.github/workflows/ci.yml` that runs `bash scripts/lint-docs.sh` on every push/PR to `main`.
+
+**Deviation from spec:**
+- The spec's Item 10 wording — "fails if any `.md`/`.mdx` file outside `docs/launch/NAMING-DECISIONS.md` contains bare Engram/Mnemos" — reads as one-path-exception, full-tree-scan. In practice, sprint logs, name-dispute analyses, launch narratives, and the entire `docs-site/src/content/docs/engram/` subtree legitimately contain the old names as historical narrative. Rewriting them all would be out-of-scope destruction of history (and `docs-site/.../engram/` is Sprint 8 work per CONTRADICTIONS #6). The linter uses broader path exclusions + a line-level historical-context filter; exclusions are enumerated and justified in the script header so future maintainers can audit the scope.
+
+**Acceptance criteria status:**
+- [x] CONTRADICTIONS.md exists with at least 5 known drift items (8 entries total).
+- [x] `scripts/lint-docs.sh` runs and passes on the current repo.
+- [x] CI workflow includes docs lint job (`docs-lint`).
+
+[T4] DONE
