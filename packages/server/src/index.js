@@ -47,6 +47,8 @@ const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = requ
 const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./mnestra-bridge');
 const { writeSessionLog } = require('./session-logger');
+const { TranscriptWriter } = require('./transcripts');
+const { createHealthHandler } = require('./preflight');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject } = require('./config');
 
@@ -87,11 +89,32 @@ function createServer(config) {
   const mnestraBridge = createBridge(config);
   console.log(`[mnestra-bridge] mode=${mnestraBridge.mode}`);
 
+  // Initialize transcript writer (Session Transcripts — Sprint 6)
+  const transcriptConfig = config.transcripts || {};
+  const transcriptEnabled = transcriptConfig.enabled !== undefined
+    ? transcriptConfig.enabled
+    : !!process.env.DATABASE_URL;
+  let transcriptWriter = null;
+  if (transcriptEnabled && process.env.DATABASE_URL) {
+    transcriptWriter = new TranscriptWriter(process.env.DATABASE_URL, {
+      batchSize: transcriptConfig.batchSize || 50,
+      flushIntervalMs: transcriptConfig.flushIntervalMs || 2000,
+      enabled: true
+    });
+    console.log('[transcript] Writer initialized (flush every %dms, batch %d)',
+      transcriptConfig.flushIntervalMs || 2000, transcriptConfig.batchSize || 50);
+  } else {
+    console.log('[transcript] Writer disabled (no DATABASE_URL or transcripts.enabled=false)');
+  }
+
   // Wire RAG to session events
   sessions.on('session:created', (s) => rag.onSessionCreated(s));
   sessions.on('session:removed', (s) => rag.onSessionEnded(s));
 
   // ==================== REST API ====================
+
+  // GET /api/health - preflight health checks (Sprint 6 T1, wired by T3)
+  app.get('/api/health', createHealthHandler(config));
 
   // GET /api/sessions - list all active sessions
   app.get('/api/sessions', (req, res) => {
@@ -157,13 +180,22 @@ function createServer(config) {
         session.pid = term.pid;
         session.meta.status = 'active';
 
-        // PTY output → analyze + broadcast to WebSocket
+        // PTY output → analyze + broadcast to WebSocket + transcript archive
         term.onData((data) => {
           session.analyzeOutput(data);
 
           // Send to connected WebSocket
           if (session.ws && session.ws.readyState === 1) {
             session.ws.send(JSON.stringify({ type: 'output', data }));
+          }
+
+          // Archive to transcript writer (non-blocking, failure-safe)
+          if (transcriptWriter) {
+            try {
+              transcriptWriter.append(session.id, data, Buffer.byteLength(data, 'utf8'));
+            } catch (err) {
+              // Never let transcript failures disrupt the PTY data path
+            }
           }
         });
 
@@ -447,6 +479,53 @@ function createServer(config) {
     });
   });
 
+  // ==================== Transcript endpoints (Sprint 6 T3) ====================
+
+  // GET /api/transcripts/search - FTS across all sessions
+  // (Must be registered before :sessionId to avoid route collision)
+  app.get('/api/transcripts/search', async (req, res) => {
+    if (!transcriptWriter) return res.json([]);
+    const q = req.query.q;
+    if (!q) return res.status(400).json({ error: 'Missing q parameter' });
+    const since = req.query.since || null;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
+    try {
+      const results = await transcriptWriter.search(q, { since, limit });
+      res.json(results);
+    } catch (err) {
+      console.error('[transcript] search endpoint error:', err.message);
+      res.status(500).json({ error: 'Transcript search failed' });
+    }
+  });
+
+  // GET /api/transcripts/recent - time-windowed crash recovery
+  app.get('/api/transcripts/recent', async (req, res) => {
+    if (!transcriptWriter) return res.json([]);
+    const minutes = Math.min(Math.max(parseInt(req.query.minutes) || 60, 1), 1440);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 500, 1), 2000);
+    try {
+      const results = await transcriptWriter.getRecent(minutes, limit);
+      res.json(results);
+    } catch (err) {
+      console.error('[transcript] recent endpoint error:', err.message);
+      res.status(500).json({ error: 'Transcript recent query failed' });
+    }
+  });
+
+  // GET /api/transcripts/:sessionId - ordered chunks for a session
+  app.get('/api/transcripts/:sessionId', async (req, res) => {
+    if (!transcriptWriter) return res.json([]);
+    const limit = req.query.limit ? Math.min(Math.max(parseInt(req.query.limit), 1), 5000) : undefined;
+    const since = req.query.since || undefined;
+    try {
+      const chunks = await transcriptWriter.getSessionTranscript(req.params.sessionId, { limit, since });
+      res.json(chunks);
+    } catch (err) {
+      console.error('[transcript] session transcript endpoint error:', err.message);
+      res.status(500).json({ error: 'Transcript retrieval failed' });
+    }
+  });
+
   // ==================== Rumen insights (Sprint 4 T2) ====================
   // Read-only access to rumen_insights + rumen_jobs in the petvetbid Postgres
   // instance. Contract frozen in docs/sprint-4-rumen-integration/API-CONTRACT.md.
@@ -717,7 +796,7 @@ function createServer(config) {
     res.sendFile(path.join(clientDir, 'index.html'));
   });
 
-  return { app, server, wss, sessions, rag, db };
+  return { app, server, wss, sessions, rag, db, transcriptWriter };
 }
 
 // Start server
@@ -733,9 +812,28 @@ if (require.main === module) {
     config.sessionLogs = { ...(config.sessionLogs || {}), enabled: true };
   }
 
-  const { server } = createServer(config);
+  const { server, transcriptWriter } = createServer(config);
   const port = config.port || 3000;
   const host = config.host || '127.0.0.1';
+
+  // Graceful shutdown — flush transcript buffer before exit
+  let shutdownInProgress = false;
+  async function handleShutdown(signal) {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+    console.log(`\n[server] ${signal} received, shutting down...`);
+    if (transcriptWriter) {
+      console.log('[transcript] Flushing buffer before exit...');
+      try { await transcriptWriter.close(); } catch (err) {
+        console.error('[transcript] Shutdown flush failed:', err.message);
+      }
+    }
+    server.close(() => process.exit(0));
+    // Force exit after 5s if server.close hangs
+    setTimeout(() => process.exit(1), 5000).unref();
+  }
+  process.on('SIGINT', () => handleShutdown('SIGINT'));
+  process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
   server.listen(port, host, () => {
     console.log(`\n  TermDeck running at http://${host}:${port}\n`);
@@ -744,6 +842,7 @@ if (require.main === module) {
     console.log(`  PTY:        ${pty ? 'node-pty OK' : 'unavailable (install node-pty)'}`);
     console.log(`  RAG:        ${config.rag?.supabaseUrl ? 'configured' : 'not configured'}`);
     console.log(`  Session logs: ${config.sessionLogs?.enabled ? '~/.termdeck/sessions/ (on exit)' : 'off'}`);
+    console.log(`  Transcripts:  ${transcriptWriter ? 'streaming to Supabase' : 'off (no DATABASE_URL)'}`);
     console.log(`\n  WARNING: TermDeck binds to ${host} only.`);
     console.log(`  Do NOT expose this to the network without authentication.`);
     console.log(`  Terminal sessions have full shell access.\n`);

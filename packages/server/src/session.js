@@ -93,6 +93,9 @@ class Session {
       ragEvents: []                          // buffer before flush
     };
 
+    // Transcript chunk counter — monotonic per session for deterministic replay
+    this.transcriptChunkIndex = 0;
+
     // Output analysis state
     this._outputBuffer = '';
     this._outputFlushTimer = null;
@@ -281,6 +284,10 @@ class Session {
         this._inputBuffer += ch;
       }
     }
+  }
+
+  getNextChunkIndex() {
+    return this.transcriptChunkIndex++;
   }
 
   _detectErrors(clean) {
