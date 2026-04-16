@@ -1,4 +1,4 @@
-# Twitter/X launch thread — TermDeck v0.3 (Sprint 5 T4)
+# Twitter/X launch thread — TermDeck v0.3.1 (Sprint 6 T4)
 
 Char counts annotated `(n/280)` after each tweet for the author's final pass. Posted ~5 minutes after the Show HN submission on launch day.
 
@@ -54,9 +54,17 @@ Two independent post-sprint audits — Claude Opus 4.6 and Gemini 3.1 Pro — sc
 
 **Tweet 7 — honest limits:**
 
-What it's not: Flashback only fires when the PTY output analyzer pattern-matches a known error class. No memory, no flashback. Mnestra currently needs Supabase + OpenAI; a local SQLite path is on the roadmap, not shipped in v0.3. 7/
+What it's not: Flashback only fires when the PTY output analyzer pattern-matches a known error class. No memory, no flashback. Mnestra currently needs Supabase + OpenAI; a local SQLite path is on the roadmap, not shipped in v0.3.1. 7/
 
-`(236/280)`
+`(238/280)`
+
+---
+
+**Tweet 7b — health badge:**
+
+v0.3.1 added startup health checks — Mnestra reachable, Rumen cron active, embedding provider live. A "Stack: OK" badge in the top bar so you know the full loop is wired before you start working. Also: automatic session transcript backup. 7b/
+
+`(247/280)`
 
 ---
 
@@ -68,6 +76,6 @@ npx @jhizzard/termdeck
 Repo: https://github.com/jhizzard/termdeck
 npm: https://www.npmjs.com/package/@jhizzard/termdeck
 
-Solo dev, MIT, v0.3. Feedback very welcome — especially on the async loop design. 🧵 end
+Solo dev, MIT, v0.3.1. Feedback very welcome — especially on the async loop design.
 
-`(235/280)`
+`(237/280)`

@@ -4,7 +4,7 @@ published: false
 description: "I built a closed-loop developer memory system: terminal + pgvector store + async Claude Haiku learning layer. Here is how it works and why."
 tags: llm, opensource, devtools, postgres
 cover_image: /docs/screenshots/flashback-demo.gif
-series: TermDeck v0.3 launch
+series: TermDeck v0.3.1 launch
 ---
 
 ## The problem I kept hitting
@@ -55,7 +55,7 @@ The loop has four steps, grounded in the actual code paths under `rumen/src/`.
 
 **Extract** reads recent session memories and pulls the signal-bearing fragments: errors, resolutions, commands that succeeded after failing, file-edit sequences that correlate with a status transition. The cheap, deterministic stage.
 
-**Relate** takes each extracted fragment and asks "have I seen anything like this before?" by calling `memory_hybrid_search` against the entire Mnestra corpus. As of this writing, Relate is keyword-only — it calls `memory_hybrid_search` with `NULL::vector` and `semantic_weight: 0.0`, because the Edge Function hasn't been wired to an embedding provider yet. Vector-based Relate is landing in Sprint 5 tonight, alongside this launch, and it's the single biggest quality improvement on the near roadmap.
+**Relate** takes each extracted fragment and asks "have I seen anything like this before?" by calling `memory_hybrid_search` against the entire Mnestra corpus. As of rumen@0.4.0 (Sprint 5), Relate uses real pgvector embeddings — the keyword-only path (`NULL::vector`, `semantic_weight: 0.0`) that shipped in v0.3 has been replaced. This was the single biggest quality improvement on the near roadmap, and it landed.
 
 **Synthesize** hands the related cluster to Claude Haiku with a synthesis prompt. Haiku is the default because it's cheap enough to run every 15 minutes without the cost posture falling apart. If the cluster is unusually tight — same error class, multiple independent fixes — there's an escalation rule to a stronger model. Soft cap 100 LLM calls/day/dev, hard cap 500, with a placeholder-insight fallback when the Anthropic key is missing.
 
@@ -73,15 +73,15 @@ During the Sprint 3 rename cascade, at around 2 a.m., a Flashback toast fired in
 
 I took a screenshot. It's in the launch playbook now. It's also the single weirdest thing about this project: the system documented its own rename in real time, and the documentation itself is what convinced me the loop was working. That anecdote lives in `docs/launch/blog-post-4plus1-orchestration.md`.
 
-## What's next
+## What's shipped since the first loop closed
 
-Sprint 5 is closing three gaps that both the Claude Opus 4.6 audit (9.25/10) and the Gemini 3.1 Pro audit (9.5/9.0/8.5) flagged independently:
+Sprint 5 closed the three gaps that both the Claude Opus 4.6 audit (9.25/10) and the Gemini 3.1 Pro audit (9.5/9.0/8.5) flagged independently:
 
-1. A real test suite for Rumen — the component making unsupervised LLM calls on a schedule is also the component with zero unit tests.
-2. Splitting the 3,957-line `index.html` client into `index.html` + `style.css` + `app.js` before it hits developer paralysis.
-3. Swapping Rumen's keyword-only Relate for a real pgvector embedding call.
+1. A real test suite for Rumen — the component making unsupervised LLM calls on a schedule now has unit tests.
+2. The 3,957-line `index.html` client was split into `index.html` + `style.css` + `app.js`.
+3. Rumen's keyword-only Relate was replaced with a real pgvector embedding call (rumen@0.4.0).
 
-All three are landing tonight, before this draft goes public. The audit reports are both checked into the repo, so you can read them alongside the code.
+Sprint 6 (v0.3.1) added startup health checks — Mnestra reachable, Rumen cron active, embedding provider live — surfaced as a "Stack: OK" badge in the top bar, plus automatic session transcript backup. The audit reports are both checked into the repo, so you can read them alongside the code.
 
 v0.4 is a local-only path for Mnestra (SQLite + local embeddings) and an in-TermDeck morning-briefing modal for Rumen insights. Those are future tense; they are not shipped.
 
@@ -99,7 +99,7 @@ To move up the ladder, install Mnestra separately, run its six SQL migrations ag
 
 I care about this section more than I care about the pitch.
 
-> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3. Validated against 3,527 memories in one developer's store. No multi-user data yet.
+> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3.1. Validated against 3,527 memories in one developer's store. No multi-user data yet.
 
 Quoted verbatim from `docs/launch/NAMING-DECISIONS.md`. The earlier drafts of this paragraph were softer, and both audits called me out for it — "honest limits are a feature, not a disclaimer" is the note I'm now trying to live by.
 
@@ -110,4 +110,4 @@ Quoted verbatim from `docs/launch/NAMING-DECISIONS.md`. The earlier drafts of th
 - **Rumen** — https://github.com/jhizzard/rumen · https://www.npmjs.com/package/@jhizzard/rumen
 - **Launch status (ground truth)** — `docs/launch/LAUNCH-STATUS-2026-04-15.md`
 
-Solo dev, MIT, v0.3. If you've hit the same "my tools don't remember" wall, I'd love to hear where this does and doesn't fit.
+Solo dev, MIT, v0.3.1. If you've hit the same "my tools don't remember" wall, I'd love to hear where this does and doesn't fit.
