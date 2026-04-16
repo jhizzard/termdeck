@@ -109,7 +109,7 @@ const url = `http://${host}:${port}`;
 server.listen(port, host, async () => {
   console.log(`
   ╔══════════════════════════════════════╗
-  ║            TermDeck v0.2.0           ║
+  ║            TermDeck v${require(path.join(__dirname, '..', '..', '..', 'package.json')).version.padEnd(14)}║
   ╠══════════════════════════════════════╣
   ║  ${url.padEnd(34)}  ║
   ║                                      ║

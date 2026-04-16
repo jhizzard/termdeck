@@ -6,7 +6,7 @@ TermDeck is a web-based terminal multiplexer that embeds real PTY terminals in a
 
 Think: tmux in the browser, but with a control-room UI showing what every terminal is doing, plus Flashback — proactive recall of similar past errors the moment a panel hits a problem.
 
-**Current version:** v0.3.5 (published to npm as `@jhizzard/termdeck`). All v0.1 milestones shipped on 2026-03-19. Sprints 4–10 added onboarding, UI polish, preflight, transcripts, contract tests, a two-row toolbar, optional auth, a non-loopback bind guardrail, and release-verification tooling on top.
+**Current version:** v0.3.6 (published to npm as `@jhizzard/termdeck`). All v0.1 milestones shipped on 2026-03-19. Sprints 4–10 added onboarding, UI polish, preflight, transcripts, contract tests, a two-row toolbar, optional auth, a non-loopback bind guardrail, and release-verification tooling on top.
 
 ## Where code lives
 
@@ -80,7 +80,7 @@ All v0.1 milestones completed 2026-03-19. Sprints 4–6 built on that foundation
 
 ## Testing approach
 
-Manual testing was the baseline through v0.3.2. Since v0.3.3 the repo ships contract tests for `/api/health`, `/api/rumen/*`, and the transcript API; v0.3.5 added a Flashback end-to-end test and a failure-injection suite under `tests/`. For v0.4+, consider adding:
+Manual testing was the baseline through v0.3.2. Since v0.3.3 the repo ships contract tests for `/api/health`, `/api/rumen/*`, and the transcript API; v0.3.6 added a Flashback end-to-end test and a failure-injection suite under `tests/`. For v0.4+, consider adding:
 - Integration tests: spawn a server, connect WebSocket, send commands, verify output
 - Unit tests for output analyzer patterns (`session.js`)
 - E2E tests with Playwright for the browser UI

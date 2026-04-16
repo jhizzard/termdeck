@@ -4,7 +4,7 @@ published: false
 description: "I built a closed-loop developer memory system: terminal + pgvector store + async Claude Haiku learning layer. Here is how it works and why."
 tags: llm, opensource, devtools, postgres
 cover_image: /docs/screenshots/flashback-demo.gif
-series: TermDeck v0.3.5 launch
+series: TermDeck v0.3.6 launch
 ---
 
 ## The problem I kept hitting
@@ -81,7 +81,7 @@ Sprint 5 closed the three gaps that both the Claude Opus 4.6 audit (9.25/10) and
 2. The 3,957-line `index.html` client was split into `index.html` + `style.css` + `app.js`.
 3. Rumen's keyword-only Relate was replaced with a real pgvector embedding call (rumen@0.4.0).
 
-Sprint 6 (v0.3.2) added startup health checks — Mnestra reachable, Rumen cron active, embedding provider live — surfaced as a "Stack: OK" badge in the top bar, plus automatic session transcript backup. Sprints 7–10 (v0.3.3 → v0.3.5) layered docs hygiene with CI lint, contract tests for the transcript and Rumen-insights APIs, a two-row toolbar redesign, optional token auth with a refuse-to-bind-0.0.0.0-without-auth guardrail, a Flashback end-to-end test, and a `verify-release.sh` pre-publish script. The audit reports are both checked into the repo, so you can read them alongside the code.
+Sprint 6 (v0.3.2) added startup health checks — Mnestra reachable, Rumen cron active, embedding provider live — surfaced as a "Stack: OK" badge in the top bar, plus automatic session transcript backup. Sprints 7–10 (v0.3.3 → v0.3.6) layered docs hygiene with CI lint, contract tests for the transcript and Rumen-insights APIs, a two-row toolbar redesign, optional token auth with a refuse-to-bind-0.0.0.0-without-auth guardrail, a Flashback end-to-end test, and a `verify-release.sh` pre-publish script. The audit reports are both checked into the repo, so you can read them alongside the code.
 
 v0.4 is a local-only path for Mnestra (SQLite + local embeddings) and an in-TermDeck morning-briefing modal for Rumen insights. Those are future tense; they are not shipped.
 
@@ -99,7 +99,7 @@ To move up the ladder, install Mnestra separately, run its six SQL migrations ag
 
 I care about this section more than I care about the pitch.
 
-> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3.5. Validated against 3,527 memories in one developer's store. No multi-user data yet.
+> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3.6. Validated against 3,527 memories in one developer's store. No multi-user data yet.
 
 Quoted verbatim from `docs/launch/NAMING-DECISIONS.md`. The earlier drafts of this paragraph were softer, and both audits called me out for it — "honest limits are a feature, not a disclaimer" is the note I'm now trying to live by.
 
@@ -110,4 +110,4 @@ Quoted verbatim from `docs/launch/NAMING-DECISIONS.md`. The earlier drafts of th
 - **Rumen** — https://github.com/jhizzard/rumen · https://www.npmjs.com/package/@jhizzard/rumen
 - **Launch status (ground truth)** — `docs/launch/LAUNCH-STATUS-2026-04-15.md`
 
-Solo dev, MIT, v0.3.5. If you've hit the same "my tools don't remember" wall, I'd love to hear where this does and doesn't fit.
+Solo dev, MIT, v0.3.6. If you've hit the same "my tools don't remember" wall, I'd love to hear where this does and doesn't fit.
