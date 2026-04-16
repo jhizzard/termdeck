@@ -20,9 +20,17 @@ try { pg = require('pg'); } catch { pg = null; }
 // servers without DATABASE_URL never pay the connection cost.
 let _rumenPool = null;
 let _rumenPoolFailed = false;
+let _rumenPoolFailedAt = 0;
+const RUMEN_POOL_RETRY_MS = 30_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function getRumenPool() {
-  if (_rumenPool || _rumenPoolFailed) return _rumenPool;
+  if (_rumenPool) return _rumenPool;
+  if (_rumenPoolFailed) {
+    if (Date.now() - _rumenPoolFailedAt < RUMEN_POOL_RETRY_MS) return null;
+    console.warn('[rumen] retrying pool creation after 30s cooldown');
+    _rumenPoolFailed = false;
+    _rumenPoolFailedAt = 0;
+  }
   if (!pg || !process.env.DATABASE_URL) return null;
   try {
     _rumenPool = new pg.Pool({
@@ -38,6 +46,7 @@ function getRumenPool() {
   } catch (err) {
     console.warn('[rumen] failed to create pg pool:', err.message);
     _rumenPoolFailed = true;
+    _rumenPoolFailedAt = Date.now();
     return null;
   }
 }

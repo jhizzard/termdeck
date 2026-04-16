@@ -35,11 +35,25 @@ It gracefully skips anything that isn't installed. Tier 1 users get a working da
 
 ## Tier 1: Terminal Multiplexer (2 minutes)
 
+Two ways to launch, depending on whether you've cloned the repo:
+
+**npm users (no repo clone):**
+
 ```bash
 npx @jhizzard/termdeck
 ```
 
-Browser opens at `http://127.0.0.1:3000`. No accounts, no credentials, no database.
+This pulls the published package and runs the `termdeck` bin. Requires Node 18+ and a working `npx`. If `npx` can't resolve the bin (older versions of the package shipped without the bin wired up), upgrade with `npm install -g @jhizzard/termdeck@latest` and run `termdeck` directly.
+
+**Repo-clone users (always works):**
+
+```bash
+./scripts/start.sh
+```
+
+From the cloned repo root. This launcher doesn't depend on the published bin — it runs the server directly from `packages/cli/src/index.js`, loads secrets, and handles stale-process cleanup. Use this if you're hacking on TermDeck or if `npx` gives you trouble.
+
+Either path opens the browser at `http://127.0.0.1:3000`. No accounts, no credentials, no database.
 
 **What you get:** real PTY shells via prebuilt `node-pty` (no C++ toolchain), 7 grid layouts (1x1 through 4x2 plus focus/half modes), 8 themes (Tokyo Night, Catppuccin Mocha, Rose Pine Dawn, Dracula, Nord, Gruvbox Dark, Solarized Dark, GitHub Light), per-panel metadata overlays, output analyzer for Claude Code / Gemini CLI / Python servers, onboarding tour, local SQLite persistence, health badge in the toolbar.
 
