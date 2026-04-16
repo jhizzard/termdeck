@@ -41,19 +41,14 @@ else
 fi
 
 # ── Step 2: Kill stale processes ───────────────────────────────────
-STALE_TD=$(lsof -ti :$PORT 2>/dev/null || true)
-if [ -n "$STALE_TD" ]; then
-  kill $STALE_TD 2>/dev/null || true
-  sleep 1
-  echo -e "  ${YELLOW}⚠${RESET} Killed stale process on port $PORT"
-fi
-
-STALE_MN=$(lsof -ti :$MNESTRA_PORT 2>/dev/null || true)
-if [ -n "$STALE_MN" ]; then
-  kill $STALE_MN 2>/dev/null || true
-  sleep 1
-  echo -e "  ${YELLOW}⚠${RESET} Killed stale process on port $MNESTRA_PORT"
-fi
+for CHECK_PORT in $PORT $MNESTRA_PORT; do
+  STALE_PID=$(lsof -ti ":$CHECK_PORT" 2>/dev/null || true)
+  if [ -n "$STALE_PID" ]; then
+    kill $STALE_PID 2>/dev/null || true
+    sleep 1
+    echo -e "  ${YELLOW}⚠${RESET} Killed stale process on port $CHECK_PORT"
+  fi
+done
 
 # ── Step 3: Start Mnestra (if installed) ───────────────────────────
 MNESTRA_CMD=""
