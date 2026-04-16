@@ -21,6 +21,18 @@ The full stack in four tiers. Each tier is independent — stop wherever you hav
 
 ---
 
+## Quick start (any tier)
+
+If you've cloned the repo, the stack launcher handles everything — loads secrets, kills stale processes, starts Mnestra if installed, boots TermDeck:
+
+```bash
+./scripts/start.sh
+```
+
+It gracefully skips anything that isn't installed. Tier 1 users get a working dashboard. Full-stack users get the whole pipeline.
+
+---
+
 ## Tier 1: Terminal Multiplexer (2 minutes)
 
 ```bash
