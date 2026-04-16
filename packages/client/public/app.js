@@ -48,10 +48,10 @@
         }
       }
 
-      // RAG indicator
-      if (state.config.ragEnabled) {
-        document.getElementById('stat-rag').style.display = '';
-      }
+      // RAG indicator removed (Sprint 9 T2): redundant with health badge which
+      // already surfaces mnestra_reachable / mnestra_has_memories per-check.
+      // The #stat-rag HTML stub is hidden by default; T1 can strip it from
+      // index.html.
 
       // Disable AI input bars if Supabase/OpenAI not configured
       if (!state.config.aiQueryAvailable) {
@@ -2168,6 +2168,145 @@
       try { localStorage.setItem('termdeck:tour:seen', '1'); } catch {}
     }
 
+    // ===== Status / Config dropdowns (Sprint 9 T2) =====
+    // Generic toolbar-button → dropdown factory. Opens below the button,
+    // click-outside closes, re-fetches every open so the data isn't stale.
+    function setupInfoDropdown({ btnId, dropdownId, fetch, render }) {
+      const btn = document.getElementById(btnId);
+      if (!btn) return;
+
+      const dropdown = document.createElement('div');
+      dropdown.className = 'health-dropdown info-dropdown';
+      dropdown.id = dropdownId;
+      dropdown.innerHTML = '<div class="hd-loading">Loading…</div>';
+      document.body.appendChild(dropdown);
+
+      let open = false;
+
+      const close = () => {
+        dropdown.classList.remove('open');
+        open = false;
+      };
+
+      const openDropdown = async () => {
+        const rect = btn.getBoundingClientRect();
+        dropdown.style.top = `${rect.bottom + 4}px`;
+        // Right-align under the button; clamp to viewport
+        const desiredLeft = Math.min(
+          window.innerWidth - 320,
+          Math.max(8, rect.right - 300)
+        );
+        dropdown.style.left = `${desiredLeft}px`;
+        dropdown.innerHTML = '<div class="hd-loading">Loading…</div>';
+        dropdown.classList.add('open');
+        open = true;
+        try {
+          const data = await fetch();
+          // If user closed it while we were fetching, abort
+          if (!open) return;
+          dropdown.innerHTML = render(data);
+        } catch (err) {
+          dropdown.innerHTML = `<div class="hd-empty">Failed to load: ${escapeHtml(err.message || String(err))}</div>`;
+        }
+      };
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (open) close(); else openDropdown();
+      });
+      document.addEventListener('click', (e) => {
+        if (open && !dropdown.contains(e.target) && e.target !== btn) close();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (open && e.key === 'Escape') close();
+      });
+    }
+
+    function renderStatusDropdown(data) {
+      const total = data.totalSessions || 0;
+      const byStatus = data.byStatus || {};
+      const byProject = data.byProject || {};
+      const byType = data.byType || {};
+      const uptime = fmtUptime(data.uptime || 0);
+      const heapMB = data.memory && data.memory.heapUsed
+        ? (data.memory.heapUsed / 1024 / 1024).toFixed(1) + ' MB'
+        : '—';
+      const rag = data.ragEnabled ? 'on' : 'off';
+
+      const row = (label, value) => `<div class="hd-check">
+        <span class="hd-icon">·</span>
+        <span class="hd-name">${escapeHtml(label)}</span>
+        <span class="hd-dots"></span>
+        <span class="hd-status">${escapeHtml(String(value))}</span>
+      </div>`;
+
+      const kvBlock = (title, obj) => {
+        const keys = Object.keys(obj);
+        if (keys.length === 0) return '';
+        const lines = keys.map(k => row(k, obj[k])).join('');
+        return `<div class="hd-detail" style="grid-column:1/-1;margin-top:6px;color:var(--tg-text-dim);font-size:10px">${escapeHtml(title)}</div>${lines}`;
+      };
+
+      return row('sessions', total)
+        + row('uptime', uptime)
+        + row('heap', heapMB)
+        + row('rag sync', rag)
+        + kvBlock('by status', byStatus)
+        + kvBlock('by project', byProject)
+        + kvBlock('by type', byType);
+    }
+
+    function renderConfigDropdown(data) {
+      const projects = data.projects || {};
+      const projectCount = Object.keys(projects).length;
+      const defaultTheme = data.defaultTheme || '—';
+      const rag = data.ragEnabled ? 'enabled' : 'disabled';
+      const aiQuery = data.aiQueryAvailable ? 'yes' : 'no';
+
+      const row = (label, value, ok) => {
+        const icon = ok == null ? '·' : (ok ? '✓' : '✗');
+        const cls = ok == null ? '' : (ok ? 'hd-ok' : 'hd-fail');
+        return `<div class="hd-check ${cls}">
+          <span class="hd-icon">${icon}</span>
+          <span class="hd-name">${escapeHtml(label)}</span>
+          <span class="hd-dots"></span>
+          <span class="hd-status">${escapeHtml(String(value))}</span>
+        </div>`;
+      };
+
+      let html = ''
+        + row('projects', projectCount)
+        + row('default theme', defaultTheme)
+        + row('RAG sync', rag, data.ragEnabled)
+        + row('AI query', aiQuery, data.aiQueryAvailable);
+
+      if (projectCount > 0) {
+        html += `<div class="hd-detail" style="grid-column:1/-1;margin-top:6px;color:var(--tg-text-dim);font-size:10px">projects</div>`;
+        for (const [name, cfg] of Object.entries(projects)) {
+          const path = (cfg && cfg.path) || '';
+          html += `<div class="hd-check">
+            <span class="hd-icon">·</span>
+            <span class="hd-name">${escapeHtml(name)}</span>
+            <span class="hd-dots"></span>
+            <span class="hd-status" style="font-size:10px;color:var(--tg-text-dim)">${escapeHtml(path)}</span>
+          </div>`;
+        }
+      }
+
+      html += `<div class="hd-detail" style="grid-column:1/-1;margin-top:8px;color:var(--tg-text-dim);font-size:10px">edit <code>~/.termdeck/config.yaml</code> and restart to apply</div>`;
+      return html;
+    }
+
+    function fmtUptime(sec) {
+      const s = Math.floor(sec);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const rs = s % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${rs}s`;
+      return `${rs}s`;
+    }
+
     // ===== Event Listeners =====
     document.querySelectorAll('.layout-btn').forEach(btn => {
       btn.addEventListener('click', () => setLayout(btn.dataset.layout));
@@ -2187,6 +2326,23 @@
     document.getElementById('addProjectModal').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAddProject(); }
       if (e.key === 'Escape') { e.preventDefault(); closeAddProjectModal(); }
+    });
+
+    // Status + config dropdowns (Sprint 9 T2): btn-status/btn-config were
+    // stubs with no listeners. Each now opens a dropdown with live data
+    // fetched from /api/status and /api/config. Reuses .health-dropdown
+    // styling (from T1's style.css) for visual consistency.
+    setupInfoDropdown({
+      btnId: 'btn-status',
+      dropdownId: 'statusDropdown',
+      fetch: () => api('GET', '/api/status'),
+      render: renderStatusDropdown
+    });
+    setupInfoDropdown({
+      btnId: 'btn-config',
+      dropdownId: 'configDropdown',
+      fetch: () => api('GET', '/api/config'),
+      render: renderConfigDropdown
     });
 
     // Onboarding tour wiring
