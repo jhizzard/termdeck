@@ -484,14 +484,14 @@ function createServer(config) {
   // GET /api/transcripts/search - FTS across all sessions
   // (Must be registered before :sessionId to avoid route collision)
   app.get('/api/transcripts/search', async (req, res) => {
-    if (!transcriptWriter) return res.json([]);
+    if (!transcriptWriter) return res.json({ results: [] });
     const q = req.query.q;
     if (!q) return res.status(400).json({ error: 'Missing q parameter' });
     const since = req.query.since || null;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
     try {
       const results = await transcriptWriter.search(q, { since, limit });
-      res.json(results);
+      res.json({ results });
     } catch (err) {
       console.error('[transcript] search endpoint error:', err.message);
       res.status(500).json({ error: 'Transcript search failed' });
@@ -499,13 +499,24 @@ function createServer(config) {
   });
 
   // GET /api/transcripts/recent - time-windowed crash recovery
+  // Returns { sessions: [ { session_id, chunks: [...] }, ... ] }
   app.get('/api/transcripts/recent', async (req, res) => {
-    if (!transcriptWriter) return res.json([]);
+    if (!transcriptWriter) return res.json({ sessions: [] });
     const minutes = Math.min(Math.max(parseInt(req.query.minutes) || 60, 1), 1440);
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 500, 1), 2000);
     try {
-      const results = await transcriptWriter.getRecent(minutes, limit);
-      res.json(results);
+      const rows = await transcriptWriter.getRecent(minutes, limit);
+      // Group by session_id for client consumption
+      const grouped = new Map();
+      for (const row of rows) {
+        if (!grouped.has(row.session_id)) grouped.set(row.session_id, []);
+        grouped.get(row.session_id).push(row);
+      }
+      const sessions = [];
+      for (const [session_id, chunks] of grouped) {
+        sessions.push({ session_id, chunks });
+      }
+      res.json({ sessions });
     } catch (err) {
       console.error('[transcript] recent endpoint error:', err.message);
       res.status(500).json({ error: 'Transcript recent query failed' });
@@ -513,13 +524,16 @@ function createServer(config) {
   });
 
   // GET /api/transcripts/:sessionId - ordered chunks for a session
+  // Returns { content: string } (joined transcript text)
   app.get('/api/transcripts/:sessionId', async (req, res) => {
-    if (!transcriptWriter) return res.json([]);
+    if (!transcriptWriter) return res.json({ content: '', lines: [] });
     const limit = req.query.limit ? Math.min(Math.max(parseInt(req.query.limit), 1), 5000) : undefined;
     const since = req.query.since || undefined;
     try {
       const chunks = await transcriptWriter.getSessionTranscript(req.params.sessionId, { limit, since });
-      res.json(chunks);
+      const lines = chunks.map(c => c.content);
+      const content = lines.join('');
+      res.json({ content, lines, chunks });
     } catch (err) {
       console.error('[transcript] session transcript endpoint error:', err.message);
       res.status(500).json({ error: 'Transcript retrieval failed' });

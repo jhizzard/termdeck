@@ -165,8 +165,8 @@ class RAGIntegration {
       // Success — reset any accumulated 404 count for this table
       this._resetCircuit(table);
     } catch (err) {
-      // Will be retried by sync loop
       console.error('[mnestra] Push failed:', err.message);
+      throw err; // Propagate to caller so sync loop knows this event failed
     }
   }
 
