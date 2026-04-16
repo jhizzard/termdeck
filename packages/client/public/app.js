@@ -1,0 +1,2315 @@
+/* Extracted from index.html 2026-04-15 — see git blame on index.html prior to commit UNCOMMITTED for history */
+    // ===== TermDeck Client =====
+    const API = window.location.origin;
+    const WS_BASE = `ws://${window.location.host}/ws`;
+
+    // State
+    const state = {
+      sessions: new Map(),   // id → { session, terminal, ws, fitAddon, el }
+      layout: '2x1',
+      themes: {},
+      config: {},
+      focusedId: null
+    };
+
+    // ===== API helpers =====
+    async function api(method, path, body) {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(`${API}${path}`, opts);
+      return res.json();
+    }
+
+    // ===== Initialize =====
+    async function init() {
+      // Load config
+      state.config = await api('GET', '/api/config');
+
+      // Populate project dropdown
+      const sel = document.getElementById('promptProject');
+      for (const name of Object.keys(state.config.projects || {})) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+
+      // Load themes
+      const themeList = await api('GET', '/api/themes');
+      for (const t of themeList) {
+        state.themes[t.id] = t;
+      }
+
+      // Load existing sessions
+      const sessions = await api('GET', '/api/sessions');
+      for (const s of sessions) {
+        if (s.meta.status !== 'exited') {
+          createTerminalPanel(s);
+        }
+      }
+
+      // RAG indicator
+      if (state.config.ragEnabled) {
+        document.getElementById('stat-rag').style.display = '';
+      }
+
+      // Disable AI input bars if Supabase/OpenAI not configured
+      if (!state.config.aiQueryAvailable) {
+        document.querySelectorAll('.ctrl-input').forEach(el => {
+          el.placeholder = 'Configure Supabase in ~/.termdeck/config.yaml to enable';
+          el.disabled = true;
+        });
+      }
+
+      updateEmptyState();
+
+      // Rumen insights badge + briefing (no-op when server reports enabled:false)
+      setupRumen();
+
+      // First-run onboarding tour. Fires on the first visit only; never again
+      // unless the user explicitly clicks "how this works" in the top toolbar.
+      try {
+        if (!localStorage.getItem('termdeck:tour:seen')) {
+          setTimeout(() => { if (!tourState.active) startTour(); }, 1200);
+        }
+      } catch {}
+    }
+
+    // ===== Create Terminal Panel =====
+    function createTerminalPanel(sessionData) {
+      const id = sessionData.id;
+      const meta = sessionData.meta;
+
+      // Idempotency guard: multiple code paths can trigger this function for
+      // the same session ID in rapid succession — status_broadcast handler
+      // (2s interval), external-session poller (3s interval), launchTerminal
+      // (immediate after POST), and init() on page load. Without a claim at
+      // function entry, two of these can race and create two client panels
+      // for the same server session — which means two WebSockets, the second
+      // overwrites session.ws on the server, and term.onData output stops
+      // reaching the first panel's xterm. Result: terminals spawn but never
+      // render a prompt and don't accept input.
+      //
+      // Fix: reserve the slot in state.sessions immediately on entry. Any
+      // subsequent call sees has(id) and early-returns. The full entry gets
+      // written later when the xterm + ws + fitAddon are built; that write
+      // overwrites this placeholder in place.
+      if (state.sessions.has(id)) return;
+      state.sessions.set(id, { _mounting: true });
+
+      // Hide empty state
+      document.getElementById('emptyState').style.display = 'none';
+
+      // Project CSS class
+      const projClass = meta.project
+        ? `project-${meta.project.replace(/[^a-z0-9]/gi, '').toLowerCase()}`
+        : 'project-default';
+
+      // Build panel HTML
+      const panel = document.createElement('div');
+      panel.className = 'term-panel';
+      panel.id = `panel-${id}`;
+      panel.innerHTML = `
+        <div class="panel-header">
+          <div class="panel-header-left">
+            <span class="status-dot" id="dot-${id}" style="background:${getStatusColor(meta.status)}"></span>
+            <span class="panel-type">${getTypeLabel(meta.type)}</span>
+            ${meta.project ? `<span class="panel-project ${projClass}">${meta.project}</span>` : ''}
+            <span class="panel-index" id="idx-${id}"></span>
+            <span class="panel-status" id="status-${id}">${meta.statusDetail || meta.status}</span>
+          </div>
+          <div class="panel-header-right">
+            <button class="panel-btn" onclick="focusPanel('${id}')" title="Focus this terminal">&#9634;</button>
+            <button class="panel-btn" onclick="halfPanel('${id}')" title="Half screen">&#9645;</button>
+            <button class="panel-btn danger" onclick="closePanel('${id}')" title="Close terminal">&times;</button>
+          </div>
+        </div>
+        <div class="panel-meta">
+          <span class="meta-item"><span class="meta-label">opened</span> ${timeAgo(meta.createdAt)}</span>
+          <span class="meta-item"><span class="meta-label">why</span> ${meta.reason}</span>
+          <span class="meta-item" id="meta-last-${id}"><span class="meta-label">last</span> ${meta.lastCommands?.length ? meta.lastCommands[meta.lastCommands.length - 1].command : '—'}</span>
+          <span class="meta-item" id="meta-port-${id}" style="${meta.detectedPort ? '' : 'display:none'}"><span class="meta-label">port</span> <span class="meta-value">:${meta.detectedPort || ''}</span></span>
+          <span class="meta-item" id="meta-reqs-${id}" style="${meta.type === 'python-server' ? '' : 'display:none'}"><span class="meta-label">reqs</span> <span class="meta-value">${meta.requestCount || 0}</span></span>
+        </div>
+        <div class="panel-terminal" id="term-${id}"></div>
+        <div class="panel-drawer" id="drawer-${id}">
+          <div class="drawer-tabs" role="tablist">
+            <button class="drawer-tab active" data-tab="overview" data-panel-id="${id}">Overview</button>
+            <button class="drawer-tab" data-tab="commands" data-panel-id="${id}">Commands<span class="tab-badge" id="badge-commands-${id}">0</span></button>
+            <button class="drawer-tab" data-tab="memory" data-panel-id="${id}">Memory<span class="tab-badge" id="badge-memory-${id}">0</span></button>
+            <button class="drawer-tab" data-tab="log" data-panel-id="${id}">Status log<span class="tab-badge" id="badge-log-${id}">0</span></button>
+          </div>
+          <div class="drawer-body">
+            <div class="drawer-panel drawer-overview active" data-panel="overview">
+              <div class="overview-controls">
+                <select class="theme-select" id="theme-${id}" onchange="changeTheme('${id}', this.value)">
+                  ${Object.entries(state.themes).map(([tid, t]) =>
+                    `<option value="${tid}" ${tid === meta.theme ? 'selected' : ''}>${t.label}</option>`
+                  ).join('')}
+                </select>
+                <button class="ctrl-btn" onclick="focusPanel('${id}')">focus</button>
+                <button class="ctrl-btn" onclick="halfPanel('${id}')">half</button>
+                <button class="ctrl-btn reply-toggle" id="reply-btn-${id}" onclick="toggleReplyForm('${id}')" title="Send text to another terminal">reply ▸</button>
+                <input type="text" class="ctrl-input" id="ai-${id}" placeholder="Ask about this terminal..." onkeydown="if(event.key==='Enter')askAI('${id}', this.value)">
+              </div>
+              <div class="reply-form" id="reply-form-${id}">
+                <select class="reply-target" id="reply-target-${id}"></select>
+                <input type="text" class="reply-text" id="reply-text-${id}" placeholder="Text to send..." onkeydown="if(event.key==='Enter')sendReply('${id}')">
+                <button class="reply-send" id="reply-send-${id}" onclick="sendReply('${id}')">send</button>
+                <div class="reply-status" id="reply-status-${id}"></div>
+              </div>
+              <div class="overview-meta" id="ovmeta-${id}"></div>
+            </div>
+            <div class="drawer-panel drawer-list" data-panel="commands" id="dp-commands-${id}">
+              <div class="empty-msg">No commands captured yet.</div>
+            </div>
+            <div class="drawer-panel drawer-list" data-panel="memory" id="dp-memory-${id}">
+              <div class="empty-msg">No memory hits yet. Ask about this terminal or wait for a proactive lookup.</div>
+            </div>
+            <div class="drawer-panel drawer-list" data-panel="log" id="dp-log-${id}">
+              <div class="empty-msg">No status transitions recorded yet.</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('termGrid').appendChild(panel);
+
+      // Create xterm.js instance
+      const terminal = new Terminal({
+        fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace",
+        fontSize: 13,
+        lineHeight: 1.3,
+        cursorBlink: true,
+        cursorStyle: 'bar',
+        allowProposedApi: true,
+        scrollback: 5000,
+        theme: getThemeObject(meta.theme)
+      });
+
+      const fitAddon = new FitAddon.FitAddon();
+      terminal.loadAddon(fitAddon);
+
+      const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+      terminal.loadAddon(webLinksAddon);
+
+      const container = document.getElementById(`term-${id}`);
+      terminal.open(container);
+
+      // Delay fit to ensure DOM is ready
+      requestAnimationFrame(() => {
+        fitAddon.fit();
+        // Inform server of initial size
+        api('POST', `/api/sessions/${id}/resize`, {
+          cols: terminal.cols,
+          rows: terminal.rows
+        });
+      });
+
+      // Connect WebSocket
+      const ws = new WebSocket(`${WS_BASE}?session=${id}`);
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'output':
+              terminal.write(msg.data);
+              break;
+            case 'meta':
+              updatePanelMeta(id, msg.session.meta);
+              break;
+            case 'exit':
+              updatePanelMeta(id, {
+                status: 'exited',
+                statusDetail: `Exited (${msg.exitCode})`
+              });
+              // Dim the panel
+              const exitPanel = document.getElementById(`panel-${id}`);
+              if (exitPanel) exitPanel.classList.add('exited');
+              refreshAllReplyFormsFor(id);
+              refreshPanelIndices();
+              renderSwitcher();
+              break;
+            case 'status_broadcast':
+              updateGlobalStats(msg.sessions);
+              break;
+          }
+        } catch (err) { console.error('[client] ws message parse failed:', err); }
+      };
+
+      ws.onclose = (event) => {
+        console.log(`[ws] Disconnected from session ${id} (code ${event.code})`);
+        const entry = state.sessions.get(id);
+        if (!entry) return;
+
+        // Don't reconnect if session was explicitly closed or exited
+        if (event.code === 4000 || event.code === 4001) return;
+        const panel = document.getElementById(`panel-${id}`);
+        if (panel && panel.classList.contains('exited')) return;
+
+        // Auto-reconnect with backoff
+        const delay = Math.min(1000 * Math.pow(2, (entry._reconnectAttempts || 0)), 10000);
+        entry._reconnectAttempts = (entry._reconnectAttempts || 0) + 1;
+
+        if (entry._reconnectAttempts <= 5) {
+          console.log(`[ws] Reconnecting session ${id} in ${delay}ms (attempt ${entry._reconnectAttempts})`);
+          setTimeout(() => reconnectSession(id), delay);
+        } else {
+          updatePanelMeta(id, { status: 'errored', statusDetail: 'Connection lost' });
+        }
+      };
+
+      // Terminal input → WebSocket
+      terminal.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'input', data }));
+        }
+      });
+
+      // Track focus
+      terminal.textarea?.addEventListener('focus', () => {
+        panel.classList.add('active-input');
+        state.focusedId = id;
+      });
+      terminal.textarea?.addEventListener('blur', () => {
+        panel.classList.remove('active-input');
+      });
+
+      // Store reference
+      state.sessions.set(id, {
+        session: sessionData,
+        terminal,
+        ws,
+        fitAddon,
+        el: panel,
+        activeTab: 'overview',
+        drawerOpen: false,
+        commandHistory: [],
+        commandsLoaded: false,
+        memoryHits: [],
+        statusLog: [],
+        lastKnownStatus: meta.status,
+      });
+
+      // Seed an initial status-log entry so the tab isn't blank
+      appendStatusLog(id, meta.status, meta.statusDetail || '');
+
+      // Drawer tab wiring
+      setupDrawerListeners(id);
+      renderOverviewTab(id);
+      renderSwitcher();
+
+      // Reply form: disabled until there's another panel to target
+      const replyBtn = document.getElementById(`reply-btn-${id}`);
+      if (replyBtn) replyBtn.disabled = state.sessions.size < 2;
+      refreshAllReplyFormsFor(id);
+      refreshPanelIndices();
+
+      // Handle window resize
+      const resizeObserver = new ResizeObserver(() => {
+        try {
+          fitAddon.fit();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'resize',
+              cols: terminal.cols,
+              rows: terminal.rows
+            }));
+          }
+        } catch (err) { console.error('[client] terminal resize failed:', err); }
+      });
+      resizeObserver.observe(container);
+
+      return { terminal, ws, fitAddon };
+    }
+
+    // ===== Control dashboard (T1.6) =====
+    async function enterControlMode() {
+      // Pre-warm command history for every open session so the feed is dense.
+      const loads = [];
+      for (const [sid, entry] of state.sessions) {
+        if (entry.commandsLoaded) continue;
+        loads.push(
+          api('GET', `/api/sessions/${sid}/history`).then(resp => {
+            const list = Array.isArray(resp) ? resp : (resp.commands || resp.history || []);
+            entry.commandHistory = list;
+            entry.commandsLoaded = true;
+          }).catch(() => { /* silent */ })
+        );
+      }
+      await Promise.allSettled(loads);
+      renderControlFeed();
+    }
+
+    function renderControlFeed() {
+      const grid = document.getElementById('termGrid');
+      const rowsEl = document.getElementById('feedRows');
+      const countEl = document.getElementById('feedCount');
+      if (!grid || !rowsEl) return;
+      if (!grid.classList.contains('layout-control')) return;
+
+      const events = [];
+      for (const [sid, entry] of state.sessions) {
+        const meta = entry.session?.meta || {};
+        const label = `${getTypeLabel(meta.type || 'shell')}${meta.project ? '·' + meta.project : ''}`;
+        const statusColor = getStatusColor(meta.status || 'idle');
+
+        // Status transitions
+        for (const ev of (entry.statusLog || [])) {
+          const isErr = ev.status === 'errored';
+          events.push({
+            at: new Date(ev.at).getTime(),
+            sid,
+            label,
+            statusColor,
+            kind: isErr ? 'error' : 'status',
+            body: `${ev.status}${ev.detail ? ' — ' + ev.detail : ''}`,
+          });
+        }
+
+        // Recent commands
+        for (const c of (entry.commandHistory || []).slice(0, 25)) {
+          const t = c.timestamp || c.createdAt || c.created_at;
+          if (!t) continue;
+          events.push({
+            at: new Date(t).getTime(),
+            sid,
+            label,
+            statusColor,
+            kind: 'command',
+            body: c.command || c.cmd || '',
+          });
+        }
+
+        // Memory hits cached from askAI / proactive queries
+        for (const m of (entry.memoryHits || []).slice(0, 10)) {
+          if (!m.cachedAt) continue;
+          events.push({
+            at: new Date(m.cachedAt).getTime(),
+            sid,
+            label,
+            statusColor,
+            kind: 'memory',
+            body: (m.content || m.text || '(memory)').slice(0, 220),
+          });
+        }
+      }
+
+      events.sort((a, b) => b.at - a.at);
+      const capped = events.slice(0, 200);
+
+      if (countEl) countEl.textContent = `${capped.length} event${capped.length === 1 ? '' : 's'}`;
+
+      if (capped.length === 0) {
+        rowsEl.innerHTML = '<div class="feed-empty">No activity yet. Commands, status transitions, and memory hits will appear here.</div>';
+        return;
+      }
+
+      rowsEl.innerHTML = capped.map(ev => {
+        const t = new Date(ev.at);
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        const ss = String(t.getSeconds()).padStart(2, '0');
+        return `
+          <div class="feed-row" data-session-id="${ev.sid}">
+            <span class="feed-time">${hh}:${mm}:${ss}</span>
+            <span class="feed-panel-ref"><span class="dot" style="background:${ev.statusColor}"></span>${escapeHtml(ev.label)}</span>
+            <span class="feed-kind ${ev.kind}">${ev.kind}</span>
+            <span class="feed-body">${escapeHtml(ev.body)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function onFeedRowClick(e) {
+      const row = e.target.closest('.feed-row');
+      if (!row) return;
+      const sid = row.dataset.sessionId;
+      if (!sid) return;
+      // Return to 2x2 layout and focus the source panel
+      setLayout('2x2');
+      requestAnimationFrame(() => focusSessionById(sid));
+    }
+
+    // ===== Proactive memory toast (T1.4) =====
+    const PROACTIVE_COOLDOWN_MS = 30_000;
+
+    async function triggerProactiveMemoryQuery(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      if (!state.config.aiQueryAvailable) return;
+
+      const now = Date.now();
+      if (entry._lastProactiveAt && now - entry._lastProactiveAt < PROACTIVE_COOLDOWN_MS) return;
+      entry._lastProactiveAt = now;
+
+      const meta = entry.session?.meta || {};
+      const lastCmd = meta.lastCommands?.length
+        ? meta.lastCommands[meta.lastCommands.length - 1].command
+        : '';
+      const type = meta.type || 'shell';
+      const question = `${type} error ${lastCmd}`.trim();
+      if (!question || question === `${type} error`) {
+        // No command context — still query using status detail as a last resort
+        if (!meta.statusDetail) return;
+      }
+
+      try {
+        const result = await api('POST', '/api/ai/query', {
+          question: question || `${type} error ${meta.statusDetail || ''}`.trim(),
+          sessionId: id,
+          project: meta.project || null,
+        });
+        if (result?.error) return;
+        if (!Array.isArray(result?.memories) || result.memories.length === 0) return;
+
+        // Cache every hit into the Memory tab so the drawer stays in sync
+        if (!entry.memoryHits) entry.memoryHits = [];
+        const cachedAt = new Date().toISOString();
+        for (const m of result.memories) entry.memoryHits.unshift({ ...m, cachedAt });
+        if (entry.memoryHits.length > 60) entry.memoryHits.length = 60;
+        setBadge(id, 'memory', entry.memoryHits.length);
+        if (entry.drawerOpen && entry.activeTab === 'memory') renderMemoryTab(id);
+
+        showProactiveToast(id, result.memories[0]);
+      } catch (err) {
+        console.error('[client] proactive memory query failed:', err);
+      }
+    }
+
+    function showProactiveToast(id, hit) {
+      const entry = state.sessions.get(id);
+      if (!entry || !entry.el) return;
+
+      // Remove any prior toast for this panel
+      const prev = entry.el.querySelector('.proactive-toast');
+      if (prev) prev.remove();
+
+      const toast = document.createElement('div');
+      toast.className = 'proactive-toast';
+      const proj = hit.project ? escapeHtml(hit.project) : 'another session';
+      const snippet = escapeHtml((hit.content || hit.text || '').slice(0, 220));
+      const score = typeof hit.similarity === 'number' ? `${(hit.similarity * 100).toFixed(0)}%` : '';
+
+      toast.innerHTML = `
+        <button class="t-dismiss" aria-label="Dismiss">×</button>
+        <div class="t-title">Mnestra — possible match</div>
+        <div class="t-body">Found a similar error in <b>${proj}</b>${score ? ` · ${score}` : ''} — click to see.</div>
+        <div class="t-meta">${snippet}</div>
+      `;
+
+      entry.el.appendChild(toast);
+
+      const dismiss = () => {
+        toast.remove();
+        clearTimeout(toast._autoTimer);
+      };
+      toast.querySelector('.t-dismiss').addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismiss();
+      });
+      toast.addEventListener('click', () => {
+        dismiss();
+        focusSessionById(id);
+        // Open the Memory tab so the user lands directly on the hit list
+        const entry2 = state.sessions.get(id);
+        if (entry2 && (!entry2.drawerOpen || entry2.activeTab !== 'memory')) {
+          toggleDrawerTab(id, 'memory');
+        }
+      });
+
+      toast._autoTimer = setTimeout(dismiss, 30000);
+    }
+
+    // ===== Reply / send-to-terminal (T1.3) =====
+    // Flip this to false to force the local-WS fallback even when the server
+    // endpoint is available — handy for debugging.
+    const USE_SERVER_INPUT_API = true;
+
+    function toggleReplyForm(fromId) {
+      const form = document.getElementById(`reply-form-${fromId}`);
+      if (!form) return;
+      const willOpen = !form.classList.contains('open');
+      form.classList.toggle('open', willOpen);
+      if (willOpen) {
+        refreshReplyTargets(fromId);
+        const input = document.getElementById(`reply-text-${fromId}`);
+        setTimeout(() => input?.focus(), 20);
+      }
+    }
+
+    function refreshReplyTargets(fromId) {
+      const select = document.getElementById(`reply-target-${fromId}`);
+      if (!select) return;
+      const prev = select.value;
+
+      // F1.3: number duplicate labels with `#N` so e.g. two "Claude Code · termdeck"
+      // panels become "Claude Code · termdeck #1" / "... #2". Numbering is across
+      // ALL live panels with that base label (including the current one) in
+      // state.sessions insertion order, so suffixes stay stable as the user opens
+      // the reply form from different panels.
+      const groupIndex = new Map();  // sid → index-within-group (1-based, only when group.size ≥ 2)
+      const groupCount = new Map();  // baseLabel → count so far
+      for (const [sid, entry] of state.sessions) {
+        const panel = entry.el;
+        if (panel && panel.classList.contains('exited')) continue;
+        const meta = entry.session?.meta || {};
+        const base = `${getTypeLabel(meta.type || 'shell')}${meta.project ? ' · ' + meta.project : ''}`;
+        const next = (groupCount.get(base) || 0) + 1;
+        groupCount.set(base, next);
+        groupIndex.set(sid, { base, n: next });
+      }
+
+      const options = [];
+      for (const [sid, entry] of state.sessions) {
+        if (sid === fromId) continue;
+        const panel = entry.el;
+        if (panel && panel.classList.contains('exited')) continue;
+        const info = groupIndex.get(sid);
+        if (!info) continue;
+        const needsSuffix = (groupCount.get(info.base) || 0) >= 2;
+        const label = needsSuffix ? `${info.base} #${info.n}` : info.base;
+        options.push(`<option value="${sid}">${escapeHtml(label)}</option>`);
+      }
+      if (options.length === 0) {
+        select.innerHTML = `<option value="">(no other terminals)</option>`;
+      } else {
+        select.innerHTML = options.join('');
+        if (prev && Array.from(select.options).some(o => o.value === prev)) {
+          select.value = prev;
+        }
+      }
+    }
+
+    // Assign #N index suffixes to panels that share (type, project) with another
+    // panel. Insertion-order numbering via Map iteration (Map preserves insert order).
+    // Groups of size 1 get no suffix — only collisions get numbered.
+    function refreshPanelIndices() {
+      const groups = new Map(); // key = "type|project" → [sid, ...]
+      for (const [sid, entry] of state.sessions) {
+        const meta = entry.session?.meta || {};
+        const key = `${meta.type || 'shell'}|${meta.project || ''}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(sid);
+      }
+      for (const [, sids] of groups) {
+        const showIndex = sids.length >= 2;
+        sids.forEach((sid, i) => {
+          const el = document.getElementById(`idx-${sid}`);
+          if (!el) return;
+          el.textContent = showIndex ? `#${i + 1}` : '';
+        });
+      }
+    }
+
+    function refreshAllReplyFormsFor(changedId) {
+      // When a panel is added, removed, or exits, the target list in *other*
+      // panels' open reply forms needs refreshing.
+      for (const [sid, entry] of state.sessions) {
+        if (sid === changedId) continue;
+        const form = document.getElementById(`reply-form-${sid}`);
+        if (form && form.classList.contains('open')) {
+          refreshReplyTargets(sid);
+        }
+        const btn = document.getElementById(`reply-btn-${sid}`);
+        if (btn) btn.disabled = state.sessions.size < 2;
+      }
+    }
+
+    async function sendReply(fromId) {
+      const select = document.getElementById(`reply-target-${fromId}`);
+      const input = document.getElementById(`reply-text-${fromId}`);
+      const statusEl = document.getElementById(`reply-status-${fromId}`);
+      if (!select || !input) return;
+      const targetId = select.value;
+      let text = input.value;
+      if (!targetId) {
+        showReplyStatus(statusEl, 'No target selected.', 'error');
+        return;
+      }
+      if (!text) return;
+
+      const targetEntry = state.sessions.get(targetId);
+      if (!targetEntry) {
+        showReplyStatus(statusEl, 'Target not found.', 'error');
+        return;
+      }
+
+      // zsh and most shells want CR. Normalize \n → \r and strip \r\n pairs.
+      const normalized = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+      // Ensure the line actually submits at the target prompt.
+      const payload = normalized.endsWith('\r') ? normalized : normalized + '\r';
+
+      let delivered = false;
+      let errMsg = '';
+
+      if (USE_SERVER_INPUT_API) {
+        try {
+          const result = await api('POST', `/api/sessions/${targetId}/input`, {
+            text: payload,
+            source: 'reply',
+            fromSessionId: fromId,
+          });
+          if (result && !result.error) {
+            delivered = true;
+          } else {
+            errMsg = result?.error || 'server returned an error';
+          }
+        } catch (err) {
+          errMsg = err.message || String(err);
+        }
+      }
+
+      if (!delivered) {
+        // Local-WS fallback. Used when USE_SERVER_INPUT_API is false, or when
+        // the server endpoint is missing / failing.
+        const ws = targetEntry.ws;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: 'input', data: payload }));
+            delivered = true;
+          } catch (err) {
+            errMsg = err.message || String(err);
+          }
+        } else {
+          if (!errMsg) errMsg = 'target websocket not open';
+        }
+      }
+
+      if (delivered) {
+        input.value = '';
+        showReplyStatus(statusEl, `Sent ${payload.length} bytes →`, 'ok');
+      } else {
+        showReplyStatus(statusEl, `Send failed: ${errMsg}`, 'error');
+      }
+    }
+
+    function showReplyStatus(el, msg, kind) {
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => { el.textContent = ''; el.classList.remove('error', 'ok'); }, 3500);
+    }
+
+    // ===== Terminal switcher (T1.2) =====
+    function renderSwitcher() {
+      const wrap = document.getElementById('termSwitcher');
+      const grid = document.getElementById('switcherGrid');
+      if (!wrap || !grid) return;
+
+      const ids = Array.from(state.sessions.keys());
+      if (ids.length < 2) {
+        wrap.classList.remove('visible');
+        grid.innerHTML = '';
+        return;
+      }
+
+      wrap.classList.add('visible');
+      grid.innerHTML = '';
+
+      ids.forEach((id, idx) => {
+        const entry = state.sessions.get(id);
+        if (!entry) return;
+        const meta = entry.session?.meta || {};
+        const tile = document.createElement('button');
+        tile.className = 'switcher-tile';
+        tile.type = 'button';
+        tile.dataset.sessionId = id;
+        tile.title = `${getTypeLabel(meta.type || 'shell')}${meta.project ? ' · ' + meta.project : ''} — ${meta.status || ''}`;
+        tile.textContent = String(idx + 1);
+        if (state.focusedId === id) tile.classList.add('active');
+        if (entry.el && entry.el.classList.contains('exited')) tile.classList.add('exited');
+
+        const dot = document.createElement('span');
+        dot.className = 'switcher-dot';
+        dot.style.background = getStatusColor(meta.status || 'idle');
+        tile.appendChild(dot);
+
+        if (meta.project) {
+          const bar = document.createElement('span');
+          bar.className = 'switcher-bar';
+          bar.style.background = getProjectBarColor(meta.project);
+          tile.appendChild(bar);
+        }
+
+        tile.addEventListener('click', (e) => {
+          e.preventDefault();
+          focusSessionById(id);
+        });
+
+        grid.appendChild(tile);
+      });
+    }
+
+    // Pull the CSS-var color for a project tag, falling back to gray
+    function getProjectBarColor(project) {
+      const cls = `project-${project.replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
+      const probe = document.createElement('span');
+      probe.className = cls;
+      probe.style.display = 'none';
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      document.body.removeChild(probe);
+      return color || '#6b7089';
+    }
+
+    function focusSessionById(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+
+      // If we're in focus-mode, swap which panel is the focused one
+      const grid = document.getElementById('termGrid');
+      if (grid.classList.contains('layout-focus')) {
+        document.querySelectorAll('.term-panel').forEach(p => p.classList.remove('focused'));
+        entry.el.classList.add('focused');
+      } else if (grid.classList.contains('layout-half')) {
+        document.querySelectorAll('.term-panel').forEach(p => p.classList.remove('primary'));
+        entry.el.classList.add('primary');
+      }
+
+      // Focus the xterm textarea (without stealing pointer)
+      try { entry.terminal.focus(); } catch (err) { /* ignore */ }
+      state.focusedId = id;
+
+      // Flash the panel border briefly
+      entry.el.classList.remove('focus-flash');
+      // Force reflow so the animation restarts on rapid switches
+      void entry.el.offsetWidth;
+      entry.el.classList.add('focus-flash');
+      clearTimeout(entry._focusFlashTimer);
+      entry._focusFlashTimer = setTimeout(() => {
+        entry.el.classList.remove('focus-flash');
+      }, 600);
+
+      // Refit if layout changed (focus / half swap)
+      requestAnimationFrame(() => fitAll());
+      renderSwitcher();
+    }
+
+    function focusNthSession(n) {
+      const ids = Array.from(state.sessions.keys());
+      if (ids.length === 0) return;
+      if (n < 1 || n > ids.length) return;
+      focusSessionById(ids[n - 1]);
+    }
+
+    function cycleSessionFocus() {
+      const ids = Array.from(state.sessions.keys());
+      if (ids.length === 0) return;
+      const curIdx = ids.indexOf(state.focusedId);
+      const next = curIdx < 0 ? 0 : (curIdx + 1) % ids.length;
+      focusSessionById(ids[next]);
+    }
+
+    // ===== Panel info drawer (T1.1) =====
+    function setupDrawerListeners(id) {
+      const drawer = document.getElementById(`drawer-${id}`);
+      if (!drawer) return;
+
+      // Tab clicks
+      drawer.querySelectorAll('.drawer-tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleDrawerTab(id, tab.dataset.tab);
+        });
+      });
+
+      // Commands tab — click a row to copy
+      const cmdContainer = drawer.querySelector('[data-panel="commands"]');
+      cmdContainer.addEventListener('click', (e) => {
+        const row = e.target.closest('.drawer-row');
+        if (!row || !row.dataset.command) return;
+        copyRowText(row, row.dataset.command);
+      });
+
+      // Memory tab — click a row to expand inline
+      const memContainer = drawer.querySelector('[data-panel="memory"]');
+      memContainer.addEventListener('click', (e) => {
+        const row = e.target.closest('.drawer-row');
+        if (!row) return;
+        row.classList.toggle('expanded');
+      });
+    }
+
+    function toggleDrawerTab(id, tabName) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      const drawer = document.getElementById(`drawer-${id}`);
+      if (!drawer) return;
+
+      const wasOpen = !!entry.drawerOpen;
+      const prevTab = entry.activeTab || 'overview';
+
+      // Clicking the same active tab while the drawer is open collapses it
+      if (wasOpen && prevTab === tabName) {
+        entry.drawerOpen = false;
+        drawer.classList.remove('open');
+      } else {
+        entry.activeTab = tabName;
+        entry.drawerOpen = true;
+        drawer.classList.add('open');
+        drawer.querySelectorAll('.drawer-tab').forEach(t => {
+          t.classList.toggle('active', t.dataset.tab === tabName);
+        });
+        drawer.querySelectorAll('.drawer-panel').forEach(p => {
+          p.classList.toggle('active', p.dataset.panel === tabName);
+        });
+        renderDrawerTab(id, tabName);
+      }
+
+      // Re-fit the terminal after the drawer transitions
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try { entry.fitAddon.fit(); } catch (err) { /* ignore */ }
+          const ws = entry.ws;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'resize',
+              cols: entry.terminal.cols,
+              rows: entry.terminal.rows,
+            }));
+          }
+        }, 190);
+      });
+    }
+
+    function renderDrawerTab(id, tabName) {
+      if (tabName === 'overview') renderOverviewTab(id);
+      else if (tabName === 'commands') renderCommandsTab(id);
+      else if (tabName === 'memory') renderMemoryTab(id);
+      else if (tabName === 'log') renderStatusLogTab(id);
+    }
+
+    function renderOverviewTab(id) {
+      const entry = state.sessions.get(id);
+      const ov = document.getElementById(`ovmeta-${id}`);
+      if (!entry || !ov) return;
+      const meta = entry.session?.meta || {};
+      const last = meta.lastCommands?.length
+        ? meta.lastCommands[meta.lastCommands.length - 1].command
+        : '—';
+      const parts = [
+        ['type', getTypeLabel(meta.type || 'shell')],
+        ['project', meta.project || '—'],
+        ['status', meta.statusDetail || meta.status || '—'],
+        ['opened', meta.createdAt ? timeAgo(meta.createdAt) : '—'],
+        ['last', last],
+      ];
+      if (meta.detectedPort) parts.push(['port', ':' + meta.detectedPort]);
+      if (typeof meta.requestCount === 'number' && meta.requestCount > 0) {
+        parts.push(['requests', String(meta.requestCount)]);
+      }
+      ov.innerHTML = parts.map(([k, v]) =>
+        `<span><span class="ov-label">${k}</span><span class="ov-value">${escapeHtml(String(v))}</span></span>`
+      ).join('');
+    }
+
+    async function renderCommandsTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-commands-${id}`);
+      if (!entry || !container) return;
+
+      try {
+        const resp = await api('GET', `/api/sessions/${id}/history`);
+        const list = Array.isArray(resp) ? resp : (resp.commands || resp.history || []);
+        entry.commandHistory = list;
+        entry.commandsLoaded = true;
+      } catch (err) {
+        console.error('[client] failed to load command history:', err);
+        if (!entry.commandsLoaded) {
+          container.innerHTML = '<div class="empty-msg">Failed to load history.</div>';
+          return;
+        }
+      }
+
+      // server returns command_history rows ordered DESC (newest first)
+      const rows = (entry.commandHistory || []).slice(0, 60);
+      if (rows.length === 0) {
+        container.innerHTML = '<div class="empty-msg">No commands captured yet.</div>';
+      } else {
+        container.innerHTML = rows.map(r => {
+          const cmd = r.command || r.cmd || '';
+          const ts = r.timestamp || r.createdAt || r.created_at || null;
+          const src = r.source ? ` · ${escapeHtml(r.source)}` : '';
+          return `
+            <div class="drawer-row" data-command="${escapeAttr(cmd)}">
+              <div class="row-meta"><span>${escapeHtml(ts ? timeAgo(ts) : 'recent')}${src}</span></div>
+              <div class="row-cmd">${escapeHtml(cmd)}</div>
+            </div>
+          `;
+        }).join('');
+      }
+      container.scrollTop = 0;
+      setBadge(id, 'commands', entry.commandHistory.length);
+    }
+
+    function renderMemoryTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-memory-${id}`);
+      if (!entry || !container) return;
+
+      const hits = entry.memoryHits || [];
+      if (hits.length === 0) {
+        container.innerHTML = '<div class="empty-msg">No memory hits yet. Ask about this terminal or wait for a proactive lookup.</div>';
+        setBadge(id, 'memory', 0);
+        return;
+      }
+
+      const rows = hits.slice(0, 40);
+      container.innerHTML = rows.map(m => {
+        const score = typeof m.similarity === 'number' ? `${(m.similarity * 100).toFixed(0)}%` : '';
+        const proj = m.project ? escapeHtml(m.project) : '';
+        const type = escapeHtml(m.source_type || m.sourceType || 'memory');
+        const ts = m.cachedAt ? timeAgo(m.cachedAt) : '';
+        return `
+          <div class="drawer-row">
+            <div class="row-meta">
+              <span>${type}</span>
+              ${proj ? `<span>${proj}</span>` : ''}
+              ${score ? `<span>${score}</span>` : ''}
+              ${ts ? `<span>${ts}</span>` : ''}
+            </div>
+            <div class="row-content">${escapeHtml(m.content || m.text || '(empty)')}</div>
+          </div>
+        `;
+      }).join('');
+      setBadge(id, 'memory', hits.length);
+    }
+
+    function renderStatusLogTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-log-${id}`);
+      if (!entry || !container) return;
+
+      const log = entry.statusLog || [];
+      if (log.length === 0) {
+        container.innerHTML = '<div class="empty-msg">No status transitions recorded yet.</div>';
+        setBadge(id, 'log', 0);
+        return;
+      }
+
+      const rows = log.slice().reverse();
+      container.innerHTML = rows.map(ev => {
+        const color = getStatusColor(ev.status);
+        const t = new Date(ev.at);
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        const ss = String(t.getSeconds()).padStart(2, '0');
+        return `
+          <div class="status-log-row">
+            <span class="ts">${hh}:${mm}:${ss}</span>
+            <span class="chip" style="color:${color}">${escapeHtml(ev.status)}</span>
+            ${ev.detail ? `<span class="detail">${escapeHtml(ev.detail)}</span>` : ''}
+          </div>
+        `;
+      }).join('');
+      container.scrollTop = 0;
+      setBadge(id, 'log', log.length);
+    }
+
+    function appendStatusLog(id, status, detail) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      if (!entry.statusLog) entry.statusLog = [];
+      entry.statusLog.push({ at: new Date().toISOString(), status, detail: detail || '' });
+      if (entry.statusLog.length > 500) entry.statusLog.splice(0, entry.statusLog.length - 500);
+      setBadge(id, 'log', entry.statusLog.length);
+      if (entry.drawerOpen && entry.activeTab === 'log') {
+        renderStatusLogTab(id);
+      }
+    }
+
+    function setBadge(id, tab, count) {
+      const el = document.getElementById(`badge-${tab}-${id}`);
+      if (el) el.textContent = String(count);
+    }
+
+    function copyRowText(row, text) {
+      const done = () => {
+        row.classList.add('copied');
+        setTimeout(() => row.classList.remove('copied'), 700);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(err => {
+          console.error('[client] clipboard write failed:', err);
+        });
+      } else {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          done();
+        } catch (err) { console.error('[client] fallback copy failed:', err); }
+      }
+    }
+
+    function escapeAttr(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ===== Panel actions =====
+    function focusPanel(id) {
+      const grid = document.getElementById('termGrid');
+      const isAlreadyFocused = grid.classList.contains('layout-focus') && state.focusedId === id;
+
+      if (isAlreadyFocused) {
+        // Restore previous layout
+        setLayout(state.layout);
+        document.querySelectorAll('.term-panel').forEach(p => {
+          p.classList.remove('focused');
+          p.style.display = '';
+        });
+      } else {
+        grid.className = 'grid-container layout-focus';
+        document.querySelectorAll('.term-panel').forEach(p => {
+          p.classList.remove('focused');
+        });
+        const panel = document.getElementById(`panel-${id}`);
+        if (panel) panel.classList.add('focused');
+        state.focusedId = id;
+      }
+
+      // Re-fit all visible terminals
+      requestAnimationFrame(() => fitAll());
+    }
+
+    function reconnectSession(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+
+      const ws = new WebSocket(`${WS_BASE}?session=${id}`);
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'output':
+              entry.terminal.write(msg.data);
+              break;
+            case 'meta':
+              updatePanelMeta(id, msg.session.meta);
+              break;
+            case 'exit':
+              updatePanelMeta(id, { status: 'exited', statusDetail: `Exited (${msg.exitCode})` });
+              const p = document.getElementById(`panel-${id}`);
+              if (p) p.classList.add('exited');
+              break;
+            case 'status_broadcast':
+              updateGlobalStats(msg.sessions);
+              break;
+          }
+        } catch (err) { console.error('[client] reconnect ws message failed:', err); }
+      };
+
+      ws.onopen = () => {
+        console.log(`[ws] Reconnected session ${id}`);
+        entry._reconnectAttempts = 0;
+        entry.ws = ws;
+        updatePanelMeta(id, { status: 'active', statusDetail: 'Reconnected' });
+      };
+
+      ws.onclose = (event) => {
+        const panel = document.getElementById(`panel-${id}`);
+        if (panel && panel.classList.contains('exited')) return;
+        if (event.code === 4001) {
+          // Session no longer exists on server
+          updatePanelMeta(id, { status: 'exited', statusDetail: 'Session ended' });
+          if (panel) panel.classList.add('exited');
+          return;
+        }
+        const delay = Math.min(1000 * Math.pow(2, (entry._reconnectAttempts || 0)), 10000);
+        entry._reconnectAttempts = (entry._reconnectAttempts || 0) + 1;
+        if (entry._reconnectAttempts <= 5) {
+          setTimeout(() => reconnectSession(id), delay);
+        } else {
+          updatePanelMeta(id, { status: 'errored', statusDetail: 'Connection lost' });
+        }
+      };
+
+      // Re-wire terminal input
+      entry.terminal.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'input', data }));
+        }
+      });
+    }
+
+    function halfPanel(id) {
+      const grid = document.getElementById('termGrid');
+      grid.className = 'grid-container layout-half';
+      document.querySelectorAll('.term-panel').forEach(p => p.classList.remove('primary'));
+      const panel = document.getElementById(`panel-${id}`);
+      if (panel) panel.classList.add('primary');
+      requestAnimationFrame(() => fitAll());
+    }
+
+    async function closePanel(id) {
+      if (!confirm('Close this terminal? The process will be killed.')) return;
+
+      await api('DELETE', `/api/sessions/${id}`);
+
+      const entry = state.sessions.get(id);
+      if (entry) {
+        entry.terminal.dispose();
+        entry.ws.close();
+        entry.el.remove();
+        state.sessions.delete(id);
+      }
+
+      updateEmptyState();
+      renderSwitcher();
+      refreshAllReplyFormsFor(id);
+      refreshPanelIndices();
+    }
+
+    function changeTheme(id, themeId) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+
+      const themeObj = getThemeObject(themeId);
+      entry.terminal.options.theme = themeObj;
+
+      // Persist to server
+      api('PATCH', `/api/sessions/${id}`, { theme: themeId });
+    }
+
+    async function askAI(id, question) {
+      if (!question.trim()) return;
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+
+      // Early return if AI queries are not available
+      if (!state.config.aiQueryAvailable) {
+        entry.terminal.write(
+          '\r\n\x1b[33m[mnestra] AI queries are not available.\x1b[0m\r\n' +
+          '\x1b[33mTo enable, add the following to ~/.termdeck/config.yaml:\x1b[0m\r\n' +
+          '\x1b[90m  rag:\r\n' +
+          '    supabaseUrl: https://your-project.supabase.co\r\n' +
+          '    supabaseKey: your-anon-key\r\n' +
+          '    openaiApiKey: sk-...\x1b[0m\r\n'
+        );
+        return;
+      }
+
+      const inputEl = document.getElementById(`ai-${id}`);
+      inputEl.value = 'Searching memories...';
+      inputEl.disabled = true;
+
+      try {
+        const result = await api('POST', '/api/ai/query', {
+          question,
+          sessionId: id,
+          project: entry.session?.meta?.project || null
+        });
+
+        if (result.error) {
+          entry.terminal.write(`\r\n\x1b[33m[mnestra] ${result.error}\x1b[0m\r\n`);
+        } else if (result.memories && result.memories.length > 0) {
+          // Cache hits for the Memory tab
+          if (!entry.memoryHits) entry.memoryHits = [];
+          const cachedAt = new Date().toISOString();
+          for (const m of result.memories) {
+            entry.memoryHits.unshift({ ...m, cachedAt });
+          }
+          if (entry.memoryHits.length > 60) {
+            entry.memoryHits.length = 60;
+          }
+          setBadge(id, 'memory', entry.memoryHits.length);
+          if (entry.drawerOpen && entry.activeTab === 'memory') {
+            renderMemoryTab(id);
+          }
+          const cols = entry.terminal.cols || 80;
+          const wrap = (text, indent) => {
+            const maxW = cols - indent - 2;
+            const words = text.split(/\s+/);
+            const lines = [];
+            let line = '';
+            for (const w of words) {
+              if (line.length + w.length + 1 > maxW && line.length > 0) {
+                lines.push(' '.repeat(indent) + line);
+                line = w;
+              } else {
+                line = line ? line + ' ' + w : w;
+              }
+            }
+            if (line) lines.push(' '.repeat(indent) + line);
+            return lines;
+          };
+
+          entry.terminal.write(`\r\n\x1b[36m━━━ Mnestra: ${result.total} memories found ━━━\x1b[0m\r\n`);
+          for (const m of result.memories) {
+            const score = m.similarity ? `${(m.similarity * 100).toFixed(0)}%` : '';
+            const proj = m.project ? m.project : '';
+            entry.terminal.write(`\r\n\x1b[35m● ${m.source_type}\x1b[0m \x1b[90m${proj} ${score}\x1b[0m\r\n`);
+            const contentLines = wrap(m.content || '(empty)', 2);
+            for (const cl of contentLines) {
+              entry.terminal.write(`${cl}\r\n`);
+            }
+          }
+          entry.terminal.write(`\r\n\x1b[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\r\n\r\n`);
+        } else {
+          entry.terminal.write(`\r\n\x1b[33m[mnestra] No relevant memories found.\x1b[0m\r\n`);
+        }
+      } catch (err) {
+        console.error('[client] AI query failed:', err);
+        entry.terminal.write(`\r\n\x1b[31m[mnestra] Query failed: ${err.message}\x1b[0m\r\n`);
+      }
+
+      inputEl.value = '';
+      inputEl.disabled = false;
+      inputEl.placeholder = 'Ask about this terminal...';
+    }
+
+    // ===== Quick launch from empty state =====
+    function quickLaunch(cmd) {
+      document.getElementById('promptInput').value = cmd;
+      launchTerminal();
+    }
+
+    // ===== Add Project modal =====
+    function rebuildProjectDropdown(selectName) {
+      const sel = document.getElementById('promptProject');
+      if (!sel) return;
+      const prev = selectName || sel.value;
+      sel.innerHTML = '<option value="">no project</option>';
+      for (const name of Object.keys(state.config.projects || {})) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      if (prev && state.config.projects && state.config.projects[prev]) {
+        sel.value = prev;
+      }
+    }
+
+    function openAddProjectModal() {
+      const modal = document.getElementById('addProjectModal');
+      // Populate theme dropdown from loaded themes
+      const themeSel = document.getElementById('apmTheme');
+      themeSel.innerHTML = '<option value="">— pick a theme —</option>';
+      for (const [tid, t] of Object.entries(state.themes || {})) {
+        const opt = document.createElement('option');
+        opt.value = tid;
+        opt.textContent = t.label || tid;
+        themeSel.appendChild(opt);
+      }
+      // Clear fields
+      document.getElementById('apmName').value = '';
+      document.getElementById('apmPath').value = '';
+      document.getElementById('apmCommand').value = '';
+      document.getElementById('apmTheme').value = '';
+      setApmStatus('', null);
+      modal.classList.add('open');
+      setTimeout(() => document.getElementById('apmName').focus(), 50);
+    }
+
+    function closeAddProjectModal() {
+      document.getElementById('addProjectModal').classList.remove('open');
+    }
+
+    function setApmStatus(msg, kind) {
+      const el = document.getElementById('apmStatus');
+      el.textContent = msg || '';
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+    }
+
+    async function submitAddProject() {
+      const name = document.getElementById('apmName').value.trim();
+      const projectPath = document.getElementById('apmPath').value.trim();
+      const defaultCommand = document.getElementById('apmCommand').value.trim();
+      const defaultTheme = document.getElementById('apmTheme').value;
+
+      if (!name) { setApmStatus('Name is required.', 'error'); return; }
+      if (!projectPath) { setApmStatus('Path is required.', 'error'); return; }
+
+      const saveBtn = document.getElementById('apmSave');
+      saveBtn.disabled = true;
+      setApmStatus('Saving…', null);
+
+      try {
+        const result = await api('POST', '/api/projects', {
+          name,
+          path: projectPath,
+          defaultCommand: defaultCommand || undefined,
+          defaultTheme: defaultTheme || undefined,
+        });
+        if (result && result.error) {
+          setApmStatus(result.error, 'error');
+          saveBtn.disabled = false;
+          return;
+        }
+        // Merge the updated projects into in-memory state.config so subsequent
+        // launches can immediately use the new project.
+        state.config.projects = result.projects || {};
+        rebuildProjectDropdown(name);
+        setApmStatus(`Added "${name}" ✓`, 'ok');
+        setTimeout(() => { closeAddProjectModal(); saveBtn.disabled = false; }, 700);
+      } catch (err) {
+        setApmStatus(`Failed: ${err.message || err}`, 'error');
+        saveBtn.disabled = false;
+      }
+    }
+
+    // ===== Rumen insights badge + briefing modal =====
+    function rumenState() {
+      if (!state.rumen) {
+        state.rumen = {
+          enabled: false,
+          status: null,
+          insights: [],
+          total: 0,
+          unseen: 0,
+          filters: { project: '', sort: 'newest', unseen: false },
+          pollTimer: null,
+          modalOpen: false,
+          prevFocus: null,
+        };
+      }
+      return state.rumen;
+    }
+
+    function rumenRelTime(iso) {
+      if (!iso) return '—';
+      const t = new Date(iso).getTime();
+      if (!Number.isFinite(t)) return '—';
+      const delta = Math.max(0, Date.now() - t);
+      const s = Math.floor(delta / 1000);
+      if (s < 60) return `${s}s ago`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      const d = Math.floor(h / 24);
+      return `${d}d ago`;
+    }
+
+    function rumenEscape(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderRumenBadge() {
+      const r = rumenState();
+      const badge = document.getElementById('rumenBadge');
+      const label = document.getElementById('rumenBadgeLabel');
+      if (!badge || !label) return;
+      if (!r.enabled) {
+        badge.classList.remove('visible', 'has-unseen');
+        return;
+      }
+      badge.classList.add('visible');
+      const unseen = r.unseen | 0;
+      const total = r.total | 0;
+      if (unseen > 0) {
+        badge.classList.add('has-unseen');
+        label.textContent = `${unseen} new insight${unseen === 1 ? '' : 's'}`;
+      } else {
+        badge.classList.remove('has-unseen');
+        label.textContent = `${total} insight${total === 1 ? '' : 's'}`;
+      }
+    }
+
+    async function fetchRumenStatus() {
+      try {
+        const data = await api('GET', '/api/rumen/status');
+        const r = rumenState();
+        if (data && data.enabled === true) {
+          r.enabled = true;
+          r.status = data;
+          r.total = data.total_insights | 0;
+          r.unseen = data.unseen_insights | 0;
+        } else {
+          r.enabled = false;
+          r.status = data || { enabled: false };
+        }
+        renderRumenBadge();
+        if (r.modalOpen) renderRumenSummary();
+      } catch (err) {
+        console.warn('[rumen] status fetch failed', err);
+      }
+    }
+
+    function buildRumenQuery() {
+      const r = rumenState();
+      const qs = new URLSearchParams();
+      qs.set('limit', '50');
+      if (r.filters.project) qs.set('project', r.filters.project);
+      if (r.filters.unseen) qs.set('unseen', 'true');
+      return qs.toString();
+    }
+
+    async function fetchRumenInsights() {
+      const r = rumenState();
+      try {
+        const data = await api('GET', `/api/rumen/insights?${buildRumenQuery()}`);
+        if (data && data.enabled === false) {
+          r.enabled = false;
+          r.insights = [];
+          r.total = 0;
+          renderRumenBadge();
+          renderRumenList();
+          return;
+        }
+        let list = Array.isArray(data?.insights) ? data.insights : [];
+        if (r.filters.sort === 'confidence') {
+          list = list.slice().sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+        }
+        r.insights = list;
+        renderRumenList();
+        renderRumenSummary();
+      } catch (err) {
+        console.warn('[rumen] insights fetch failed', err);
+        const list = document.getElementById('rumenList');
+        if (list) list.innerHTML = '<div class="rumen-empty">Could not load insights. Try again.</div>';
+      }
+    }
+
+    function renderRumenSummary() {
+      const r = rumenState();
+      const summary = document.getElementById('rumenSummary');
+      const title = document.getElementById('rumenTitle');
+      if (!summary || !title) return;
+      const total = r.total | 0;
+      const unseen = r.unseen | 0;
+      title.textContent = `Rumen Insights — ${total} total · ${unseen} new`;
+      const s = r.status || {};
+      if (s.last_job_completed_at) {
+        summary.textContent =
+          `Last processed: ${s.last_job_sessions_processed | 0} sessions → ` +
+          `${s.last_job_insights_generated | 0} insights · ${rumenRelTime(s.last_job_completed_at)}`;
+      } else if (s.last_job_status) {
+        summary.textContent = `Last job: ${s.last_job_status}`;
+      } else {
+        summary.textContent = 'No jobs have run yet.';
+      }
+    }
+
+    function renderRumenList() {
+      const r = rumenState();
+      const list = document.getElementById('rumenList');
+      if (!list) return;
+      if (!r.insights.length) {
+        list.innerHTML = '<div class="rumen-empty">No insights match the current filter.</div>';
+        return;
+      }
+      const rows = r.insights.map((ins) => {
+        const chips = (ins.projects || []).map((p) => `<span class="ri-chip">${rumenEscape(p)}</span>`).join('');
+        const conf = typeof ins.confidence === 'number' ? `conf ${ins.confidence.toFixed(2)}` : 'conf —';
+        const seen = ins.acted_upon === true;
+        const btnLabel = seen ? 'seen ✓' : 'mark seen';
+        const btnClass = seen ? 'ri-mark seen' : 'ri-mark';
+        const btnDisabled = seen ? 'disabled' : '';
+        return (
+          `<div class="rumen-item" role="listitem" data-id="${rumenEscape(ins.id)}">` +
+            `<div class="ri-text">${rumenEscape(ins.insight_text)}</div>` +
+            `<div class="ri-meta">` +
+              `<span class="ri-conf">${conf}</span>` +
+              chips +
+              `<span class="ri-time">${rumenRelTime(ins.created_at)}</span>` +
+              `<button type="button" class="${btnClass}" data-seen-id="${rumenEscape(ins.id)}" ${btnDisabled}>${btnLabel}</button>` +
+            `</div>` +
+          `</div>`
+        );
+      });
+      list.innerHTML = rows.join('');
+    }
+
+    function populateRumenProjectFilter() {
+      const r = rumenState();
+      const sel = document.getElementById('rumenFilterProject');
+      if (!sel) return;
+      const prev = sel.value;
+      const projects = new Set();
+      for (const ins of r.insights) {
+        for (const p of (ins.projects || [])) projects.add(p);
+      }
+      for (const name of Object.keys(state.config?.projects || {})) projects.add(name);
+      const opts = Array.from(projects).sort();
+      sel.innerHTML = '<option value="">all</option>' +
+        opts.map((p) => `<option value="${rumenEscape(p)}">${rumenEscape(p)}</option>`).join('');
+      if (prev && opts.includes(prev)) sel.value = prev;
+    }
+
+    async function markRumenInsightSeen(id) {
+      const r = rumenState();
+      const sel = (attr) => `[${attr}="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`;
+      const item = document.querySelector(`.rumen-item${sel('data-id')}`);
+      const btn = document.querySelector(`.ri-mark${sel('data-seen-id')}`);
+      if (btn) btn.disabled = true;
+      const insight = r.insights.find((i) => i.id === id);
+      const wasUnseen = insight && insight.acted_upon === false;
+      if (insight) insight.acted_upon = true;
+      if (wasUnseen && r.unseen > 0) r.unseen -= 1;
+      renderRumenBadge();
+      if (item) item.classList.add('fading');
+      try {
+        const resp = await fetch(`${API}/api/rumen/insights/${encodeURIComponent(id)}/seen`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        setTimeout(() => {
+          if (r.filters.unseen) {
+            r.insights = r.insights.filter((i) => i.id !== id);
+            renderRumenList();
+          } else if (item) {
+            item.classList.remove('fading');
+            const b = item.querySelector('.ri-mark');
+            if (b) { b.classList.add('seen'); b.textContent = 'seen ✓'; b.disabled = true; }
+          }
+        }, 360);
+      } catch (err) {
+        console.warn('[rumen] mark-seen failed', err);
+        if (insight) insight.acted_upon = false;
+        if (wasUnseen) r.unseen += 1;
+        renderRumenBadge();
+        if (item) item.classList.remove('fading');
+        if (btn) { btn.disabled = false; btn.textContent = 'retry'; }
+      }
+    }
+
+    function openRumenModal() {
+      const r = rumenState();
+      if (!r.enabled) return;
+      r.modalOpen = true;
+      r.prevFocus = document.activeElement;
+      document.getElementById('rumenModal').classList.add('open');
+      populateRumenProjectFilter();
+      renderRumenSummary();
+      fetchRumenInsights();
+      setTimeout(() => {
+        const close = document.getElementById('rumenClose');
+        if (close) close.focus();
+      }, 30);
+    }
+
+    function closeRumenModal() {
+      const r = rumenState();
+      r.modalOpen = false;
+      document.getElementById('rumenModal').classList.remove('open');
+      if (r.prevFocus && typeof r.prevFocus.focus === 'function') {
+        try { r.prevFocus.focus(); } catch {}
+      }
+    }
+
+    function setupRumen() {
+      const r = rumenState();
+      document.getElementById('rumenBadge').addEventListener('click', openRumenModal);
+      document.getElementById('rumenClose').addEventListener('click', closeRumenModal);
+      document.getElementById('rumenBackdrop').addEventListener('click', closeRumenModal);
+      document.getElementById('rumenModal').addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); closeRumenModal(); }
+      });
+      document.getElementById('rumenFilterProject').addEventListener('change', (e) => {
+        r.filters.project = e.target.value || '';
+        fetchRumenInsights();
+      });
+      document.getElementById('rumenFilterSort').addEventListener('change', (e) => {
+        r.filters.sort = e.target.value || 'newest';
+        if (r.filters.sort === 'confidence') {
+          r.insights = r.insights.slice().sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+        } else {
+          r.insights = r.insights.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        }
+        renderRumenList();
+      });
+      document.getElementById('rumenFilterUnseen').addEventListener('change', (e) => {
+        r.filters.unseen = !!e.target.checked;
+        fetchRumenInsights();
+      });
+      document.getElementById('rumenList').addEventListener('click', (e) => {
+        const btn = e.target.closest('.ri-mark');
+        if (!btn || btn.disabled) return;
+        const id = btn.getAttribute('data-seen-id');
+        if (id) markRumenInsightSeen(id);
+      });
+      fetchRumenStatus();
+      r.pollTimer = setInterval(fetchRumenStatus, 60000);
+    }
+
+    // ===== Launch terminal =====
+    async function launchTerminal() {
+      const input = document.getElementById('promptInput');
+      const project = document.getElementById('promptProject').value;
+      let command = input.value.trim();
+
+      // If the input is empty but the selected project has a defaultCommand,
+      // use it. That way "select project + click launch" actually runs the
+      // project's declared default (e.g. `claude`) instead of silently falling
+      // through to the global shell.
+      if (!command && project) {
+        const projectCfg = state.config.projects?.[project];
+        if (projectCfg?.defaultCommand) {
+          command = projectCfg.defaultCommand;
+        }
+      }
+
+      if (!command) {
+        // Still nothing to run — launch a plain shell in the project's cwd
+        const session = await api('POST', '/api/sessions', {
+          project: project || undefined,
+          reason: 'manual launch'
+        });
+        createTerminalPanel(session);
+        input.value = '';
+        updateEmptyState();
+        return;
+      }
+
+      // Parse shorthand commands
+      let resolvedCommand = command;
+      let resolvedType = 'shell';
+      let resolvedCwd = undefined;
+
+      let resolvedProject = project || undefined;
+
+      if (/^claude\b/i.test(command) || /^cc\b/i.test(command)) {
+        resolvedType = 'claude-code';
+        const argMatch = command.match(/(?:claude|cc)\s+(?:code\s+)?(.+)/i);
+        if (argMatch) {
+          const arg = argMatch[1].trim();
+          // Check if arg is a known project name
+          if (state.config.projects && state.config.projects[arg]) {
+            resolvedProject = arg;
+          } else {
+            resolvedCwd = arg;
+          }
+        }
+        resolvedCommand = 'claude';
+      } else if (/^gemini\b/i.test(command)) {
+        resolvedType = 'gemini';
+      } else if (/^python3?\b.*(?:runserver|uvicorn|flask|gunicorn)/i.test(command)) {
+        resolvedType = 'python-server';
+      }
+
+      const session = await api('POST', '/api/sessions', {
+        command: resolvedCommand,
+        cwd: resolvedCwd,
+        project: resolvedProject,
+        type: resolvedType,
+        reason: `launched: ${command}`
+      });
+
+      createTerminalPanel(session);
+      input.value = '';
+      updateEmptyState();
+    }
+
+    // ===== Layout =====
+    function setLayout(layout) {
+      const wasControl = state.layout === 'control';
+      // Only persist "real" grid layouts as state.layout; the control view is
+      // an overlay, not a target to restore to when the user hits Escape.
+      if (layout !== 'control') {
+        state.layout = layout;
+      }
+      const grid = document.getElementById('termGrid');
+      grid.className = `grid-container layout-${layout}`;
+
+      // Remove focus/half states
+      document.querySelectorAll('.term-panel').forEach(p => {
+        p.classList.remove('focused', 'primary');
+        p.style.display = '';
+      });
+
+      // Update buttons
+      document.querySelectorAll('.layout-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.layout === layout);
+      });
+
+      // Control-mode side effects (T1.6)
+      if (layout === 'control') {
+        enterControlMode();
+      } else if (wasControl) {
+        // Leaving control — nothing to clean up; feed stays hidden via CSS
+      }
+
+      requestAnimationFrame(() => fitAll());
+    }
+
+    // ===== Helpers =====
+    function getStatusColor(status) {
+      const colors = {
+        starting: '#7aa2f7',
+        active: '#9ece6a',
+        idle: '#6b7089',
+        thinking: '#bb9af7',
+        editing: '#e0af68',
+        listening: '#7dcfff',
+        errored: '#f7768e',
+        exited: '#414868'
+      };
+      return colors[status] || '#6b7089';
+    }
+
+    function getTypeLabel(type) {
+      const labels = {
+        'shell': 'Shell',
+        'claude-code': 'Claude Code',
+        'gemini': 'Gemini CLI',
+        'python-server': 'Python Server',
+        'one-shot': 'One-shot'
+      };
+      return labels[type] || type;
+    }
+
+    function getThemeObject(themeId) {
+      // Fetch full theme from server cache or use fallback
+      const known = state.themes[themeId];
+      if (known?.theme) return known.theme;
+      // Minimal fallback
+      return { background: '#1a1b26', foreground: '#c0caf5' };
+    }
+
+    function timeAgo(isoString) {
+      const diff = Date.now() - new Date(isoString).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    }
+
+    function updatePanelMeta(id, meta) {
+      // Track status transitions into the per-panel status log
+      const entry = state.sessions.get(id);
+      if (entry && meta.status && meta.status !== entry.lastKnownStatus) {
+        appendStatusLog(id, meta.status, meta.statusDetail || '');
+        // Proactive memory lookup on entering the errored state (T1.4)
+        if (meta.status === 'errored') {
+          // Fire-and-forget; own rate limiting lives inside the function.
+          triggerProactiveMemoryQuery(id);
+        }
+        entry.lastKnownStatus = meta.status;
+      }
+      // Keep the cached session.meta fresh so the overview tab renders current data
+      if (entry && entry.session) {
+        entry.session.meta = { ...entry.session.meta, ...meta };
+      }
+
+      const dot = document.getElementById(`dot-${id}`);
+      const status = document.getElementById(`status-${id}`);
+      const metaLast = document.getElementById(`meta-last-${id}`);
+      const metaPort = document.getElementById(`meta-port-${id}`);
+      const metaReqs = document.getElementById(`meta-reqs-${id}`);
+
+      if (dot) {
+        dot.style.background = getStatusColor(meta.status);
+        dot.classList.toggle('pulsing', meta.status === 'thinking');
+      }
+      if (status) status.textContent = meta.statusDetail || meta.status;
+      if (metaLast && meta.lastCommands?.length) {
+        metaLast.innerHTML = `<span class="meta-label">last</span> ${escapeHtml(meta.lastCommands[meta.lastCommands.length - 1].command)}`;
+      }
+      if (metaPort) {
+        if (meta.detectedPort) {
+          metaPort.style.display = '';
+          metaPort.querySelector('.meta-value').textContent = ':' + meta.detectedPort;
+        }
+      }
+      if (metaReqs) {
+        if (meta.type === 'python-server' || meta.requestCount > 0) {
+          metaReqs.style.display = '';
+          metaReqs.querySelector('.meta-value').textContent = meta.requestCount || 0;
+        }
+      }
+
+      // If the drawer is showing the overview tab, refresh its metadata block
+      if (entry && entry.drawerOpen && entry.activeTab === 'overview') {
+        renderOverviewTab(id);
+      }
+
+      // Sync theme dropdown if server-side theme changed
+      if (meta.theme) {
+        const themeSelect = document.getElementById(`theme-${id}`);
+        if (themeSelect && themeSelect.value !== meta.theme) {
+          themeSelect.value = meta.theme;
+          const entry = state.sessions.get(id);
+          if (entry) {
+            entry.terminal.options.theme = getThemeObject(meta.theme);
+          }
+        }
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function updateGlobalStats(sessions) {
+      let active = 0, thinking = 0, idle = 0;
+      for (const s of sessions) {
+        if (s.meta.status === 'active' || s.meta.status === 'listening') active++;
+        else if (s.meta.status === 'thinking') thinking++;
+        else if (s.meta.status === 'idle') idle++;
+
+        // Update existing panels from broadcast. NOTE: we deliberately do NOT
+        // createTerminalPanel for sessions that aren't in state.sessions —
+        // that creates a race between the immediate createTerminalPanel call
+        // from launchTerminal and the 2s status_broadcast cycle, producing
+        // duplicate WebSockets per session and breaking terminal input
+        // rendering. External-session auto-discover is parked for Sprint 3.
+        if (state.sessions.has(s.id)) {
+          updatePanelMeta(s.id, s.meta);
+        }
+      }
+      document.getElementById('stat-active').textContent = active;
+      document.getElementById('stat-thinking').textContent = thinking;
+      document.getElementById('stat-idle').textContent = idle;
+      renderSwitcher();
+    }
+
+    function updateEmptyState() {
+      const empty = document.getElementById('emptyState');
+      empty.style.display = state.sessions.size === 0 ? '' : 'none';
+    }
+
+    function fitAll() {
+      for (const [, entry] of state.sessions) {
+        try { entry.fitAddon.fit(); } catch (err) { if (!entry._fitWarned) { console.error('[client] fitAddon.fit failed for session:', err); entry._fitWarned = true; } }
+      }
+    }
+
+    // ===== ONBOARDING TOUR =====
+    // Spotlight + tooltip walkthrough of every TermDeck surface. Runs once on
+    // first visit (localStorage gate) and replays on demand via the "how this
+    // works" button. Zero dependencies — vanilla DOM, same philosophy as the
+    // rest of this client.
+    const TOUR_STEPS = [
+      {
+        target: null,
+        title: 'Welcome to TermDeck',
+        body: `TermDeck is a browser-based terminal multiplexer with a persistent memory layer. It lets you run many real terminals side by side, each with rich metadata and automatic recall of similar past errors. This walkthrough takes about 90 seconds and covers every button on the screen. Press <kbd>Esc</kbd> any time to exit.`,
+      },
+      {
+        target: '#topbarQuickLaunch',
+        title: 'Quick launch',
+        body: `These three buttons instantly spawn a new terminal. <strong>shell</strong> opens zsh, <strong>claude</strong> opens Claude Code, <strong>python</strong> starts a Python HTTP server on port 8080. One click — no typing required.`,
+      },
+      {
+        target: '.topbar-center',
+        title: 'Layout modes',
+        body: `Seven preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd> plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+6</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>6</kbd>) do the same.`,
+      },
+      {
+        target: '#termSwitcher',
+        title: 'Terminal switcher',
+        body: `When you have 2+ terminals open, this overlay shows numbered tiles. Click a tile to focus that panel, or press <kbd>Alt+1</kbd> through <kbd>Alt+9</kbd>. Color-coded by project, status-dot updates live. Watch — a second shell is spawning right now so you can see it appear.`,
+        onEnter: async () => { await ensureSecondShellForTour(); },
+      },
+      {
+        targets: ['#btn-status', '#btn-config'],
+        title: 'Status and config',
+        body: `<strong>status</strong> opens a global-metrics modal (session counts by state, RAG mode, memory bridge). <strong>config</strong> shows your loaded project list and theme defaults. Both are in the polish queue for Sprint 3 — buttons are visible but unwired right now.`,
+      },
+      {
+        targets: ['#btn-how', '#btn-help'],
+        title: 'How this works and help',
+        body: `Click <strong>how this works</strong> any time to replay this tour. <strong>help</strong> opens the full TermDeck documentation in a new tab.`,
+      },
+      {
+        target: '.panel-header',
+        title: 'Panel header',
+        body: `Every terminal has a header showing a <strong>status dot</strong> (active · thinking · idle · errored · exited), the detected <strong>type</strong> (shell · Claude Code · Python server · etc.), a colored <strong>project tag</strong>, and a <strong>#N index</strong> when multiple panels share the same (type, project). The right side has focus, half-screen, and close buttons.`,
+        fallback: '#topbarQuickLaunch',
+      },
+      {
+        target: '.drawer-tabs',
+        title: 'Info tabs',
+        body: `Below every terminal is a drawer with four tabs. <strong>Overview</strong> — live metadata + "Ask about this terminal" input + reply button. <strong>Commands</strong> — scrollable command history (click to copy). <strong>Memory</strong> — every Flashback hit this panel has collected. <strong>Status log</strong> — chronological status transitions with detail chips.`,
+        onEnter: async () => { await openFirstPanelDrawer('overview'); },
+        fallback: '#topbarQuickLaunch',
+      },
+      {
+        target: '.reply-toggle',
+        title: 'Reply — send text to another panel',
+        body: `Click <strong>reply ▸</strong> on any panel to route text to another open terminal. Pick the target from the dropdown (labels use <kbd>#N</kbd> suffixes to disambiguate same-project duplicates), type your message, hit send. Useful for handing off work to a Claude Code panel, broadcasting a command, or piping errors into a debug agent.`,
+        onEnter: async () => { await openFirstPanelDrawer('overview'); },
+        fallback: '#topbarQuickLaunch',
+      },
+      {
+        target: '.ctrl-input',
+        title: 'Ask about this terminal',
+        body: `Type a question here and TermDeck queries your <strong>Mnestra memory store</strong> for relevant context — scoped to the current panel's project. Prefix with <kbd>all:</kbd> to search every project. Results render inline in the terminal with similarity scores.`,
+        onEnter: async () => { await openFirstPanelDrawer('overview'); },
+        fallback: '#topbarQuickLaunch',
+      },
+      {
+        target: null,
+        title: 'Flashback — proactive recall',
+        body: `When a panel errors out, TermDeck <strong>automatically</strong> queries Mnestra for similar past errors and surfaces the top match as a toast. You don't have to ask. Rate-limited to one per 30 seconds per panel. Click the toast to open the Memory tab with the full hit expanded.`,
+      },
+      {
+        target: '.prompt-bar',
+        title: 'Prompt bar',
+        body: `Type any command here to launch it as a new terminal — <kbd>claude code ~/myproject</kbd>, <kbd>python3 manage.py runserver</kbd>, <kbd>npm run dev</kbd>. Pick a project from the dropdown to auto-cd into its path and apply its default theme. <kbd>Ctrl+Shift+N</kbd> focuses this bar from anywhere.`,
+      },
+      {
+        target: null,
+        title: 'You are ready.',
+        body: `That's every major surface. Click <strong>how this works</strong> in the top toolbar to replay this walkthrough. <strong>help</strong> opens the full docs. Questions, bugs, feedback: <a href="https://github.com/jhizzard/termdeck/issues" target="_blank" style="color:var(--tg-accent)">github.com/jhizzard/termdeck/issues</a>. Now launch something.`,
+      },
+    ];
+
+    // Tour setup helpers — manipulate DOM so target selectors resolve to
+    // visible, sized elements before the spotlight positions itself.
+    async function ensureSecondShellForTour() {
+      if (state.sessions.size >= 2) return;
+      try {
+        const session = await api('POST', '/api/sessions', {
+          command: 'zsh',
+          type: 'shell',
+          reason: 'onboarding tour (switcher demo)',
+        });
+        createTerminalPanel(session);
+        updateEmptyState();
+        await new Promise((r) => setTimeout(r, 450));
+      } catch (err) {
+        console.error('[tour] failed to auto-launch second shell:', err);
+      }
+    }
+
+    async function openFirstPanelDrawer(tabName = 'overview') {
+      const firstId = state.sessions.keys().next().value;
+      if (!firstId) return;
+      const entry = state.sessions.get(firstId);
+      if (!entry) return;
+      // Only toggle if not already open on the requested tab — avoid bouncing
+      // the drawer shut mid-tour.
+      if (entry.drawerOpen && entry.activeTab === tabName) return;
+      // Force-open by setting state first so toggleDrawerTab expands it.
+      entry.drawerOpen = false;
+      toggleDrawerTab(firstId, tabName);
+      // Let the CSS transition settle so bounding rects stabilize.
+      await new Promise((r) => setTimeout(r, 280));
+    }
+
+    const tourState = { active: false, idx: 0 };
+
+    // Resolve a step's target(s) to a bounding rect. Supports single `target`
+    // selector, a `targets` array (union rect across multiple elements), and
+    // `fallback` as a last resort. Elements with 0×0 rects are treated as
+    // invisible and ignored so collapsed drawer content doesn't produce
+    // phantom spotlights in the top-left corner.
+    function tourResolveRect(step) {
+      const visibleRect = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return null;
+        return r;
+      };
+
+      if (step.targets && Array.isArray(step.targets)) {
+        const rects = step.targets.map(visibleRect).filter(Boolean);
+        if (rects.length > 0) {
+          const left = Math.min(...rects.map((r) => r.left));
+          const top = Math.min(...rects.map((r) => r.top));
+          const right = Math.max(...rects.map((r) => r.right));
+          const bottom = Math.max(...rects.map((r) => r.bottom));
+          return { left, top, right, bottom, width: right - left, height: bottom - top };
+        }
+      }
+
+      if (step.target) {
+        const r = visibleRect(step.target);
+        if (r) return r;
+      }
+
+      if (step.fallback) {
+        const r = visibleRect(step.fallback);
+        if (r) return r;
+      }
+
+      return null;
+    }
+
+    function positionTourElements(step) {
+      const backdrop = document.getElementById('tourBackdrop');
+      const spotlight = document.getElementById('tourSpotlight');
+      const tooltip = document.getElementById('tourTooltip');
+      backdrop.classList.add('active');
+      tooltip.style.display = 'block';
+
+      const rect = tourResolveRect(step);
+      if (!rect) {
+        // Centered step — no spotlight target, or resolved element was invisible
+        spotlight.classList.add('centered');
+        tooltip.classList.add('centered');
+        tooltip.style.top = '';
+        tooltip.style.left = '';
+        return;
+      }
+      spotlight.classList.remove('centered');
+      tooltip.classList.remove('centered');
+
+      const padding = 8;
+      spotlight.style.top = `${rect.top - padding}px`;
+      spotlight.style.left = `${rect.left - padding}px`;
+      spotlight.style.width = `${rect.width + padding * 2}px`;
+      spotlight.style.height = `${rect.height + padding * 2}px`;
+
+      // Place tooltip below the target by default; flip to above if it would
+      // overflow the viewport. Clamp horizontally to avoid right-edge clipping.
+      const tooltipRect = tooltip.getBoundingClientRect();
+      let top = rect.bottom + 16;
+      let left = Math.max(12, rect.left);
+      if (top + tooltipRect.height > window.innerHeight - 12) {
+        top = Math.max(12, rect.top - tooltipRect.height - 16);
+      }
+      if (left + tooltipRect.width > window.innerWidth - 12) {
+        left = window.innerWidth - tooltipRect.width - 12;
+      }
+      tooltip.style.top = `${top}px`;
+      tooltip.style.left = `${left}px`;
+    }
+
+    async function renderTourStep() {
+      const step = TOUR_STEPS[tourState.idx];
+      if (!step) { endTour(); return; }
+
+      // Optional setup hook — launches a panel, opens a drawer, etc.
+      if (typeof step.onEnter === 'function') {
+        try { await step.onEnter(); } catch (err) { console.error('[tour] onEnter failed:', err); }
+      }
+
+      document.getElementById('tourTitle').innerHTML = step.title;
+      document.getElementById('tourBody').innerHTML = step.body;
+      document.getElementById('tourCounter').textContent =
+        `Step ${tourState.idx + 1} of ${TOUR_STEPS.length}`;
+      document.getElementById('tourPrevBtn').disabled = tourState.idx === 0;
+      document.getElementById('tourNextBtn').textContent =
+        tourState.idx === TOUR_STEPS.length - 1 ? 'done' : 'next';
+      positionTourElements(step);
+    }
+
+    // Auto-launch a shell panel so the tour's panel-targeting steps
+    // (header, drawer tabs, reply, ctrl-input) have a real DOM target.
+    // Only fires when no panels exist yet. Replays of the tour against
+    // an already-populated dashboard skip this — their existing panels
+    // serve as the tour targets.
+    async function ensurePanelForTour() {
+      if (state.sessions.size > 0) return;
+      try {
+        const session = await api('POST', '/api/sessions', {
+          command: 'zsh',
+          type: 'shell',
+          reason: 'onboarding tour',
+        });
+        createTerminalPanel(session);
+        updateEmptyState();
+        // Let xterm.js mount and .panel-* selectors settle before rendering.
+        await new Promise((r) => setTimeout(r, 450));
+      } catch (err) {
+        console.error('[tour] failed to auto-launch shell:', err);
+      }
+    }
+
+    async function startTour() {
+      tourState.active = true;
+      tourState.idx = 0;
+      // Explicitly show the spotlight. CSS default is `display:none` so the
+      // 9999px box-shadow doesn't darken the page before/after a tour runs.
+      document.getElementById('tourSpotlight').style.display = 'block';
+      await ensurePanelForTour();
+      renderTourStep();
+    }
+
+    function nextTourStep() {
+      if (tourState.idx >= TOUR_STEPS.length - 1) { endTour(); return; }
+      tourState.idx += 1;
+      renderTourStep();
+    }
+
+    function prevTourStep() {
+      if (tourState.idx <= 0) return;
+      tourState.idx -= 1;
+      renderTourStep();
+    }
+
+    function endTour() {
+      tourState.active = false;
+      document.getElementById('tourBackdrop').classList.remove('active');
+      document.getElementById('tourTooltip').style.display = 'none';
+      // CRITICAL: hide the spotlight element too. Its 9999px box-shadow
+      // creates the dark overlay effect independently of the backdrop, so
+      // leaving display:block here means the dashboard looks "stuck in tour"
+      // even after the tooltip is gone.
+      const spotlight = document.getElementById('tourSpotlight');
+      spotlight.style.display = 'none';
+      spotlight.classList.remove('centered');
+      const tooltip = document.getElementById('tourTooltip');
+      tooltip.classList.remove('centered');
+      tooltip.style.top = '';
+      tooltip.style.left = '';
+      try { localStorage.setItem('termdeck:tour:seen', '1'); } catch {}
+    }
+
+    // ===== Event Listeners =====
+    document.querySelectorAll('.layout-btn').forEach(btn => {
+      btn.addEventListener('click', () => setLayout(btn.dataset.layout));
+    });
+
+    document.getElementById('promptLaunch').addEventListener('click', launchTerminal);
+    document.getElementById('promptInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') launchTerminal();
+    });
+
+    // Add-project modal wiring
+    document.getElementById('btnAddProject').addEventListener('click', openAddProjectModal);
+    document.getElementById('apmCancel').addEventListener('click', closeAddProjectModal);
+    document.getElementById('apmSave').addEventListener('click', submitAddProject);
+    document.querySelector('#addProjectModal .add-project-backdrop').addEventListener('click', closeAddProjectModal);
+    // Enter in any input inside the modal submits; Escape closes
+    document.getElementById('addProjectModal').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAddProject(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeAddProjectModal(); }
+    });
+
+    // Onboarding tour wiring
+    document.getElementById('btn-how').addEventListener('click', startTour);
+    document.getElementById('tourNextBtn').addEventListener('click', nextTourStep);
+    document.getElementById('tourPrevBtn').addEventListener('click', prevTourStep);
+    document.getElementById('tourSkipBtn').addEventListener('click', endTour);
+    // Clicking the backdrop (but not the spotlight/tooltip) also skips
+    document.getElementById('tourBackdrop').addEventListener('click', (e) => {
+      if (e.target.id === 'tourBackdrop') endTour();
+    });
+
+    // Resize handler
+    window.addEventListener('resize', () => {
+      requestAnimationFrame(() => fitAll());
+    });
+
+    // Re-render the tour on viewport changes so the spotlight tracks resizes
+    window.addEventListener('resize', () => {
+      if (tourState.active) renderTourStep();
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      // Tour has priority: Esc exits, ArrowRight/Enter advances, ArrowLeft back
+      if (tourState.active) {
+        if (e.key === 'Escape') { e.preventDefault(); endTour(); return; }
+        if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); nextTourStep(); return; }
+        if (e.key === 'ArrowLeft') { e.preventDefault(); prevTourStep(); return; }
+      }
+      // Ctrl+Shift+N → new terminal
+      if (e.ctrlKey && e.shiftKey && e.key === 'N') {
+        e.preventDefault();
+        document.getElementById('promptInput').focus();
+      }
+      // "/" → focus prompt bar (first-run hint, ignored when typing in any input/textarea)
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const target = e.target;
+        const tag = target?.tagName || '';
+        const inEditable = tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable;
+        if (!inEditable) {
+          e.preventDefault();
+          document.getElementById('promptInput').focus();
+        }
+      }
+      // Ctrl+Shift+1-6 OR Cmd+Shift+1-6 → layout switch (Mac friendly)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '1' && e.key <= '6') {
+        e.preventDefault();
+        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2'];
+        setLayout(layouts[parseInt(e.key) - 1]);
+      }
+      // Ctrl+Shift+] / [ → cycle between terminals
+      if (e.ctrlKey && e.shiftKey && (e.key === ']' || e.key === '[')) {
+        e.preventDefault();
+        const ids = Array.from(state.sessions.keys());
+        if (ids.length > 0) {
+          const curIdx = ids.indexOf(state.focusedId);
+          const next = e.key === ']'
+            ? (curIdx + 1) % ids.length
+            : (curIdx - 1 + ids.length) % ids.length;
+          const entry = state.sessions.get(ids[next]);
+          if (entry) {
+            entry.terminal.focus();
+            state.focusedId = ids[next];
+          }
+        }
+      }
+      // Escape → exit focus mode
+      if (e.key === 'Escape') {
+        const grid = document.getElementById('termGrid');
+        if (grid.classList.contains('layout-focus') || grid.classList.contains('layout-half')) {
+          setLayout(state.layout);
+          document.querySelectorAll('.term-panel').forEach(p => {
+            p.classList.remove('focused', 'primary');
+            p.style.display = '';
+          });
+          fitAll();
+        }
+      }
+    });
+
+    // Control feed click (T1.6) — delegated at the feed container
+    document.getElementById('feedRows').addEventListener('click', onFeedRowClick);
+
+    // Live refresh while in control mode
+    setInterval(() => {
+      const grid = document.getElementById('termGrid');
+      if (grid && grid.classList.contains('layout-control')) {
+        renderControlFeed();
+      }
+    }, 2000);
+
+    // Alt+1..9 → focus panel N, Alt+0 → cycle focus (T1.2)
+    // Use capture-phase so xterm.js never sees the key as a Meta sequence.
+    // Match on e.code, not e.key: on macOS, Option+1 produces "¡", not "1".
+    document.addEventListener('keydown', (e) => {
+      if (!e.altKey) return;
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.code && e.code.startsWith('Digit')) {
+        const n = parseInt(e.code.slice(5), 10);
+        if (n >= 1 && n <= 9) {
+          e.preventDefault();
+          e.stopPropagation();
+          focusNthSession(n);
+        } else if (n === 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          cycleSessionFocus();
+        }
+      }
+    }, { capture: true });
+
+    // External-session auto-discover disabled. The poller raced with the
+    // immediate createTerminalPanel call in launchTerminal and caused
+    // duplicate WebSocket connections per session, which broke terminal
+    // input rendering (session.ws on the server got overwritten by the
+    // second connect and term.onData output stopped reaching the visible
+    // panel). Parked for Sprint 3 — needs an idempotent creation path
+    // AND a way to suppress the race window during POST → createPanel.
+
+    // Refresh "opened X ago" timestamps every 30s
+    setInterval(() => {
+      for (const [id, entry] of state.sessions) {
+        const metaOpened = document.querySelector(`#panel-${id} .panel-meta .meta-item:first-child`);
+        if (metaOpened && entry.session?.meta?.createdAt) {
+          metaOpened.innerHTML = `<span class="meta-label">opened</span> ${timeAgo(entry.session.meta.createdAt)}`;
+        }
+      }
+    }, 30000);
+
+    // Boot
+    init();
