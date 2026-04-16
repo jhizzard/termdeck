@@ -10,9 +10,9 @@
 
 | Package | Name | npm | GitHub |
 |---|---|---|---|
-| Browser terminal multiplexer with proactive memory recall | **TermDeck** | `@jhizzard/termdeck@0.2.2` | `github.com/jhizzard/termdeck` |
+| Browser terminal multiplexer with proactive memory recall | **TermDeck** | `@jhizzard/termdeck@0.3.2` | `github.com/jhizzard/termdeck` |
 | Persistent developer memory MCP server | **Mnestra** | `@jhizzard/mnestra@0.2.0` | `github.com/jhizzard/mnestra` |
-| Async learning layer | **Rumen** | `@jhizzard/rumen@0.2.2` | `github.com/jhizzard/rumen` |
+| Async learning layer | **Rumen** | `@jhizzard/rumen@0.4.1` | `github.com/jhizzard/rumen` |
 
 Feature name inside TermDeck: **Flashback** — the proactive memory recall that fires when a panel enters an error state.
 
