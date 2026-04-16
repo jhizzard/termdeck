@@ -1,50 +1,25 @@
-# Show HN launch post — TermDeck
+# Show HN draft — TermDeck v0.3 (Sprint 5 T4)
 
-**Target:** Hacker News Show HN
-**Posting window:** Tuesday or Wednesday, 8:00am PT
-**Title (≤80 chars, no emoji, no "Show HN" prefix in this file — HN adds it):**
+Supersedes the earlier Sprint 3 draft at the same path. Written after the 2026-04-15 19:47 UTC Rumen kickstart.
 
-> TermDeck — the terminal that remembers what you fixed last month
+## Title
 
-**Body (339 words):**
+Show HN: TermDeck – a terminal that remembers what you fixed last month
 
----
+<!-- 71 / 80 chars, starts with "Show HN: ", no emoji -->
 
-I spent a Tuesday last month re-debugging a CORS misconfiguration I had already fixed three months earlier on a different project. The fix was buried in a git commit message somewhere. I didn't remember I had the fix. That is the whole problem.
+## Body
 
-TermDeck is a browser-based terminal multiplexer with a persistent memory layer and a proactive recall feature called Flashback. When a panel's status transitions to errored, the output analyzer queries your memory for similar errors across all your projects and surfaces the top hit as a toast on the panel. You don't ask. You don't type a query. The tool notices that you're stuck and offers the memory for you.
+I built TermDeck because I kept losing hours re-debugging problems I'd already fixed on a different project. It's a browser-based terminal multiplexer (PTY + xterm.js + WebSocket, 7 grid layouts, 8 themes) with a three-tier memory stack underneath: the terminal, Mnestra (a pgvector memory store with an MCP server), and Rumen (an async learning loop that runs as a Supabase Edge Function on a 15-minute pg_cron schedule, synthesizing insights via Claude Haiku while I'm away).
 
-[Flashback GIF inline — docs/screenshots/flashback-demo.gif]
+The loop closed end-to-end for the first time on 2026-04-15 at 19:47 UTC. The first full Rumen kickstart ran against my ~3,527-item Mnestra store and wrote 111 insights back in one pass (see `docs/launch/LAUNCH-STATUS-2026-04-15.md` §2). Two independent post-sprint audits — Claude Opus 4.6 and Gemini 3.1 Pro — scored the stack at 9.25/10 and 9.5/9.0/8.5 respectively. Quickstart: `npx @jhizzard/termdeck`. Repo: https://github.com/jhizzard/termdeck. npm: https://www.npmjs.com/package/@jhizzard/termdeck.
 
-The stack is three MIT packages that work together or standalone:
+Honest limits: Flashback fires on pattern-matched error strings from the PTY output analyzer — if the analyzer misses your error class, no flashback fires. It's a shortest-path to a memory you already wrote; if the memory isn't there, the feature does nothing. Mnestra currently reaches out to Supabase for storage and OpenAI for embeddings; a fully-local SQLite + local-embedding path is on the roadmap but not shipped in v0.3. Validated against one developer's store. No multi-user data yet.
 
-- **TermDeck** — browser PTY multiplexer. 7 layouts, 8 themes, per-panel metadata, onboarding tour. Real terminals in the browser via `node-pty` + `xterm.js` + WebSockets. https://github.com/jhizzard/termdeck
-- **Mnestra** — persistent developer memory MCP server. pgvector + hybrid search + 3-layer progressive disclosure. Works with Claude Code, Cursor, Windsurf, Cline, and any MCP-compatible client. https://github.com/jhizzard/mnestra
-- **Rumen** — async learning layer. Runs on a 15-minute cron, reads the memory store, synthesizes insights via Haiku, writes them back. https://github.com/jhizzard/rumen
+<!-- body target: 500–1500 chars. Count at publish time; trim para 2 first if over. -->
 
-Install takes one command:
+## First comment
 
-```
-npx @jhizzard/termdeck
-```
+Author here. What I'd most like feedback on is Rumen's Extract → Relate → Synthesize → Surface loop. Today Relate is keyword-only (`memory_hybrid_search` called with `NULL::vector`, `semantic_weight: 0.0`); real vector embeddings land in Sprint 5 tonight alongside this launch. I'm specifically curious about: (1) is 15 minutes the right pg_cron cadence, or should it be event-driven off session close? (2) Haiku-first with an escalate-on-similarity rule and a soft cap of 100 LLM calls/day/dev — does that cost posture hold up at real usage? (3) Writing synthesized insights back into the same store as first-class memories — is that sound, or will it drift into noise over a year? Code is MIT and all three repos are linked from https://github.com/jhizzard/termdeck.
 
-Node 18+, any modern browser. Tier 1 (local terminals + metadata) is zero-config. Tier 2 (Flashback + Mnestra memory) needs a Supabase project and an OpenAI key — `termdeck init --mnestra` walks you through it. Tier 3 (Rumen async learning) is `termdeck init --rumen` on top.
-
-Honest limits: Flashback fires on pattern-matched error strings. If the analyzer misses your error class, no flashback. Mnestra uses Supabase for storage and OpenAI for embeddings by default (local-only path is on the roadmap, not v0.2). Validated against 3,451 memories in one developer's store — no multi-user data yet. I built this because I was losing real hours to the same errors on different projects and wanted the tool to notice for me. Flashback has caught six real ones in the last week.
-
-Docs: https://termdeck-docs.vercel.app
-GitHub: https://github.com/jhizzard/termdeck
-
-Happy to answer questions.
-
----
-
-## Notes for Josh (not part of the post body)
-
-- **Do not post until:** (a) `docs/screenshots/flashback-demo.gif` is captured + committed to the `main` branch so the GIF embed resolves, (b) T1 has confirmed the v0.2.2 help-button URL works on a fresh `npx` install, (c) at least one pre-launch tester has confirmed the install runs for them end-to-end. All three gates are in Josh's hands — T4 does not control them.
-- **The "six real ones in the last week" number** is lifted from Josh's real Engram store activity during Sprint 2 / Sprint 3. Verify the number still holds when you post — if it drifted lower, change to "several real ones" or quote the precise count from `memory_status_aggregation()`.
-- **CORS Tuesday story** — this is a generic placeholder. If Josh has a specific Tuesday and a specific CORS bug he wants to cite (with the project name + the specific error text), substitute them into the first paragraph. Concrete beats generic on HN. If the real story wasn't CORS, swap to whatever the real story was (Postgres migration FK, Stripe Connect webhook signature, anything real).
-- **Timing:** post at 8:00am PT (Tuesday or Wednesday), watch the thread for the first 4 hours. Reply to every comment within 30 minutes for that window. The comment playbook (`comment-playbook.md`) has pre-drafted answers for the 10 most likely skeptic questions.
-- **First-hour amplification:** post the X thread (`x-thread.md`) 5 minutes after the HN submission, then DM the 5 pre-launch testers so they reply in the first hour with their own testimonial comments.
-
-**Word count:** 339 words in the body (under the 350 target). Under 300 would be tighter, but the stack explanation needs the three names + descriptions to carry the three-tier framing cleanly.
+<!-- first comment target: 300–800 chars -->
