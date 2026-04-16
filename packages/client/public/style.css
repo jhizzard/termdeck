@@ -34,26 +34,41 @@
       flex-direction: column;
     }
 
-    /* ===== TOP BAR ===== */
+    /* ===== TOP BAR (Sprint 9 T1: two-row layout) =====
+       Row 1 = primary (logo, stats, badges, layout buttons) at 42px.
+       Row 2 = controls (quick-launch + chrome buttons) at 32px, dimmer.
+       Total ~74px. No horizontal scroll at 1440px. */
     .topbar {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 0 12px;
-      height: 42px;
+      flex-direction: column;
       background: var(--tg-surface);
       border-bottom: 1px solid var(--tg-border);
       flex-shrink: 0;
-      overflow-x: auto;
-      overflow-y: hidden;
       min-width: 0;
-      scrollbar-width: thin;
-      flex-wrap: nowrap;
     }
 
-    .topbar::-webkit-scrollbar { height: 4px; }
-    .topbar::-webkit-scrollbar-thumb { background: var(--tg-border); border-radius: 2px; }
+    .topbar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px;
+      flex-shrink: 0;
+      min-width: 0;
+    }
+
+    .topbar-row-1 {
+      height: 42px;
+      justify-content: space-between;
+    }
+
+    .topbar-row-2 {
+      height: 32px;
+      background: var(--tg-bg);
+      border-top: 1px solid var(--tg-border);
+      gap: 6px;
+    }
+
+    .topbar-row-2-spacer { flex: 1 1 auto; min-width: 0; }
 
     .topbar-left {
       display: flex;
