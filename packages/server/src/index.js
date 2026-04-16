@@ -10,9 +10,37 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
 // Conditional imports (graceful fallback if not installed yet)
-let pty, Database;
+let pty, Database, pg;
 try { pty = require('@homebridge/node-pty-prebuilt-multiarch'); } catch { pty = null; }
 try { Database = require('better-sqlite3'); } catch { Database = null; }
+try { pg = require('pg'); } catch { pg = null; }
+
+// Module-level singleton Postgres pool for rumen_insights (petvetbid DB).
+// Lazy-initialized on first rumen endpoint hit so startup stays fast and
+// servers without DATABASE_URL never pay the connection cost.
+let _rumenPool = null;
+let _rumenPoolFailed = false;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function getRumenPool() {
+  if (_rumenPool || _rumenPoolFailed) return _rumenPool;
+  if (!pg || !process.env.DATABASE_URL) return null;
+  try {
+    _rumenPool = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 4,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000
+    });
+    _rumenPool.on('error', (err) => {
+      console.warn('[rumen] pg pool error:', err.message);
+    });
+    return _rumenPool;
+  } catch (err) {
+    console.warn('[rumen] failed to create pg pool:', err.message);
+    _rumenPoolFailed = true;
+    return null;
+  }
+}
 
 const { SessionManager } = require('./session');
 const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = require('./database');
@@ -171,9 +199,13 @@ function createServer(config) {
           rag.onStatusChanged(sess, oldStatus, newStatus);
         };
 
-        // Proactive Mnestra queries on error — fire-and-forget, respects rag.enabled
+        // Proactive Mnestra queries on error — fire-and-forget.
+        // Independent of rag.enabled — the push loop (rag.js) and the Flashback
+        // bridge (mnestra-bridge) are separate systems. rag.enabled gates only
+        // the telemetry push loop. Flashback has its own error handling via
+        // the catch below and should fire whenever the Mnestra bridge is
+        // configured, regardless of the push-loop flag.
         session.onErrorDetected = (sess, ctx) => {
-          if (!rag.enabled) return;
           const question = `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
           mnestraBridge.queryMnestra({
             question,
@@ -413,6 +445,146 @@ function createServer(config) {
       unsynced,
       tables: rag.tables
     });
+  });
+
+  // ==================== Rumen insights (Sprint 4 T2) ====================
+  // Read-only access to rumen_insights + rumen_jobs in the petvetbid Postgres
+  // instance. Contract frozen in docs/sprint-4-rumen-integration/API-CONTRACT.md.
+
+  function rumenUnreachable(res) {
+    return res.status(503).json({ error: 'rumen database unreachable' });
+  }
+
+  // GET /api/rumen/insights
+  app.get('/api/rumen/insights', async (req, res) => {
+    const pool = getRumenPool();
+    if (!pool) {
+      return res.json({ insights: [], total: 0, enabled: false });
+    }
+
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit)) limit = 20;
+    limit = Math.max(1, Math.min(100, limit));
+
+    const project = typeof req.query.project === 'string' && req.query.project.trim()
+      ? req.query.project.trim() : null;
+    const since = typeof req.query.since === 'string' && !Number.isNaN(Date.parse(req.query.since))
+      ? new Date(req.query.since).toISOString() : null;
+    const unseen = typeof req.query.unseen === 'string' &&
+      /^(1|true|yes)$/i.test(req.query.unseen);
+
+    const where = [];
+    const params = [];
+    if (project) { params.push(project); where.push(`$${params.length} = ANY(projects)`); }
+    if (since)   { params.push(since);   where.push(`created_at >= $${params.length}`); }
+    if (unseen)  { where.push(`acted_upon = FALSE`); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    try {
+      const countSql = `SELECT COUNT(*)::int AS n FROM rumen_insights ${whereSql}`;
+      const listParams = params.slice();
+      listParams.push(limit);
+      const listSql =
+        `SELECT id, insight_text, confidence, projects, source_memory_ids, created_at, acted_upon
+           FROM rumen_insights
+           ${whereSql}
+           ORDER BY created_at DESC
+           LIMIT $${listParams.length}`;
+
+      const [countRes, listRes] = await Promise.all([
+        pool.query(countSql, params),
+        pool.query(listSql, listParams)
+      ]);
+
+      const insights = listRes.rows.map((r) => ({
+        id: r.id,
+        insight_text: r.insight_text,
+        confidence: r.confidence == null ? 0 : Number(r.confidence),
+        projects: r.projects || [],
+        source_memory_ids: r.source_memory_ids || [],
+        created_at: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+        acted_upon: !!r.acted_upon
+      }));
+
+      res.json({ insights, total: countRes.rows[0]?.n || 0 });
+    } catch (err) {
+      console.warn('[rumen] GET /insights failed:', err.message);
+      return rumenUnreachable(res);
+    }
+  });
+
+  // GET /api/rumen/status
+  app.get('/api/rumen/status', async (req, res) => {
+    const pool = getRumenPool();
+    if (!pool) return res.json({ enabled: false });
+
+    try {
+      const jobSql =
+        `SELECT id, status, completed_at, sessions_processed, insights_generated
+           FROM rumen_jobs
+           ORDER BY started_at DESC
+           LIMIT 1`;
+      const insightSql =
+        `SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE acted_upon = FALSE)::int AS unseen,
+            MAX(created_at) AS latest
+           FROM rumen_insights`;
+
+      const [jobRes, insightRes] = await Promise.all([
+        pool.query(jobSql),
+        pool.query(insightSql)
+      ]);
+
+      const job = jobRes.rows[0] || null;
+      const stat = insightRes.rows[0] || { total: 0, unseen: 0, latest: null };
+
+      res.json({
+        enabled: true,
+        last_job_id: job ? job.id : null,
+        last_job_status: job ? job.status : null,
+        last_job_completed_at: job && job.completed_at
+          ? (job.completed_at instanceof Date ? job.completed_at.toISOString() : job.completed_at)
+          : null,
+        last_job_sessions_processed: job ? (job.sessions_processed || 0) : 0,
+        last_job_insights_generated: job ? (job.insights_generated || 0) : 0,
+        total_insights: stat.total || 0,
+        unseen_insights: stat.unseen || 0,
+        latest_insight_at: stat.latest
+          ? (stat.latest instanceof Date ? stat.latest.toISOString() : stat.latest)
+          : null
+      });
+    } catch (err) {
+      console.warn('[rumen] GET /status failed:', err.message);
+      return rumenUnreachable(res);
+    }
+  });
+
+  // POST /api/rumen/insights/:id/seen
+  app.post('/api/rumen/insights/:id/seen', async (req, res) => {
+    const pool = getRumenPool();
+    if (!pool) return res.status(503).json({ error: 'rumen not configured' });
+
+    const id = req.params.id;
+    if (!UUID_RE.test(id)) {
+      return res.status(400).json({ error: 'invalid insight id' });
+    }
+
+    try {
+      const result = await pool.query(
+        `UPDATE rumen_insights SET acted_upon = TRUE WHERE id = $1
+         RETURNING id, acted_upon`,
+        [id]
+      );
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'insight not found' });
+      }
+      const row = result.rows[0];
+      res.json({ id: row.id, acted_upon: !!row.acted_upon });
+    } catch (err) {
+      console.warn('[rumen] POST /insights/:id/seen failed:', err.message);
+      return rumenUnreachable(res);
+    }
   });
 
   // POST /api/ai/query - query Mnestra memory via the bridge (direct|webhook|mcp)

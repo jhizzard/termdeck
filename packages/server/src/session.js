@@ -51,7 +51,11 @@ const PATTERNS = {
     command: /^[\$#%❯>]\s+(.+)$/m
   },
   // Broad error markers across shells, compilers, scripts, and HTTP servers.
-  error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|\b5\d\d\b)\b/
+  // Includes the literal "No such file or directory" phrase because many Unix
+  // tools (cat, ls, cd, rm, etc.) report filesystem misses in plain English
+  // without ever emitting the ENOENT errno code. Flagged as a gap by Rumen's
+  // first production kickstart insight on 2026-04-15.
+  error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied|\b5\d\d\b)\b/
 };
 
 class Session {
