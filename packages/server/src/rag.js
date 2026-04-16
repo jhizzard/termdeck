@@ -22,6 +22,10 @@ class RAGIntegration {
       commandLog: config.rag?.tables?.commands || 'mnestra_commands'
     };
 
+    // Circuit breaker: track consecutive 404s per table name.
+    // After 3 consecutive 404s, disable pushes to that table until restart.
+    this._circuitBreaker = new Map(); // table -> { count: number, open: boolean }
+
     if (this.enabled) {
       this._startSync();
     }
@@ -95,12 +99,42 @@ class RAGIntegration {
     }, session.meta.project);
   }
 
+  // Circuit breaker check — returns true if pushes to this table are disabled
+  _isCircuitOpen(table) {
+    const state = this._circuitBreaker.get(table);
+    return !!(state && state.open);
+  }
+
+  // Record a 404 for a table; opens the breaker after 3 consecutive hits
+  _record404(table) {
+    let state = this._circuitBreaker.get(table);
+    if (!state) {
+      state = { count: 0, open: false };
+      this._circuitBreaker.set(table, state);
+    }
+    state.count += 1;
+    if (state.count >= 3 && !state.open) {
+      state.open = true;
+      console.error(`[rag] circuit breaker open for ${table} — 3 consecutive 404s, disabling pushes until server restart`);
+    }
+  }
+
+  // Reset the breaker for a table on successful push
+  _resetCircuit(table) {
+    if (this._circuitBreaker.has(table)) {
+      this._circuitBreaker.delete(table);
+    }
+  }
+
   // Push a single event to Supabase
   async _pushEvent(event) {
     if (!this.enabled) return;
 
     const layer = this._determineLayer(event);
     const table = this.tables[layer];
+
+    // Skip if circuit breaker is open for this table
+    if (this._isCircuitOpen(table)) return;
 
     try {
       const response = await fetch(`${this.supabaseUrl}/rest/v1/${table}`, {
@@ -122,8 +156,14 @@ class RAGIntegration {
       });
 
       if (!response.ok) {
+        if (response.status === 404) {
+          this._record404(table);
+        }
         throw new Error(`Supabase responded ${response.status}`);
       }
+
+      // Success — reset any accumulated 404 count for this table
+      this._resetCircuit(table);
     } catch (err) {
       // Will be retried by sync loop
       console.error('[mnestra] Push failed:', err.message);
