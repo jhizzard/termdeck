@@ -127,11 +127,19 @@ Restart Claude Code. Six MCP tools appear: `memory_remember`, `memory_recall`, `
 
 ### Tier 3 — Add Rumen for async learning
 
-Rumen is a separate npm package — `@jhizzard/rumen@0.2.0` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Mnestra: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Mnestra's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
+Rumen is a separate npm package — `@jhizzard/rumen@0.3.6` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Mnestra: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Mnestra's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
 
-Rumen v0.2 is the current shipped version. Setup is still manual — Sprint 3 (next) ships a `termdeck init --rumen` one-liner that automates the deploy. For now, follow [github.com/jhizzard/rumen#readme](https://github.com/jhizzard/rumen) to deploy via the Supabase CLI.
+**Rumen is live.** First full-kickstart run against a production Mnestra store on 2026-04-15 19:47 UTC: **111 sessions processed, 111 insights generated** in one pass. Insights surfaced patterns like "the error detection regex in Flashback misses `No such file or directory` — same class of blind spot as X" and "Practice sessions exist as a separate model but frontend components were built and never wired into the schedule view." The cognitive loop is closed.
 
-**Why you'd want Rumen:** without it, Flashback only surfaces memories that structurally match the current context (same project, similar error). With Rumen, Flashback can surface **cross-project patterns** that Haiku synthesized while you were away — "the CORS fix you applied in Project A probably solves this error in Project B." That's the moat.
+Deploy with **one command**:
+
+```bash
+termdeck init --rumen
+```
+
+The wizard auto-resolves the latest published `@jhizzard/rumen` version from npm at deploy time, applies the self-healing SQL migration, stages the Edge Function with the correct version pin, deploys via the Supabase CLI, sets function secrets, applies the `pg_cron` schedule, and POSTs a manual test invocation. Prerequisites: Supabase CLI, Deno, and a `DATABASE_URL` pointing at a Mnestra-compatible Postgres. Full walkthrough including the five setup gotchas (the hidden IPv4 toggle in the Supabase Connect modal, the literal-string password bug, `DATABASE_URL` only / no `DIRECT_URL`, the macOS-13 + Homebrew + Deno incompatibility, and schema drift handling) is at **[rumen/install.md](https://github.com/jhizzard/rumen/blob/main/install.md)**.
+
+**Why you'd want Rumen:** without it, Flashback only surfaces memories that structurally match the current context (same project, similar error). With Rumen, Flashback surfaces **cross-project patterns** that Haiku synthesized while you were away — "the CORS fix you applied in Project A probably solves this error in Project B." That's the moat.
 
 ---
 
@@ -143,7 +151,7 @@ Honest limits, stated upfront so the skeptic has nothing to chase:
 - **Not a replacement for reading docs.** It's the shortest path to a memory you already wrote. If the memory isn't there, the feature does nothing.
 - **Not fully local by default.** Tier 2+ reaches out to Supabase for storage and OpenAI for embeddings. Tier 1 is fully local. A fully-local Tier 2 (local Postgres + local embeddings) is on the Sprint 3 roadmap.
 - **Not free forever.** Tier 2+ pays OpenAI fractions of a cent per memory for embeddings. Self-hosted embeddings via Ollama are on the roadmap.
-- **Not proven at scale.** v0.2, validated against 3,400+ memories in one developer's production store. No multi-user data yet. Bug reports and issues welcome.
+- **Not proven at scale.** v0.2.5, validated against 3,527 memories in one developer's production store. First full Rumen kickstart on 2026-04-15 processed 111 sessions into 111 insights in one pass. No multi-user data yet. Bug reports and issues welcome.
 
 ---
 
