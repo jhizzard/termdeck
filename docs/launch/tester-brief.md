@@ -2,12 +2,12 @@
 
 For Josh to DM to ~5 developer friends before the Show HN post. Two tester archetypes:
 
-- **David mode** — wants the 2-minute version, will stop at Tier 1 unless hooked. Send the short DM.
-- **Jonathan mode** — wants to install the full stack, has Supabase accounts, enjoys DIY. Send the full DM.
+- **Quick mode** — wants the 2-minute version, will stop at Tier 1 unless hooked. Send the short DM.
+- **Full stack mode** — wants to install the full stack, has Supabase accounts, enjoys DIY. Send the full DM.
 
 ---
 
-## DM Template: Short (David mode)
+## DM Template: Short (Quick mode)
 
 > Hey -- I'm launching an open-source devtool on Hacker News this week. Would you be willing to install it and give me 5 minutes of honest feedback before I post? It's a browser-based terminal multiplexer -- think tmux in the browser, with per-panel metadata, themes, and a memory layer that remembers what you fixed across projects. One command:
 >
@@ -15,7 +15,7 @@ For Josh to DM to ~5 developer friends before the Show HN post. Two tester arche
 >
 > Node 18+ is the only prereq, prebuilt binaries so no C++ toolchain needed. Opens your browser automatically. I'd really appreciate a quick sanity check from someone who isn't me -- especially anything that felt broken or confusing in the first 2 minutes.
 
-## DM Template: Full stack (Jonathan mode)
+## DM Template: Full stack (Full stack mode)
 
 > Hey -- I'm launching an open-source devtool on Hacker News this week and I think this is up your alley. It's a browser terminal multiplexer with a three-tier memory stack underneath: Mnestra (pgvector memory store + MCP server for Claude Code/Cursor) and Rumen (async learning loop via Supabase Edge Function + pg_cron that synthesizes insights from your sessions while you sleep).
 >

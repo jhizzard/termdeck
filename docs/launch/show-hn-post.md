@@ -1,4 +1,4 @@
-# Show HN draft — TermDeck v0.3.1 (Sprint 6 T4)
+# Show HN draft — TermDeck v0.3.2 (Sprint 6 T4)
 
 Supersedes the earlier Sprint 3 draft at the same path. Written after the 2026-04-15 19:47 UTC Rumen kickstart.
 

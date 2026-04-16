@@ -2,9 +2,9 @@
 
 The full stack in four tiers. Each tier is independent — stop wherever you have what you need.
 
-**Quick path (David mode):** Tier 1 takes 2 minutes, zero config. You get a working terminal multiplexer. Stop there if that's all you want. Each subsequent tier adds a heading that says what you gain and what it costs.
+**Quick path (Quick mode):** Tier 1 takes 2 minutes, zero config. You get a working terminal multiplexer. Stop there if that's all you want. Each subsequent tier adds a heading that says what you gain and what it costs.
 
-**Full path (Jonathan mode):** All four tiers take ~30 minutes. You get a closed-loop cognitive system where your terminals remember what you fixed, learn while you sleep, and surface relevant memories when you hit the same error on a different project. Read straight through.
+**Full path (Full stack mode):** All four tiers take ~30 minutes. You get a closed-loop cognitive system where your terminals remember what you fixed, learn while you sleep, and surface relevant memories when you hit the same error on a different project. Read straight through.
 
 ---
 
