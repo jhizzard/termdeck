@@ -18,3 +18,4 @@ src/content/docs/rumen/
 # OS
 .DS_Store
 .vercel
+.env*.local

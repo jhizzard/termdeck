@@ -12,5 +12,8 @@ dist/
 !docs/screenshots/*.gif
 !docs/screenshots/*.mp4
 
+# Supabase local state (project-ref, pooler-url, versions — from `supabase link`)
+supabase/.temp/
+
 # Claude Code workspace state (hooks, plugin settings, skill cache)
 .claude/
