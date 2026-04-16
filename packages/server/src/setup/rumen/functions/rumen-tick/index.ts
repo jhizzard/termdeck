@@ -20,7 +20,12 @@
 // @ts-ignore  Deno std import resolved at runtime.
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 // @ts-ignore  npm specifier resolved at runtime.
-import { runRumenJob, createPoolFromUrl } from 'npm:@jhizzard/rumen@0.1.0';
+// NOTE: `__RUMEN_VERSION__` is a placeholder. `termdeck init --rumen` reads the
+// current published version from the npm registry at deploy time and rewrites
+// this line in a staged copy of the file before running `supabase functions
+// deploy`. This source file on disk MUST keep the placeholder — do not commit
+// a real version number here. See packages/cli/src/init-rumen.js.
+import { runRumenJob, createPoolFromUrl } from 'npm:@jhizzard/rumen@__RUMEN_VERSION__';
 
 // @ts-ignore  Deno global available at runtime.
 declare const Deno: { env: { get: (k: string) => string | undefined } };

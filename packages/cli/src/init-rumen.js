@@ -9,6 +9,9 @@
 //   - `deno` on PATH
 //   - `~/.termdeck/secrets.env` with SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY +
 //     DATABASE_URL + ANTHROPIC_API_KEY populated (run `termdeck init --mnestra` first)
+//   - OPENAI_API_KEY in secrets.env is OPTIONAL: when present, Rumen's Relate
+//     phase uses semantic+keyword hybrid search via OpenAI text-embedding-3-large.
+//     When absent, Rumen falls back to keyword-only matching.
 //
 // Steps:
 //   1. Preflight: which supabase, which deno, read secrets.env
@@ -16,7 +19,7 @@
 //   3. supabase link --project-ref <ref>
 //   4. Apply rumen migration 001 via pg
 //   5. supabase functions deploy rumen-tick --no-verify-jwt
-//   6. supabase secrets set DATABASE_URL=... ANTHROPIC_API_KEY=...
+//   6. supabase secrets set DATABASE_URL=... ANTHROPIC_API_KEY=... [OPENAI_API_KEY=...]
 //   7. Test the function with a manual POST (fetch)
 //   8. Apply pg_cron schedule migration (002) with project ref substituted
 
@@ -33,6 +36,44 @@ const {
   migrations,
   pgRunner
 } = require(SETUP_DIR);
+
+// Pinned fallback used only when the npm registry is unreachable. Bump this
+// when you republish @jhizzard/rumen and can't (or won't) rely on `npm view`
+// at deploy time. The wizard prefers the live registry answer — this value
+// exists so a fully offline machine can still ship a working Edge Function.
+const FALLBACK_RUMEN_VERSION = '0.3.4';
+
+// Resolve the current published version of @jhizzard/rumen. Source of truth
+// is the npm registry (because the Edge Function runtime pulls from there,
+// not from local node_modules). On network failure we fall back to
+// FALLBACK_RUMEN_VERSION and tell the user what happened — we don't silently
+// deploy a bogus version.
+function resolveRumenVersion() {
+  const r = spawnSync('npm', ['view', '@jhizzard/rumen', 'version'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 15000
+  });
+  if (r.status === 0) {
+    const version = (r.stdout || '').trim();
+    if (/^\d+\.\d+\.\d+/.test(version)) {
+      return { version, source: 'npm registry' };
+    }
+    return {
+      version: FALLBACK_RUMEN_VERSION,
+      source: 'pinned fallback',
+      warning: `npm view returned unexpected output: ${JSON.stringify(version)}`
+    };
+  }
+  const stderr = (r.stderr || '').trim();
+  return {
+    version: FALLBACK_RUMEN_VERSION,
+    source: 'pinned fallback',
+    warning: stderr
+      ? `npm view failed: ${stderr.split('\n').pop()}`
+      : `npm view failed (exit ${r.status === null ? 'timeout' : r.status}) — offline?`
+  };
+}
 
 const HELP = [
   '',
@@ -125,6 +166,18 @@ function preflight() {
   }
   ok();
 
+  // OPENAI_API_KEY is optional: when present, Rumen's Relate phase generates
+  // real embeddings for semantic+keyword hybrid search. When absent, Rumen
+  // falls back to keyword-only matching (still works, but loses cross-project
+  // conceptual retrieval).
+  if (!secrets.OPENAI_API_KEY) {
+    process.stderr.write(
+      '\n⚠  OPENAI_API_KEY is not set in ~/.termdeck/secrets.env.\n' +
+      '   Rumen will run in keyword-only mode — for full cross-project conceptual\n' +
+      '   retrieval, add OPENAI_API_KEY to secrets.env and re-run `termdeck init --rumen`.\n\n'
+    );
+  }
+
   return { supabaseBin: sb, denoBin: deno, secrets };
 }
 
@@ -196,7 +249,7 @@ async function applyRumenTables(secrets, dryRun) {
   }
 }
 
-function deployFunction(dryRun) {
+function deployFunction(rumenVersion, dryRun) {
   step('Running: supabase functions deploy rumen-tick --no-verify-jwt...');
   if (dryRun) { ok('(dry-run)'); return true; }
 
@@ -204,7 +257,7 @@ function deployFunction(dryRun) {
   // `supabase/functions/rumen-tick/`. The TermDeck install does NOT include
   // a `supabase/` directory at the project root, so we stage a tiny working
   // directory under `os.tmpdir()` that mirrors what the CLI expects.
-  const stage = stageRumenFunction();
+  const stage = stageRumenFunction(rumenVersion);
   if (!stage) {
     fail('could not stage rumen-tick function source');
     return false;
@@ -222,7 +275,10 @@ function deployFunction(dryRun) {
 //   <stage>/supabase/functions/rumen-tick/{index.ts, tsconfig.json}
 // Also write a minimal `supabase/config.toml` so `supabase functions deploy`
 // doesn't complain about a missing project root.
-function stageRumenFunction() {
+function stageRumenFunction(rumenVersion) {
+  if (!rumenVersion || !/^\d+\.\d+\.\d+/.test(rumenVersion)) {
+    throw new Error(`stageRumenFunction: invalid rumenVersion ${JSON.stringify(rumenVersion)}`);
+  }
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-rumen-stage-'));
   const functionSrc = migrations.rumenFunctionDir();
   if (!fs.existsSync(functionSrc)) return null;
@@ -230,7 +286,22 @@ function stageRumenFunction() {
   const dest = path.join(stage, 'supabase', 'functions', 'rumen-tick');
   fs.mkdirSync(dest, { recursive: true });
   for (const f of fs.readdirSync(functionSrc)) {
-    fs.copyFileSync(path.join(functionSrc, f), path.join(dest, f));
+    const srcPath = path.join(functionSrc, f);
+    const destPath = path.join(dest, f);
+    // Substitute the version placeholder in the Deno entry point. Other files
+    // in the directory (tsconfig.json, etc.) are copied verbatim.
+    if (f === 'index.ts') {
+      const raw = fs.readFileSync(srcPath, 'utf-8');
+      if (!raw.includes('__RUMEN_VERSION__')) {
+        throw new Error(
+          `rumen-tick/index.ts is missing the __RUMEN_VERSION__ placeholder — ` +
+          `has someone reintroduced a hardcoded version?`
+        );
+      }
+      fs.writeFileSync(destPath, raw.replace(/__RUMEN_VERSION__/g, rumenVersion));
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
   }
 
   const configToml = `# staged by termdeck init --rumen
@@ -245,19 +316,27 @@ verify_jwt = false
 }
 
 function setFunctionSecrets(secrets, dryRun) {
-  step('Setting function secrets (DATABASE_URL, ANTHROPIC_API_KEY)...');
+  const haveOpenAI = Boolean(secrets.OPENAI_API_KEY);
+  const label = haveOpenAI
+    ? 'DATABASE_URL, ANTHROPIC_API_KEY, OPENAI_API_KEY'
+    : 'DATABASE_URL, ANTHROPIC_API_KEY';
+  step(`Setting function secrets (${label})...`);
   if (dryRun) { ok('(dry-run)'); return true; }
-  const r = runShellCaptured('supabase', [
+  const args = [
     'secrets', 'set',
     `DATABASE_URL=${secrets.DATABASE_URL}`,
     `ANTHROPIC_API_KEY=${secrets.ANTHROPIC_API_KEY}`
-  ]);
+  ];
+  if (haveOpenAI) {
+    args.push(`OPENAI_API_KEY=${secrets.OPENAI_API_KEY}`);
+  }
+  const r = runShellCaptured('supabase', args);
   if (!r.ok) {
     fail(`secrets set failed (exit ${r.code})`);
     if (r.stderr) process.stderr.write(r.stderr + '\n');
     return false;
   }
-  ok();
+  ok(haveOpenAI ? '(hybrid mode)' : '(keyword-only mode — OPENAI_API_KEY not set)');
   return true;
 }
 
@@ -400,7 +479,17 @@ async function main(argv) {
 
   if (!(await link(projectRef, flags.dryRun))) return 4;
   if (!(await applyRumenTables(secrets, flags.dryRun))) return 5;
-  if (!deployFunction(flags.dryRun)) return 6;
+
+  step('Resolving @jhizzard/rumen version from npm registry...');
+  const resolved = resolveRumenVersion();
+  ok();
+  process.stdout.write(`→ Using rumen version: ${resolved.version} (from ${resolved.source})\n`);
+  if (resolved.warning) {
+    process.stderr.write(`  ! ${resolved.warning}\n`);
+    process.stderr.write(`  ! falling back to pinned FALLBACK_RUMEN_VERSION=${FALLBACK_RUMEN_VERSION}\n`);
+  }
+
+  if (!deployFunction(resolved.version, flags.dryRun)) return 6;
   if (!setFunctionSecrets(secrets, flags.dryRun)) return 7;
   if (!(await testFunction(projectRef, secrets, flags.dryRun))) return 8;
   if (!flags.skipSchedule) {
