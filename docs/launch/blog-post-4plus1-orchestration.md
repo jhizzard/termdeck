@@ -61,6 +61,21 @@ Then I remembered the feature I had shipped in Sprint 1.
 
 I grabbed the four session UUIDs from `GET /api/sessions`, wrote four different prompts tailored to each terminal's current state (T1 got a Flashback GIF capture unblock; T2 got a "your work was already committed, stand down" close-out; T3 got a "you are done" close-out; T4 got a "continue with launch copy using Mnestra" directive), and POSTed each prompt to the corresponding session's `/input` endpoint from a shell script. The server wrote the bytes into each PTY. Each Claude Code panel saw the bytes arrive as if someone had typed them, and dropped them into its input buffer waiting for Enter.
 
+The injection itself is two curl calls. List the sessions, then POST text at the target's PTY:
+
+```bash
+# 1. Find the session UUIDs
+curl -s http://localhost:3030/api/sessions \
+  | jq -r '.[] | "\(.id)  \(.meta.title)"'
+
+# 2. Inject a prompt into one panel's PTY (repeat per terminal)
+curl -s -X POST http://localhost:3030/api/sessions/$SESSION_ID/input \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"continue with launch copy using Mnestra\n","source":"ai","fromSessionId":"orchestrator"}'
+```
+
+`source: "ai"` tags the write for the output analyzer and the reply counter; `fromSessionId` is free-form and shows up in transcripts so you can audit who-wrote-what later. The server CRLF-normalizes the payload, rate-limits at 10 writes/sec per target, and drops the bytes straight into the PTY. On localhost no auth is needed; if you bind beyond loopback, TermDeck now refuses to start without `auth.token` set (Sprint 10 guardrail) and the same endpoint accepts `Authorization: Bearer $TOKEN`.
+
 Four panels, four different assignments, one shell command, zero switching. I pressed Enter on each of the four panels in sequence and watched them start executing their assigned work.
 
 Josh's response, verbatim:
@@ -75,6 +90,30 @@ The ecosystem is becoming intelligent in the sense that LLMs keep getting faster
 
 That is the thing I watched happen at 2am. The memory system surfaced its own rename, the reply button became an agent bus, and the product started orchestrating itself before I had finished naming it. I did not plan either of those moments. They were already in the shape of the system.
 
+## Sprints 6-10: stress-testing the pattern
+
+The 2am rename was one night. The question I had the next morning was whether the 4+1 split held up when the work wasn't an emergency. So I ran it again, deliberately, across five more sprints in a single evening.
+
+Sprints 6 through 10 shipped in roughly 105 minutes of active orchestration, 31 commits, 3,500+ lines of diff, five npm releases (`v0.3.1` through `v0.3.5`), and one passing CI build at the end. Each sprint used the same shape: a planning commit that defined T1-T4 file ownership, four worker panels injected via the curl pattern above, and the orchestrator resolving cross-cutting work.
+
+The five sprints touched very different layers of the stack, which is the part I wanted to test:
+
+- **Sprint 6 — reliability.** Preflight `/healthz` check with six parallel probes, a session transcript writer so a PTY crash doesn't lose your scrollback, and a health badge in the top bar.
+- **Sprint 7 — docs hygiene.** `CHANGELOG.md` reconciled through v0.3.2, `NAMING-DECISIONS.md` updated, `CLAUDE.md` refreshed to match shipped reality, a contradictions register (eight entries), and a CI docs-lint job that fails on stale version strings.
+- **Sprint 8 — contract tests.** Transcript API (`recent`/`search`/`replay`), health endpoint, and Rumen insights shape-tested. Plus a toolbar overflow fix and a 30-second TTL on the Rumen pool connector.
+- **Sprint 9 — toolbar redesign + security.** Two-row toolbar (no more horizontal scrollbar), status and config buttons wired, optional token auth (Bearer / cookie / query), a `SECURITY.md` threat model, and a `DEPLOYMENT.md` checklist.
+- **Sprint 10 — reliability proof.** Refuse `0.0.0.0` bind without `auth.token`, a Flashback end-to-end test (error → analyzer → mnestra-bridge query), five failure-injection scenarios (Mnestra down, bad DB creds, PTY crash, rapid churn, health under failure), and a `verify-release.sh` pre-publish script.
+
+Three things fell out of that run that I didn't expect.
+
+First, the sprint cadence converged on about 15-20 minutes of wall-clock per sprint, not because I was rushing but because that is how long four disjoint scoped tasks actually take when nobody is waiting on anyone else. The orchestrator's job between sprints — writing the next planning doc, picking the file-ownership split, queueing the next injection — was the rate limit, not the workers.
+
+Second, the kinds of work that went through cleanly was broader than I expected: reliability hardening, security work, docs hygiene, contract tests, and UI redesign all parallelized fine once the file boundaries were drawn. Docs work in particular (Sprint 7) is the kind of task that would normally bottleneck on one person — and it didn't, because `CHANGELOG.md`, `CLAUDE.md`, `NAMING-DECISIONS.md`, and the contradictions register are disjoint files by construction.
+
+Third, the injection command stopped being a novelty. By Sprint 8 I had a two-line shell snippet that took the four session UUIDs and POSTed the current sprint's T1/T2/T3/T4 prompts into the four panels, and pressing Enter four times to launch the sprint became as mechanical as `git push`. The thing that had felt recursive and surprising at 2am on night one was load-bearing infrastructure by the next evening.
+
+The pattern isn't theoretical anymore. It has been through reliability work, security work, docs work, tests, and UI polish, and it shipped a minor version at the end of every single run.
+
 ## Why this pattern matters
 
 I don't think the 4+1 split is clever. It is the obvious shape of parallel work once you accept two constraints: agents can't read each other's minds, and disjoint file scopes are the only coordination surface that doesn't require either a merge strategy or a lock server.
@@ -82,6 +121,11 @@ I don't think the 4+1 split is clever. It is the obvious shape of parallel work 
 What I do think is that this pattern — or something close to it — will be the default for anyone building seriously with Claude Code in 2026. Multi-agent workflows keep failing on coordination overhead. The 4+1 pattern eliminates almost all of it by pushing the coordination into the planning document upfront and the file-ownership exclusivity at runtime. Review happens at the end, once, by a human reading scoped diffs.
 
 The other thing worth saying out loud: the tool using itself is not a gimmick. It is the test. A memory system that cannot surface its own development crisis is probably not going to surface yours either. Mine did, even when the client was still calling itself the wrong name.
+
+Further reading:
+
+- [`docs/ORCHESTRATION.md`](../ORCHESTRATION.md) — the 4+1 pattern written up as a reproducible guide: planning-doc template, file-ownership rules, injection command, STATUS.md glyph protocol.
+- [`docs/BENCHMARKS.md`](../BENCHMARKS.md) — the Sprint 6-10 numbers laid out in detail: per-sprint wall-clock, commits, lines shipped, and how 4+1 compares to a one-agent serial baseline.
 
 Install:
 
