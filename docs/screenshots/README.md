@@ -1,23 +1,50 @@
 # TermDeck launch screenshots
 
-Sprint 3 T1.3 reference stills + the hero Flashback-demo GIF procedure.
+Catalog of visual assets used in launch collateral (README hero, blog posts,
+Show HN, X thread). Last audited 2026-04-16 (Sprint 12 T2).
 
-## What's here
+## Current catalog
 
-| File | Size | What it is | Who captured | Use in launch |
+| File | Size | Captured | What it shows | Where it's used |
 |---|---:|---|---|---|
-| `dashboard-4panel.png` | 175 KB | 2x2 layout, four populated panels (termdeck/engram/rumen/portfolio — pre-rename, see "Rename context" below), commands visible in each | Playwright via headless chromium on :3001 (Sprint 3 T1, 2026-04-14) | README hero fallback if GIF can't embed; Show HN post body; blog post 1 architecture section |
-| `drawer-open.png` | 372 KB | Same 2x2 layout, first panel's Commands drawer expanded showing `ls` + `git status` + `git log` history with click-to-copy chips | Playwright, Sprint 3 T1 | Blog post 1 "what it looks like" section; X thread tweet 3 (drawer feature) |
-| `switcher.png` | 107 KB | Topbar slice — TermDeck brand + status counts + layout buttons + in-bar terminal switcher tiles (Alt+1..9) + launch buttons + help button | Playwright, Sprint 3 T1 | Blog post 1 tour; tweet 4 (switcher feature) |
-| `flashback-demo.gif` | **NOT YET CAPTURED** | 10–14 s screencast of the Flashback hero moment | Josh (manual, QuickTime + ffmpeg) | README hero image; Show HN hero; blog post 1 lede; X thread tweet 1 |
+| `flashback-demo.gif` | 2.0 MB | 2026-04-16 | ~11 s walkthrough of the Flashback flow — trigger command fires, toast fades in, click, Memory drawer expands. Post-rename (Mnestra-branded toast). | `README.md` hero; `docs/launch/devto-draft.md` cover; `docs/launch/blog-post-termdeck.md` inline; `docs/launch/x-thread.md` tweet 1 |
+| `dashboard-4panel.png` | 175 KB | 2026-04-14 (Sprint 3 T1, Playwright on :3001) | 2x2 layout, four populated panels (termdeck / engram / rumen / portfolio — panel tags are **pre-rename**, see "Rename context"), commands visible in each | `docs/launch/blog-post-termdeck.md` hero; README hero fallback; Show HN post body |
+| `dashboard-post-rename.png` | 173 KB | 2026-04-15 (Sprint 3 T1.4 re-smoke, Playwright :3001 + DOM injection) | Same 2x2 layout, **post-rename** — Mnestra toast visible in bottom-center | Scaffolding / reviewer-facing proof. Not currently embedded in launch collateral. |
+| `drawer-open.png` | 372 KB | 2026-04-14 (Sprint 3 T1, Playwright :3001) | Same 2x2 layout, first panel's Commands drawer expanded showing `ls` + `git status` + `git log` with click-to-copy chips | `docs/launch/blog-post-termdeck.md` inline; X thread tweet 3 |
+| `switcher.png` | 107 KB | 2026-04-14 (Sprint 3 T1, Playwright :3001) | Topbar slice — TermDeck brand + status counts + layout buttons + in-bar terminal switcher tiles (Alt+1..9) + launch buttons + help button | `docs/launch/blog-post-termdeck.md` inline; X thread tweet 4 |
+| `flashback-toast-mnestra.png` | 48 KB | 2026-04-15 (Sprint 3 T1.4, Playwright :3001 + DOM injection) | Close-up of the `MNESTRA — POSSIBLE MATCH` toast with a real production hit ("Rumen Edge Function deploy blocked on stale SUPABASE_ACCESS_TOKEN…" — meta-moment, the toast surfaced T1.2's own blocker memo) | Verification artifact in `docs/tier2-verification.md`. Available as a Show HN post lede alternative. |
+| `flashback-demo-pre-sprint5.gif` | 2.8 MB | 2026-04-15 | Archival: the original Sprint 3 T1.4 Playwright-recorded GIF before Sprint 5's UI polish landed. **Untracked** in git. Kept on disk as a rollback reference. | None (archival only) |
 
-## Why the three stills are Playwright-captured (not manual)
+## Status summary
 
-Terminal 1 has no screen access — it's running inside Josh's live TermDeck (PID 32489 on :3000). A headless chromium launched via Playwright against a second TermDeck on :3001 is the only way T1 could produce reference stills without human hands. Josh can always replace any of these with a hand-captured screenshot if the fidelity isn't right — the Playwright shots are good-enough scaffolding for the launch materials, not finals.
+- All three Sprint 3 stills (`dashboard-4panel.png`, `drawer-open.png`, `switcher.png`) render correctly but are **pre-rename** — panel tags read `engram` instead of `mnestra`. Acceptable for launch copy that focuses on layout / drawer / switcher features (none visually depend on the old name). See "Rename context" below.
+- `flashback-demo.gif` is the post-rename Playwright-recorded functional walkthrough (800×450 @ 8 fps, 11 s). It is **functional-quality, not hero-quality** — no visible mouse cursor, xterm content sparsely rendered inside headless chromium. Replace with a manual QuickTime capture for launch polish (procedure preserved below).
+- No broken image refs inside the repo's live launch collateral resolve cleanly — **except** `flashback-meta-moment.png`, which is referenced but does not exist on disk (see "Known broken references" below).
+- `docs-site/` has no image references that point at `docs/screenshots/` assets. The site's blog post (`docs-site/src/content/docs/blog/termdeck-launch.mdx`) mentions screenshots will be pulled at publish time but does not yet embed any.
 
-## The hero GIF — what's needed
+## Known broken references
 
-This is **the** single most important launch asset. Every launch surface references it. The storyboard is tight (10–14s) and the timing beats matter because the point of the GIF is to sell the moment "I just broke something in my terminal, and TermDeck showed me how I fixed it last time — before I even asked."
+| Reference | Referenced in | Status |
+|---|---|---|
+| `docs/screenshots/flashback-meta-moment.png` | `docs/launch/blog-post-4plus1-orchestration.md:3`, `docs/launch/x-thread-orchestration.md:7` | **Missing.** Josh's 2026-04-15T00:17Z CleanShot capture of the ENGRAM-branded Flashback toast during the Sprint 3 rename crisis. Needed for the "Engram → Mnestra" narrative hook (toast header reads `ENGRAM — POSSIBLE MATCH` pre-rename). If Josh has the file on another device, drop it at this exact path. |
+
+No other broken image links in the repo as of 2026-04-16.
+
+## Historical / aspirational references (not broken, just never captured)
+
+These appear in planning docs (never made it to live launch collateral):
+
+- `docs/screenshots/info-tabs.png` — referenced in `docs/SPRINT_2_FOLLOWUP_PLAN.md`, `docs/SHIP_CHECKLIST_2026-04-15.md`, `docs/PLANNING_DOCUMENT.md`. Never captured. `drawer-open.png` covers the same feature and is what launch copy actually uses.
+
+## Rename context (Engram → Mnestra)
+
+The three reference stills were captured 2026-04-14 against the pre-rename code. Panel tags in those screenshots still read `engram` because that's what was in `~/.termdeck/config.yaml` at capture time. After commit `30d04f2` landed the full rename (`engram-bridge/` → `mnestra-bridge/`, client toast `Mnestra — possible match`, `@jhizzard/mnestra@0.2.0` on npm), `dashboard-post-rename.png` and `flashback-toast-mnestra.png` were added as post-rename counterparts.
+
+For launch copy that doesn't visually depend on the project-tag text, the pre-rename stills are fine. For any surface where the tag text is readable and on-topic (e.g., the blog post lede, the Show HN hero), prefer `dashboard-post-rename.png` or re-capture with an updated config.
+
+## Hero GIF — manual re-capture procedure
+
+The current `flashback-demo.gif` is the Playwright-recorded functional proof. Launch-polish quality requires a manual QuickTime capture. This section is the procedure; every acceptance item in the storyboard still applies.
 
 ### Setup (5 min)
 
@@ -90,36 +117,21 @@ This is **the** single most important launch asset. Every launch surface referen
    - Reduce width from 1280 → 1000
    - Shorten the trim
 
-### Acceptance
+### Acceptance (launch-polish version)
 
-- [ ] `docs/screenshots/flashback-demo.gif` exists
+- [ ] `docs/screenshots/flashback-demo.gif` exists (already satisfied — current file is the functional version)
 - [ ] File is under 4 MB
 - [ ] GIF plays the 10–14 s storyboard without gaps or visible frame drops
 - [ ] Toast text is readable at the target width
 - [ ] Memory drawer content is readable at the target width
+- [ ] Mouse cursor is visible and drifts toward the toast
+- [ ] xterm panel content is fully rendered (not sparse)
 - [ ] No notifications, badges, or other apps are visible in frame
-- [ ] Three stills in `docs/screenshots/` still exist and render correctly
 
 ## Known non-blocking issues flagged by T1.1
 
-These will affect the GIF's look-and-feel but are not blockers for launch:
+These will affect the GIF's look-and-feel but are not launch blockers:
 
 - **End-to-end Flashback latency ~5.5 s** — slower than the 2 s target in the plan. The pause-before-toast will feel longer than ideal. Future perf follow-up: cache question embeddings, pre-emit during the output-buffer-flush pause.
 - **Similarity score is undefined** on `proactive_memory.hit` payloads — the mnestra-bridge's `memory_hybrid_search` RPC is not projecting a similarity column. Score will not appear in the drawer. UI still renders content/project/source_type/created_at fine. Fix belongs in the Mnestra repo, `migrations/002_mnestra_search_function.sql`.
 - **`PATTERNS.error` miss on "No such file or directory"** — flagged above; use a different trigger command.
-
-## Rename context (Engram → Mnestra, via a three-step churn)
-
-The three reference stills were captured on 2026-04-14 against the pre-rename code. Project tags in the panels still read "engram" because that's what was in `~/.termdeck/config.yaml` at the time. After commit `30d04f2` landed the full rename (`engram-bridge/` → `mnestra-bridge/`, client toast `Mnestra — possible match`, `@jhizzard/mnestra@0.2.0` on npm), the fresh-capture options are:
-
-- Josh renames the `engram` project in `~/.termdeck/config.yaml` → `mnestra` (+ rename `/Users/joshuaizzard/Documents/Graciella/engram` → `mnestra` on disk), then re-runs `/tmp/termdeck-t1/playwright-stills.js`
-- OR Josh hand-captures updated stills alongside the hero GIF (same session, since the GIF is manual anyway)
-
-Either approach produces stills with Mnestra-branded project tags and the new Flashback toast header. The three existing PNGs are still good-enough scaffolding for launch copy that mentions the 2x2 layout, the drawer, or the switcher — none of them visually reference the old name in a distracting way.
-
-## Meta-moment screenshot (`flashback-meta-moment.png`) — NEEDED FROM JOSH
-
-The blog post at `docs/launch/blog-post-4plus1-orchestration.md` ("I watched my memory system debug its own rename at 2am") and the X thread at `docs/launch/x-thread-orchestration.md` both reference `docs/screenshots/flashback-meta-moment.png` as their hero image. This is the screenshot Josh captured at 2026-04-15T00:17Z during the Sprint 3 name-dispute crisis, where Flashback surfaced a memory about the team's *own* rename research in response to an error he was typing — and the toast header still read `ENGRAM — POSSIBLE MATCH` because the client-side rename constant hadn't propagated yet.
-
-**T1 cannot produce this file.** It doesn't exist anywhere on disk in the usual locations (`~/Desktop`, `~/Downloads`, `~/Pictures`, the repo). If Josh captured it via CleanShot X, an iOS device, Photos.app, or a clipboard paste, he'll need to export the PNG and drop it at `docs/screenshots/flashback-meta-moment.png` manually. Once that lands, the blog post and X thread render cleanly with the hero image in place.
-- OR Josh hand-captures fresh stills at the same time as the hero GIF
