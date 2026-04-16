@@ -39,11 +39,14 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 16px;
+      padding: 0 12px;
       height: 42px;
       background: var(--tg-surface);
       border-bottom: 1px solid var(--tg-border);
       flex-shrink: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      min-width: 0;
     }
 
     .topbar-left {
@@ -66,7 +69,7 @@
 
     .topbar-stats {
       display: flex;
-      gap: 16px;
+      gap: 10px;
       font-size: 11px;
       color: var(--tg-text-dim);
     }
@@ -104,7 +107,8 @@
     .topbar-right {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 4px;
+      flex-shrink: 0;
     }
 
     .topbar-right button {
@@ -112,7 +116,7 @@
       border: 1px solid var(--tg-border);
       color: var(--tg-text-dim);
       font-size: 11px;
-      padding: 4px 12px;
+      padding: 4px 8px;
       border-radius: var(--tg-radius-sm);
       cursor: pointer;
       font-family: var(--tg-sans);
