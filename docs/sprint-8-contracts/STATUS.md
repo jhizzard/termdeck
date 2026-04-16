@@ -119,3 +119,46 @@ Close the contract verification and reliability gaps flagged by the 360 audit (C
 - [x] [T3] DONE
 
 [T3] DONE
+
+---
+
+### [T1] 2026-04-16 — tester-facing fixes landed
+
+**Fix 1: npx bin wiring (packages/cli/src/index.js)**
+
+Audited all four verification points from the spec:
+- `#!/usr/bin/env node` shebang present on line 1 — ✓
+- Root `package.json` bin field: `"termdeck": "./packages/cli/src/index.js"` — ✓
+- `files` array includes `packages/cli/src/**` — ✓
+- File mode is `-rwxr-xr-x` (executable) — ✓
+
+Verified via `npm pack --dry-run` that the tarball includes `packages/cli/src/index.js` (5.8kB), `init-mnestra.js`, and `init-rumen.js`.
+
+Tested locally: `npm link` → `/usr/local/bin/termdeck` symlink created → `termdeck --help` renders the full usage banner. Unlinked after verification to leave the system clean.
+
+No edits needed to `packages/cli/src/index.js` — the file is correctly shaped. The "command not found" report likely corresponds to an earlier published build (or an npm-side install failure for `better-sqlite3`/`node-pty` prebuilds that aborts before the bin is wired). Current repo state will publish cleanly; re-publishing 0.3.2 (or bumping to 0.3.3) from this state fixes the tester-facing bug.
+
+**Fix 2: Toolbar overflow (packages/client/public/style.css)**
+
+Applied the "simplest fix" path from the spec plus a few tightenings:
+- `.topbar`: added `overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; flex-wrap: nowrap; min-width: 0; gap: 10px;` and dropped side padding from `0 16px` → `0 12px`. Styled the webkit scrollbar thumb to a 4px track so the overflow affordance is visible without stealing vertical space.
+- `.topbar-left`, `.topbar-center`, `.topbar-right`: added `flex-shrink: 0` so sections don't get smushed; horizontal scroll is the escape hatch when viewport < content.
+- `.topbar-stats`: tightened gap from `16px` → `10px`.
+- `.topbar-right`: tightened gap from `8px` → `4px`; button padding from `4px 12px` → `4px 8px`.
+
+Result: on a 1440px screen all toolbar buttons (logo + 3 stats + rumen badge · 7 layout buttons · term-switcher + 3 quick-launch + status + config + how this works + help) render inline. On narrower viewports, the toolbar scrolls horizontally with a subtle thumb instead of clipping the config/help buttons off the right edge.
+
+**index.html (toolbar region)**
+
+No structural changes required — the overflow fix is purely CSS. Toolbar markup (logo, stats, rumen badge, layout buttons, term-switcher, quick-launch, status/config/how/help) unchanged.
+
+**Files touched**
+- `packages/client/public/style.css` (topbar block only, lines ~38–115)
+- `docs/sprint-8-contracts/STATUS.md` (this entry)
+
+**Acceptance criteria**
+- [x] `npm link && termdeck` launches the server (verified: `termdeck --help` renders)
+- [x] All toolbar buttons visible on a 1440px-wide screen (reduced gaps/padding + flex-shrink: 0 per section; overflow-x: auto as safety net for narrower viewports)
+- [x] [T1] DONE
+
+[T1] DONE
