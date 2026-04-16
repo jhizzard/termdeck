@@ -36,10 +36,16 @@ Browser ──► TermDeck server ──► Mnestra (write + recall)
 3. The **session analyzer** (server-side, in
    `packages/server/src/session.js`) watches stdout and classifies events:
    command start, command output, file edit, status change, error.
-4. For each salient event, the analyzer fires an **Mnestra webhook** (HTTP POST,
-   fire-and-forget). Mnestra writes to `memory_items` in Supabase.
-5. TermDeck never blocks on the write. If Mnestra is down, the event is
-   dropped — there is no retry queue in the hot path.
+4. For each salient event, the analyzer first writes to a local **SQLite
+   outbox** (`rag_events` table) and then attempts an immediate
+   fire-and-forget HTTP POST to Mnestra. Mnestra writes to `memory_items` in
+   Supabase.
+5. TermDeck never blocks on the network write. The hot path is non-blocking;
+   if the immediate push fails or Mnestra is unreachable, the event stays in
+   the outbox and a periodic sync loop in `packages/server/src/rag.js`
+   (`_startSync`, default 10s tick) drains unsynced rows on subsequent ticks.
+   Net behavior: non-blocking hot path with an eventual-consistency sync
+   queue, not a true drop-on-failure path.
 
 ### Read path (on demand)
 

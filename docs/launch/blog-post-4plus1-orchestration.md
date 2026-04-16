@@ -31,7 +31,7 @@ The split between the four workers and the one orchestrator is not aesthetic. It
 Sprint 3 was supposed to ship the Flashback launch assets. The four-terminal split:
 
 - **T1** — live ops on my actual machine: verify Engram/Mnestra Tier 2 end-to-end, deploy Rumen as a Supabase Edge Function, capture the launch GIF.
-- **T2** — `termdeck init --engram` and `termdeck init --rumen` setup wizards in the server and CLI packages.
+- **T2** — `termdeck init --mnestra` and `termdeck init --rumen` setup wizards in the server and CLI packages.
 - **T3** — deploy the Astro Starlight docs site to Vercel at https://termdeck-docs.vercel.app and wire the in-app help button to it.
 - **T4** — launch copy, name-dispute research, project cards on joshuaizzard.com.
 
