@@ -28,6 +28,7 @@ class TranscriptWriter {
     this._databaseUrl = databaseUrl;
     this._batchSize = options.batchSize || 50;
     this._flushIntervalMs = options.flushIntervalMs || 2000;
+    this._maxBufferSize = options.maxBufferSize || 10000;
     this._enabled = options.enabled !== false;
 
     // Per-session monotonic chunk counters
@@ -90,6 +91,11 @@ class TranscriptWriter {
     // Monotonic chunk index per session
     const idx = this._counters.get(sessionId) || 0;
     this._counters.set(sessionId, idx + 1);
+
+    // Cap buffer to prevent unbounded growth during sustained DB failures
+    if (this._buffer.length >= this._maxBufferSize) {
+      this._buffer.splice(0, this._buffer.length - this._maxBufferSize + 1);
+    }
 
     this._buffer.push({
       sessionId,

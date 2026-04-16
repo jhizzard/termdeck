@@ -2403,29 +2403,43 @@
       document.getElementById('healthBadgeLabel').textContent = 'Health: offline';
     }
 
+    // Tier 2/3 checks only shown when the user has configured those tiers.
+    // Without DATABASE_URL, mnestra/rumen/database checks are irrelevant noise.
+    const TIER1_CHECKS = new Set(['project_paths', 'shell_sanity']);
+    const TIER23_CHECKS = new Set(['mnestra_reachable', 'mnestra_has_memories', 'rumen_recent', 'database_url']);
+
+    function filterChecksByTier(checks) {
+      const hasDb = checks.some(c => c.name === 'database_url' && c.passed);
+      if (hasDb) return checks; // full stack configured — show everything
+      // No DATABASE_URL: only show Tier 1 checks
+      return checks.filter(c => TIER1_CHECKS.has(c.name));
+    }
+
     function renderHealthBadge(data) {
       const badge = document.getElementById('healthBadge');
       if (!badge) return;
       badge.style.display = '';
 
-      const checks = data.checks || [];
+      const allChecks = data.checks || [];
+      const checks = filterChecksByTier(allChecks);
       const total = checks.length;
-      const passed = checks.filter(c => c.ok).length;
+      const passed = checks.filter(c => c.passed).length;
       const allOk = passed === total && total > 0;
+      const tierLabel = total < allChecks.length ? 'Tier 1' : 'Stack';
 
       if (allOk) {
         badge.className = 'health-badge hb-green';
-        document.getElementById('healthBadgeLabel').textContent = 'Stack: OK';
+        document.getElementById('healthBadgeLabel').textContent = `${tierLabel}: OK`;
       } else if (total === 0) {
         badge.className = 'health-badge hb-amber';
         document.getElementById('healthBadgeLabel').textContent = 'Stack: ?';
       } else {
         badge.className = 'health-badge hb-red';
-        document.getElementById('healthBadgeLabel').textContent = `Stack: ${passed}/${total}`;
+        document.getElementById('healthBadgeLabel').textContent = `${tierLabel}: ${passed}/${total}`;
       }
 
-      // Update dropdown content
-      renderHealthDropdown(data);
+      // Update dropdown content — pass filtered checks
+      renderHealthDropdown({ ...data, checks });
     }
 
     function renderHealthDropdown(data) {
@@ -2439,16 +2453,16 @@
 
       let html = '';
       for (const check of checks) {
-        const icon = check.ok ? '✓' : '✗';
-        const cls = check.ok ? 'hd-ok' : 'hd-fail';
+        const icon = check.passed ? '✓' : '✗';
+        const cls = check.passed ? 'hd-ok' : 'hd-fail';
         const name = check.name || 'Unknown';
         const detail = check.detail || '';
-        const remediation = check.ok ? '' : (check.remediation ? `<div class="hd-remediation">${escapeHtml(check.remediation)}</div>` : '');
+        const remediation = check.passed ? '' : (check.remediation ? `<div class="hd-remediation">${escapeHtml(check.remediation)}</div>` : '');
         html += `<div class="hd-check ${cls}">
           <span class="hd-icon">${icon}</span>
           <span class="hd-name">${escapeHtml(name)}</span>
           <span class="hd-dots"></span>
-          <span class="hd-status">${check.ok ? 'OK' : 'FAIL'}</span>
+          <span class="hd-status">${check.passed ? 'OK' : 'FAIL'}</span>
           <span class="hd-detail">${escapeHtml(detail)}</span>
           ${remediation}
         </div>`;
