@@ -66,6 +66,12 @@
       // Rumen insights badge + briefing (no-op when server reports enabled:false)
       setupRumen();
 
+      // Health badge (Sprint 6 T4) — polls /api/health every 30s
+      setupHealthBadge();
+
+      // Transcript recovery UI (Sprint 6 T4) — depends on T3 endpoints
+      setupTranscriptUI();
+
       // First-run onboarding tour. Fires on the first visit only; never again
       // unless the user explicitly clicks "how this works" in the top toolbar.
       try {
@@ -2310,6 +2316,471 @@
         }
       }
     }, 30000);
+
+    // ===== Health Badge (Sprint 6 T4) =====
+    const healthState = {
+      available: false,    // false until first successful /api/health response
+      pollTimer: null,
+      dropdownOpen: false,
+      lastResult: null
+    };
+
+    function setupHealthBadge() {
+      // Inject badge into topbar-stats, after the rumen badge
+      const statsDiv = document.getElementById('globalStats');
+      if (!statsDiv) return;
+
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'health-badge';
+      badge.id = 'healthBadge';
+      badge.title = 'Stack health';
+      badge.setAttribute('aria-haspopup', 'true');
+      badge.innerHTML = `<span class="hb-icon" aria-hidden="true">&#x1F6E1;</span> <span id="healthBadgeLabel">checking…</span>`;
+      badge.style.display = 'none'; // hidden until first successful poll
+      statsDiv.appendChild(badge);
+
+      // Dropdown
+      const dropdown = document.createElement('div');
+      dropdown.className = 'health-dropdown';
+      dropdown.id = 'healthDropdown';
+      dropdown.innerHTML = '<div class="hd-loading">Loading…</div>';
+      document.body.appendChild(dropdown);
+
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleHealthDropdown();
+      });
+      document.addEventListener('click', (e) => {
+        if (healthState.dropdownOpen && !dropdown.contains(e.target) && e.target !== badge) {
+          closeHealthDropdown();
+        }
+      });
+
+      // Initial fetch + poll
+      fetchHealth();
+      healthState.pollTimer = setInterval(fetchHealth, 30000);
+    }
+
+    async function fetchHealth() {
+      try {
+        const res = await fetch(`${API}/api/health`);
+        if (res.status === 404) {
+          // Server doesn't have health endpoint — hide badge entirely
+          hideHealthBadge();
+          return;
+        }
+        if (!res.ok) {
+          showHealthOffline();
+          return;
+        }
+        const data = await res.json();
+        healthState.available = true;
+        healthState.lastResult = data;
+        renderHealthBadge(data);
+      } catch {
+        showHealthOffline();
+      }
+    }
+
+    function hideHealthBadge() {
+      healthState.available = false;
+      const badge = document.getElementById('healthBadge');
+      if (badge) badge.style.display = 'none';
+      if (healthState.pollTimer) {
+        clearInterval(healthState.pollTimer);
+        healthState.pollTimer = null;
+      }
+    }
+
+    function showHealthOffline() {
+      healthState.available = true;
+      healthState.lastResult = null;
+      const badge = document.getElementById('healthBadge');
+      if (!badge) return;
+      badge.style.display = '';
+      badge.className = 'health-badge hb-red';
+      document.getElementById('healthBadgeLabel').textContent = 'Health: offline';
+    }
+
+    function renderHealthBadge(data) {
+      const badge = document.getElementById('healthBadge');
+      if (!badge) return;
+      badge.style.display = '';
+
+      const checks = data.checks || [];
+      const total = checks.length;
+      const passed = checks.filter(c => c.ok).length;
+      const allOk = passed === total && total > 0;
+
+      if (allOk) {
+        badge.className = 'health-badge hb-green';
+        document.getElementById('healthBadgeLabel').textContent = 'Stack: OK';
+      } else if (total === 0) {
+        badge.className = 'health-badge hb-amber';
+        document.getElementById('healthBadgeLabel').textContent = 'Stack: ?';
+      } else {
+        badge.className = 'health-badge hb-red';
+        document.getElementById('healthBadgeLabel').textContent = `Stack: ${passed}/${total}`;
+      }
+
+      // Update dropdown content
+      renderHealthDropdown(data);
+    }
+
+    function renderHealthDropdown(data) {
+      const dropdown = document.getElementById('healthDropdown');
+      if (!dropdown) return;
+      const checks = data.checks || [];
+      if (checks.length === 0) {
+        dropdown.innerHTML = '<div class="hd-empty">No health checks reported</div>';
+        return;
+      }
+
+      let html = '';
+      for (const check of checks) {
+        const icon = check.ok ? '✓' : '✗';
+        const cls = check.ok ? 'hd-ok' : 'hd-fail';
+        const name = check.name || 'Unknown';
+        const detail = check.detail || '';
+        const remediation = check.ok ? '' : (check.remediation ? `<div class="hd-remediation">${escapeHtml(check.remediation)}</div>` : '');
+        html += `<div class="hd-check ${cls}">
+          <span class="hd-icon">${icon}</span>
+          <span class="hd-name">${escapeHtml(name)}</span>
+          <span class="hd-dots"></span>
+          <span class="hd-status">${check.ok ? 'OK' : 'FAIL'}</span>
+          <span class="hd-detail">${escapeHtml(detail)}</span>
+          ${remediation}
+        </div>`;
+      }
+      dropdown.innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function toggleHealthDropdown() {
+      if (healthState.dropdownOpen) {
+        closeHealthDropdown();
+      } else {
+        openHealthDropdown();
+      }
+    }
+
+    function openHealthDropdown() {
+      const badge = document.getElementById('healthBadge');
+      const dropdown = document.getElementById('healthDropdown');
+      if (!badge || !dropdown) return;
+
+      const rect = badge.getBoundingClientRect();
+      dropdown.style.top = `${rect.bottom + 4}px`;
+      dropdown.style.left = `${Math.max(8, rect.left - 100)}px`;
+      dropdown.classList.add('open');
+      healthState.dropdownOpen = true;
+    }
+
+    function closeHealthDropdown() {
+      const dropdown = document.getElementById('healthDropdown');
+      if (dropdown) dropdown.classList.remove('open');
+      healthState.dropdownOpen = false;
+    }
+
+    // ===== Transcript Recovery UI (Sprint 6 T4) =====
+    const transcriptState = {
+      available: false,
+      modalOpen: false,
+      view: 'recent',   // 'recent' | 'search' | 'replay'
+      recentData: null,
+      searchResults: null,
+      replaySession: null,
+      replayData: null
+    };
+
+    function setupTranscriptUI() {
+      // Inject "Transcripts" button into topbar-right, before the "status" button
+      const topbarRight = document.querySelector('.topbar-right');
+      const btnStatus = document.getElementById('btn-status');
+      if (!topbarRight || !btnStatus) return;
+
+      const btn = document.createElement('button');
+      btn.id = 'btn-transcripts';
+      btn.textContent = 'transcripts';
+      btn.title = 'Session transcript recovery';
+      btn.style.display = 'none'; // hidden until we confirm endpoints exist
+      topbarRight.insertBefore(btn, btnStatus);
+
+      // Create the modal
+      const modal = document.createElement('div');
+      modal.className = 'transcript-modal';
+      modal.id = 'transcriptModal';
+      modal.innerHTML = `
+        <div class="transcript-backdrop" id="transcriptBackdrop"></div>
+        <div class="transcript-card">
+          <header>
+            <h3>Session Transcripts</h3>
+            <div class="transcript-tabs">
+              <button class="transcript-tab active" data-view="recent">Recent</button>
+              <button class="transcript-tab" data-view="search">Search</button>
+            </div>
+          </header>
+          <div class="transcript-search-bar" id="transcriptSearchBar" style="display:none">
+            <input type="text" id="transcriptSearchInput" placeholder="Search transcript content…" class="ctrl-input" />
+          </div>
+          <div class="transcript-body" id="transcriptBody">
+            <div class="transcript-loading">Checking transcript endpoints…</div>
+          </div>
+          <footer>
+            <button class="transcript-back" id="transcriptBack" style="display:none">← Back</button>
+            <button class="rm-close" id="transcriptClose">Close</button>
+          </footer>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      // Events
+      btn.addEventListener('click', openTranscriptModal);
+      document.getElementById('transcriptBackdrop').addEventListener('click', closeTranscriptModal);
+      document.getElementById('transcriptClose').addEventListener('click', closeTranscriptModal);
+      document.getElementById('transcriptBack').addEventListener('click', transcriptGoBack);
+
+      modal.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); closeTranscriptModal(); }
+      });
+
+      // Tab switching
+      modal.querySelectorAll('.transcript-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const view = tab.dataset.view;
+          transcriptSwitchView(view);
+        });
+      });
+
+      // Search input
+      let searchDebounce = null;
+      document.getElementById('transcriptSearchInput').addEventListener('input', (e) => {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => {
+          const q = e.target.value.trim();
+          if (q.length >= 2) transcriptSearch(q);
+        }, 400);
+      });
+
+      // Probe for endpoint availability
+      probeTranscriptEndpoints();
+    }
+
+    async function probeTranscriptEndpoints() {
+      try {
+        const res = await fetch(`${API}/api/transcripts/recent?minutes=1`);
+        if (res.status === 404) {
+          // Endpoints not available — keep button hidden
+          transcriptState.available = false;
+          return;
+        }
+        // Endpoint exists (even if empty)
+        transcriptState.available = true;
+        const btn = document.getElementById('btn-transcripts');
+        if (btn) btn.style.display = '';
+      } catch {
+        transcriptState.available = false;
+      }
+    }
+
+    function openTranscriptModal() {
+      if (!transcriptState.available) return;
+      transcriptState.modalOpen = true;
+      document.getElementById('transcriptModal').classList.add('open');
+      transcriptSwitchView('recent');
+      fetchRecentTranscripts();
+    }
+
+    function closeTranscriptModal() {
+      transcriptState.modalOpen = false;
+      document.getElementById('transcriptModal').classList.remove('open');
+    }
+
+    function transcriptGoBack() {
+      if (transcriptState.view === 'replay') {
+        transcriptState.replaySession = null;
+        transcriptState.replayData = null;
+        // Go back to whichever list view was active
+        transcriptSwitchView(transcriptState.searchResults ? 'search' : 'recent');
+        if (transcriptState.view === 'recent') renderRecentTranscripts();
+        else renderSearchResults();
+      }
+    }
+
+    function transcriptSwitchView(view) {
+      transcriptState.view = view;
+      const tabs = document.querySelectorAll('.transcript-tab');
+      tabs.forEach(t => t.classList.toggle('active', t.dataset.view === view));
+      const searchBar = document.getElementById('transcriptSearchBar');
+      const backBtn = document.getElementById('transcriptBack');
+      searchBar.style.display = view === 'search' ? '' : 'none';
+      backBtn.style.display = view === 'replay' ? '' : 'none';
+
+      if (view === 'recent') fetchRecentTranscripts();
+      if (view === 'search') {
+        const input = document.getElementById('transcriptSearchInput');
+        input.focus();
+        if (transcriptState.searchResults) renderSearchResults();
+        else document.getElementById('transcriptBody').innerHTML = '<div class="transcript-empty">Type to search transcript content</div>';
+      }
+    }
+
+    async function fetchRecentTranscripts() {
+      const body = document.getElementById('transcriptBody');
+      body.innerHTML = '<div class="transcript-loading">Loading recent transcripts…</div>';
+      try {
+        const res = await fetch(`${API}/api/transcripts/recent?minutes=60`);
+        if (!res.ok) throw new Error('fetch failed');
+        const data = await res.json();
+        transcriptState.recentData = data;
+        renderRecentTranscripts();
+      } catch {
+        body.innerHTML = '<div class="transcript-empty">Failed to load transcripts</div>';
+      }
+    }
+
+    function renderRecentTranscripts() {
+      const body = document.getElementById('transcriptBody');
+      const data = transcriptState.recentData;
+      if (!data || !data.sessions || data.sessions.length === 0) {
+        body.innerHTML = '<div class="transcript-empty">No recent transcript activity</div>';
+        return;
+      }
+      let html = '';
+      for (const sess of data.sessions) {
+        const id = sess.sessionId || sess.session_id || 'unknown';
+        const shortId = id.slice(0, 8);
+        const type = sess.type || 'shell';
+        const project = sess.project || '';
+        const lines = sess.lines || sess.preview || [];
+        const lineCount = sess.totalLines || lines.length;
+        html += `<div class="transcript-session" data-session-id="${escapeHtml(id)}">
+          <div class="ts-header">
+            <span class="ts-id">${escapeHtml(shortId)}</span>
+            <span class="ts-type">${escapeHtml(type)}</span>
+            ${project ? `<span class="ts-project">${escapeHtml(project)}</span>` : ''}
+            <span class="ts-lines">${lineCount} lines</span>
+          </div>
+          <pre class="ts-preview">${escapeHtml(lines.slice(-6).join('\n'))}</pre>
+        </div>`;
+      }
+      body.innerHTML = html;
+
+      // Click to replay
+      body.querySelectorAll('.transcript-session').forEach(el => {
+        el.addEventListener('click', () => {
+          const sid = el.dataset.sessionId;
+          loadTranscriptReplay(sid);
+        });
+      });
+    }
+
+    async function transcriptSearch(query) {
+      const body = document.getElementById('transcriptBody');
+      body.innerHTML = '<div class="transcript-loading">Searching…</div>';
+      try {
+        const res = await fetch(`${API}/api/transcripts/search?q=${encodeURIComponent(query)}`);
+        if (!res.ok) throw new Error('search failed');
+        const data = await res.json();
+        transcriptState.searchResults = data;
+        renderSearchResults();
+      } catch {
+        body.innerHTML = '<div class="transcript-empty">Search failed</div>';
+      }
+    }
+
+    function renderSearchResults() {
+      const body = document.getElementById('transcriptBody');
+      const data = transcriptState.searchResults;
+      if (!data || !data.results || data.results.length === 0) {
+        body.innerHTML = '<div class="transcript-empty">No matches found</div>';
+        return;
+      }
+      let html = '';
+      for (const result of data.results) {
+        const id = result.sessionId || result.session_id || 'unknown';
+        const shortId = id.slice(0, 8);
+        const line = result.line || result.content || '';
+        const ts = result.timestamp ? new Date(result.timestamp).toLocaleTimeString() : '';
+        html += `<div class="transcript-result" data-session-id="${escapeHtml(id)}">
+          <div class="tr-meta">
+            <span class="tr-session">${escapeHtml(shortId)}</span>
+            ${ts ? `<span class="tr-time">${escapeHtml(ts)}</span>` : ''}
+          </div>
+          <pre class="tr-line">${highlightMatch(escapeHtml(line), escapeHtml(document.getElementById('transcriptSearchInput').value))}</pre>
+        </div>`;
+      }
+      body.innerHTML = html;
+
+      // Click to replay
+      body.querySelectorAll('.transcript-result').forEach(el => {
+        el.addEventListener('click', () => {
+          const sid = el.dataset.sessionId;
+          loadTranscriptReplay(sid);
+        });
+      });
+    }
+
+    function highlightMatch(text, query) {
+      if (!query) return text;
+      try {
+        const re = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        return text.replace(re, '<mark class="tr-highlight">$1</mark>');
+      } catch {
+        return text;
+      }
+    }
+
+    async function loadTranscriptReplay(sessionId) {
+      transcriptState.view = 'replay';
+      transcriptState.replaySession = sessionId;
+      const body = document.getElementById('transcriptBody');
+      const backBtn = document.getElementById('transcriptBack');
+      const searchBar = document.getElementById('transcriptSearchBar');
+      backBtn.style.display = '';
+      searchBar.style.display = 'none';
+      body.innerHTML = '<div class="transcript-loading">Loading full transcript…</div>';
+
+      try {
+        const res = await fetch(`${API}/api/transcripts/${encodeURIComponent(sessionId)}`);
+        if (!res.ok) throw new Error('fetch failed');
+        const data = await res.json();
+        transcriptState.replayData = data;
+        renderTranscriptReplay(data);
+      } catch {
+        body.innerHTML = '<div class="transcript-empty">Failed to load transcript</div>';
+      }
+    }
+
+    function renderTranscriptReplay(data) {
+      const body = document.getElementById('transcriptBody');
+      const content = data.content || data.lines?.join('\n') || '';
+      const sessionId = transcriptState.replaySession || 'unknown';
+      body.innerHTML = `
+        <div class="transcript-replay-header">
+          <span class="tr-replay-id">Session: ${escapeHtml(sessionId.slice(0, 12))}</span>
+          <button class="transcript-copy" id="transcriptCopyBtn">Copy to clipboard</button>
+        </div>
+        <pre class="transcript-replay-content">${escapeHtml(content)}</pre>
+      `;
+      document.getElementById('transcriptCopyBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(content).then(() => {
+          const btn = document.getElementById('transcriptCopyBtn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = 'Copy to clipboard';
+            btn.classList.remove('copied');
+          }, 2000);
+        }).catch(() => {});
+      });
+    }
 
     // Boot
     init();
