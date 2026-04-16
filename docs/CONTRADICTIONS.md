@@ -14,6 +14,7 @@ Last reviewed: 2026-04-16
 | 6 | `docs-site/src/content/docs/engram/` directory still contains "Mnemos" branding throughout (index.md, source-types.md, integration.md, changelog.md, blog posts) — T1 Sprint 7 cleans blog posts only, not the `engram/` subdirectory | `docs-site/src/content/docs/engram/**` | Sprint 8 |
 | 7 | Version skew: `package.json` at 0.3.2, but historical `CHANGELOG.md` entries stopped at 0.1.1 until Sprint 7 T1 backfills 0.2.x and 0.3.x | `package.json` vs `CHANGELOG.md` | Sprint 7 (T1) |
 | 8 | `docs-site/src/content/docs/engram/` is routed under `/engram/*` paths; renaming to `/mnestra/*` will break any external links that have been shared | docs-site routing + any external backlinks | Sprint 8 |
+| 9 | Mnestra Flashback toast/panel shows parent directory path (`ChopinNashville`) instead of the project name from config.yaml — mnestra-bridge likely passes `cwd` path instead of the resolved project name | `packages/server/src/mnestra-bridge/index.js` query context vs `~/.termdeck/config.yaml` project names | Sprint 11 |
 
 ## How to add entries
 
