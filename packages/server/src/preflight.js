@@ -23,12 +23,12 @@ const CACHE_TTL_MS = 60_000;
 async function checkMnestra(config) {
   const rag = config.rag || {};
   const url = rag.mnestraWebhookUrl
-    ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '/health')
-    : 'http://localhost:37778/health';
+    ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '/healthz')
+    : 'http://localhost:37778/healthz';
 
   const body = await httpGet(url, 3000);
   const data = tryParseJSON(body);
-  const total = data && (data.total || data.memories || data.count);
+  const total = data && (data.store?.rows ?? data.total ?? data.memories ?? data.count ?? null);
   if (total != null) {
     return { name: 'mnestra_reachable', passed: true, detail: `${Number(total).toLocaleString()} memories` };
   }
@@ -45,9 +45,9 @@ async function checkMnestraMemories(config) {
     ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '')
     : 'http://localhost:37778';
 
-  const body = await httpGet(`${baseUrl}/health`, 3000);
+  const body = await httpGet(`${baseUrl}/healthz`, 3000);
   const data = tryParseJSON(body);
-  const total = data && (data.total || data.memories || data.count);
+  const total = data && (data.store?.rows ?? data.total ?? data.memories ?? data.count ?? null);
   if (total != null && Number(total) > 0) {
     return { name: 'mnestra_has_memories', passed: true, detail: `${Number(total).toLocaleString()} memories loaded` };
   }
