@@ -368,6 +368,9 @@ Restart TermDeck. Check:
 |---|---|---|
 | `npx` fails with compilation error | Native module build issue | v0.3+ uses prebuilts — `npm cache clean --force` and retry. macOS: `xcode-select --install`. |
 | Blank page at localhost:3000 | xterm.js CDN unreachable | Check network. Dashboard loads from `cdn.jsdelivr.net`. |
+| `EADDRINUSE: port 3000` (or 37778) on startup | Stale TermDeck/Mnestra process from a prior run | `./scripts/start.sh` kills stale PIDs automatically. Or manually: `lsof -ti :3000 \| xargs kill`. |
+| Mnestra check red even though `mnestra serve` is running | Preflight hits `/healthz` (not `/health`) and parses `store.rows` — older Mnestra builds lacked that endpoint | Upgrade: `npm install -g @jhizzard/mnestra@latest` (≥0.2.0 required). |
+| Tier 2 features silent despite `secrets.env` being populated | Vars exist in the file but weren't exported into the shell launching `npx termdeck` | Use `./scripts/start.sh` (auto-exports via `set -a; source`). Or manually: `set -a; source ~/.termdeck/secrets.env; set +a` before launching. |
 | Health badge shows "Tier 1: OK" | DATABASE_URL not set | Expected for Tier 1. Add DATABASE_URL to `~/.termdeck/secrets.env` for full stack. |
 | Health badge shows red | Mnestra/Rumen/DB not configured | Click badge for detail per check. Each failed check shows a remediation hint. |
 | Flashback never fires | Empty memory store or Mnestra not running | Flashback needs memories. Use Mnestra for a few days first, or `mnestra serve` to start the server. |
