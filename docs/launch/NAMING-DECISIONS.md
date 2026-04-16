@@ -10,7 +10,7 @@
 
 | Package | Name | npm | GitHub |
 |---|---|---|---|
-| Browser terminal multiplexer with proactive memory recall | **TermDeck** | `@jhizzard/termdeck@0.3.2` | `github.com/jhizzard/termdeck` |
+| Browser terminal multiplexer with proactive memory recall | **TermDeck** | `@jhizzard/termdeck@0.3.5` | `github.com/jhizzard/termdeck` |
 | Persistent developer memory MCP server | **Mnestra** | `@jhizzard/mnestra@0.2.0` | `github.com/jhizzard/mnestra` |
 | Async learning layer | **Rumen** | `@jhizzard/rumen@0.4.1` | `github.com/jhizzard/rumen` |
 
@@ -85,7 +85,7 @@ Mnestra is green but still an unfamiliar proper noun that carries zero category 
 > No global install needed. Node 18+. Docs: https://termdeck-docs.vercel.app
 
 **Honest limits paragraph (required in Show HN body + README "What Flashback is not"):**
-> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.2. Validated against 3,451 memories in one developer's store. No multi-user data yet.
+> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3.5. Validated against one developer's store (~3,527 memories). No multi-user data yet.
 
 ---
 

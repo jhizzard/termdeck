@@ -17,7 +17,7 @@ claude-mem is a Claude Code plugin that adds memory to Claude Code sessions via 
 
 ## Q2. "Why browser and not TUI?"
 
-Three reasons. First, I wanted per-panel metadata overlays (status, project, last command, AI agent state) rendered as real HTML so they can be rich without fighting a TUI layout engine. Second, screen-sharing a browser is instant and works everywhere, which made the demo GIFs and the launch possible in the first place. Third, I wanted to own the rendering so I could ship animations and the onboarding tour without users installing fonts or configuring their terminal emulator. A TUI wrapper that embeds `node-pty` + `xterm.js`'s renderer is absolutely possible as a v0.3 effort — happy to take a PR from anyone who wants it.
+Three reasons. First, I wanted per-panel metadata overlays (status, project, last command, AI agent state) rendered as real HTML so they can be rich without fighting a TUI layout engine. Second, screen-sharing a browser is instant and works everywhere, which made the demo GIFs and the launch possible in the first place. Third, I wanted to own the rendering so I could ship animations and the onboarding tour without users installing fonts or configuring their terminal emulator. A TUI wrapper that embeds `node-pty` + `xterm.js`'s renderer is absolutely possible as a v0.4 effort — happy to take a PR from anyone who wants it.
 
 ## Q3. "Why not Tauri / Electron?"
 
@@ -25,11 +25,11 @@ Because `npx @jhizzard/termdeck` works on any machine with Node 18 in under a mi
 
 ## Q4. "Why MIT and not AGPL?"
 
-I optimized for adoption over commercial moat. MIT means anyone can fork, wrap, re-sell, or embed this without asking. AGPL would protect me from a SaaS fork but would also make Mnestra harder to adopt in corporate environments where AGPL trips legal review. I may regret this if someone ships a hosted version of the whole stack before I do, but I think the adoption gain is worth the risk for a v0.2 launch by a solo developer with zero prior audience.
+I optimized for adoption over commercial moat. MIT means anyone can fork, wrap, re-sell, or embed this without asking. AGPL would protect me from a SaaS fork but would also make Mnestra harder to adopt in corporate environments where AGPL trips legal review. I may regret this if someone ships a hosted version of the whole stack before I do, but I think the adoption gain is worth the risk for a v0.3 launch by a solo developer with zero prior audience.
 
 ## Q5. "Why Supabase? I don't want to depend on a cloud service for my terminal."
 
-Fair. Tier 1 (the core terminal multiplexer + metadata + session logs) has **no Supabase dependency** — it runs fully local with SQLite. The only thing you give up by skipping Tier 2 is Flashback itself, which requires a vector store. Local Flashback via SQLite-vec + a local-embedding model (Nomic, sentence-transformers) is on the v0.3 roadmap. For v0.2 I chose Supabase because pgvector is mature, hybrid search (BM25 + vector) is one RPC call, and the free tier covers a solo developer indefinitely. If you want Tier 2 right now without Supabase: Mnestra's schema is a single SQL file, and the webhook bridge is a 30-line Express handler. Point either at your own Postgres. Nothing is locked in.
+Fair. Tier 1 (the core terminal multiplexer + metadata + session logs) has **no Supabase dependency** — it runs fully local with SQLite. The only thing you give up by skipping Tier 2 is Flashback itself, which requires a vector store. Local Flashback via SQLite-vec + a local-embedding model (Nomic, sentence-transformers) is on the v0.4 roadmap. For v0.3 I chose Supabase because pgvector is mature, hybrid search (BM25 + vector) is one RPC call, and the free tier covers a solo developer indefinitely. If you want Tier 2 right now without Supabase: Mnestra's schema is a single SQL file, and the webhook bridge is a 30-line Express handler. Point either at your own Postgres. Nothing is locked in.
 
 ## Q6. "How much does it cost to run?"
 
@@ -37,7 +37,7 @@ Tier 1: free. Tier 2 (Mnestra + Flashback) on a solo developer's scale: Supabase
 
 ## Q7. "Security model — this has full shell access, right?"
 
-Yes. TermDeck spawns real PTYs with your user's privileges — same security model as any terminal emulator. The server is bound to `127.0.0.1` by default and there is no authentication layer in v0.2; running it on a multi-user or remote-exposed machine without adding auth (nginx basic auth, WireGuard, tailscale) would be a mistake. Mnestra's memory store is your Supabase project with your RLS policies — TermDeck never sees anyone else's memories. Session transcripts (if you enable them) are written to `~/.termdeck/termdeck.db` locally and optionally replicated to Supabase with your configured RLS. The README has a `Security` section that spells this out more precisely — read it before exposing TermDeck to any network beyond localhost.
+Yes. TermDeck spawns real PTYs with your user's privileges — same security model as any terminal emulator. The server binds to `127.0.0.1` by default with no auth required on loopback; v0.3.5 added optional token auth (Bearer / cookie / query) and a guardrail that refuses to bind `0.0.0.0` unless `auth.token` is configured. For a multi-user or remote-exposed machine, set a token or front TermDeck with nginx basic auth / WireGuard / tailscale. Mnestra's memory store is your Supabase project with your RLS policies — TermDeck never sees anyone else's memories. Session transcripts (if you enable them) are written to `~/.termdeck/termdeck.db` locally and optionally replicated to Supabase with your configured RLS. `docs/SECURITY.md` has the threat model and `docs/DEPLOYMENT.md` walks through non-loopback exposure — read both before opening TermDeck to any network beyond localhost.
 
 ## Q8. "Does it work on Windows?"
 
@@ -49,7 +49,7 @@ Rumen calls the LLM through a thin adapter (`packages/synthesize/adapter.ts`) �
 
 ## Q10. "Can I use Ollama instead of OpenAI for embeddings?"
 
-Not in v0.2. Mnestra's embedding pipeline is hardcoded to `text-embedding-3-large` (1536 dims) right now because mixing embedding providers corrupts the vector space — you can't meaningfully compare a sentence-transformers vector to an OpenAI vector in the same index. Swapping to Ollama-hosted `nomic-embed-text-v1.5` (768 dims) is a supported path in v0.3: it requires a schema migration to add a second `embedding_768` column and a rebuild of the existing memories against the new model. If you want to try it now, the SQL migration is trivial and I'd be happy to review a PR.
+Not in v0.3.5. Mnestra's embedding pipeline is hardcoded to `text-embedding-3-large` (1536 dims) right now because mixing embedding providers corrupts the vector space — you can't meaningfully compare a sentence-transformers vector to an OpenAI vector in the same index. Swapping to Ollama-hosted `nomic-embed-text-v1.5` (768 dims) is a supported path in v0.4: it requires a schema migration to add a second `embedding_768` column and a rebuild of the existing memories against the new model. If you want to try it now, the SQL migration is trivial and I'd be happy to review a PR.
 
 ---
 
@@ -87,7 +87,7 @@ The launch audience is skeptical about memory-for-AI-agents because the category
 
 - **Concrete**, not evasive. Specific file paths, specific commands, specific numbers.
 - **Honest** about gaps, roadmap, and what hasn't been tested yet.
-- **Not defensive**. If someone points out a real flaw, say "yeah, that's real — it's on the roadmap for v0.3" instead of arguing.
+- **Not defensive**. If someone points out a real flaw, say "yeah, that's real — it's on the roadmap for v0.4" instead of arguing.
 - **Curious**, not broadcasting. Turn questions into research requests whenever honest — commenters respond better to "what would you want here?" than to "we already have a plan for that."
 - **Fast**. 30-min response time in the first 4 hours is worth more than perfectly polished replies in hour 5.
 

@@ -11,6 +11,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
 
+## [0.3.5] - 2026-04-16
+
+### Added
+- **`0.0.0.0` bind guardrail**: server refuses to start on a non-loopback host unless `auth.token` (or `TERMDECK_AUTH_TOKEN`) is configured; exits with `[security]` lines pointing to both configuration paths
+- **Flashback end-to-end test** (`tests/flashback-e2e.test.js`): exercises `input → PTY error → analyzer → rag_events → mnestra-bridge` against a live server, observes via `rag_events` (write-once, race-free) rather than transient `meta.status`, skips gracefully when server or Mnestra are unavailable
+- **Failure-injection test suite** (`tests/failure-injection.test.js`): 5 scenarios — Mnestra unreachable, component-failure isolation, PTY crash recovery, rapid create/destroy leak check, `/api/health` latency budget
+- **`scripts/verify-release.sh`**: seven pre-publish checks (version alignment, working tree clean, `node -c` parse, `lint-docs.sh`, test suite, bin shebang, `files[]` coverage) with aggregated exit status
+- `RELEASE_CHECKLIST.md`: rewritten as a TermDeck-only playbook that delegates mechanical checks to `verify-release.sh`
+
+### Fixed
+- `DEPLOYMENT.md` Binding section: previous wording was directionally correct but under-specified; now documents the exact `[security]` exit behavior, both config paths, and the three allowed loopback hosts (`127.0.0.1`, `localhost`, `::1`)
+
+## [0.3.4] - 2026-04-16
+
+### Added
+- **Two-row toolbar layout**: replaces the horizontal-scroll toolbar; every button visible without scrolling
+- **Optional token auth** (`packages/server/src/auth.js`): `Authorization: Bearer`, `?token=` query, and `termdeck_token=` cookie. Token source is `config.auth.token` OR `TERMDECK_AUTH_TOKEN`; unset = zero behavior change for local users
+- **`docs/SECURITY.md`**: threat model, default posture, auth mechanics, secrets handling, transcript data hygiene
+- **`docs/DEPLOYMENT.md`**: pre-exposure checklist, nginx/caddy reverse-proxy configs with 3600s WebSocket timeouts, systemd unit skeleton
+
+### Changed
+- **Status and Config buttons wired**: previously stubs; now open the status drawer and config viewer
+- Removed the dead RAG indicator from the toolbar (never surfaced real state)
+- `start.sh`: Node 18+ check, transcript-migration check, MCP hint, `--port` flag, stack summary on boot
+
+## [0.3.3] - 2026-04-16
+
+### Added
+- **Contract tests** for `/api/health`, `/api/rumen/*`, and the transcript API (recent/search/replay shapes)
+
+### Fixed
+- Preflight Mnestra probe hits `/healthz` (not `/health`); resolves false-red health badge when Mnestra ≥0.2.0 is running correctly
+- Toolbar overflow: tighter spacing, `overflow-x: auto`, `flex-shrink` on right section (stopgap before the 0.3.4 two-row redesign)
+- `getRumenPool`: 30-second TTL retry after a transient failure, replacing the permanent per-process failure flag
+
+### Changed
+- `docs/GETTING-STARTED.md`: split `npx` vs. `clone` install paths
+
 ## [0.3.2] - 2026-04-16
 
 ### Fixed
@@ -150,7 +188,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status broadcast** every 2 seconds for live metadata updates
 - **Keyboard shortcuts**: Ctrl+Shift+N for prompt bar, Ctrl+Shift+1-6 for layouts, Ctrl+Shift+]/[ to cycle terminals, Escape to exit focus
 
-[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/jhizzard/termdeck/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/jhizzard/termdeck/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jhizzard/termdeck/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/jhizzard/termdeck/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jhizzard/termdeck/compare/v0.2.5...v0.3.0

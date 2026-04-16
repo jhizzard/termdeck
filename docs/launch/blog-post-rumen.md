@@ -61,9 +61,9 @@ Rumen ships as a Supabase Edge Function. The install path is:
 
 The Edge Function model is specifically valuable because it means Rumen **doesn't need a server** of its own. It runs on Supabase's infrastructure, on a schedule, and it reads and writes the same Postgres database the rest of your stack is already using. No new moving parts.
 
-## What Rumen v0.3 will add: question generation
+## What Rumen v0.5 will add: question generation
 
-Right now Rumen only generates insights in response to observed memories. The v0.3 path adds **question generation**: Rumen will occasionally write a memory of `source_type: question` — an open question it noticed across the store that it can't answer on its own. Those questions show up in TermDeck's Flashback surface so the next time you're in a related context, you see the question and can answer it (or decide it's not worth answering). The loop becomes: write → relate → synthesize → question → surface → answer → write.
+Right now (rumen@0.4.1) Rumen only generates insights in response to observed memories. A v0.5 path will add **question generation**: Rumen will occasionally write a memory of `source_type: question` — an open question it noticed across the store that it can't answer on its own. Those questions show up in TermDeck's Flashback surface so the next time you're in a related context, you see the question and can answer it (or decide it's not worth answering). The loop becomes: write → relate → synthesize → question → surface → answer → write. Not shipped yet; roadmap item.
 
 The goal is a memory store that gets more useful the longer you run it. Not just more populated — actually smarter. That's why I called it Rumen. The chewing happens when you're not looking.
 
