@@ -22,6 +22,16 @@ Enabling Flashback takes **one additional 15-minute setup step** — see Tier 2 
 
 ---
 
+## Documentation hierarchy
+
+- **This README** — quickstart, pitch, and links
+- **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — full 4-tier installation guide
+- **[termdeck-docs.vercel.app](https://termdeck-docs.vercel.app)** — reference docs (Astro/Starlight)
+- **docs/launch/** — launch collateral (Show HN, Twitter, etc.)
+- **docs/sprint-N-*/** — historical sprint logs (append-only, not maintained post-sprint)
+
+---
+
 ## How Flashback works
 
 When a panel's status transitions to `errored`, the server's output analyzer fires an event. The mnestra bridge takes the session context (type, project, last command, error tail) and queries your Mnestra memory store for the top similar match. If it finds one above the relevance threshold, the result is pushed to the panel's WebSocket as a `proactive_memory` message. The client renders it as a toast anchored to the panel, showing the match's project tag, source type, similarity score, and content snippet. You click the toast to expand into the Memory tab of that panel's drawer.
