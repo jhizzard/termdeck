@@ -1,120 +1,80 @@
-# Release Checklist — TermDeck / Mnestra / Rumen v0.2
+# Release Checklist — `@jhizzard/termdeck`
 
-Manual checklist for Josh. Every step assumes the Sprint 2 diffs have been
-reviewed, committed, and pushed to `main` for each repo. None of this is
-automated — publishing is deliberately a human-in-the-loop gate.
+Pre-publish checklist for cutting a new TermDeck release. Most of the
+mechanical checks are automated by `./scripts/verify-release.sh`; this file
+covers the human steps around it.
 
-Working directory references use Josh's local layout:
-
-- `~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck`
-- `~/Documents/Graciella/mnestra`
-- `~/Documents/Graciella/rumen`
-
-Order recommended for a clean cut: **Mnestra → Rumen → TermDeck**. TermDeck
-depends on Mnestra (via `@jhizzard/mnestra` at runtime when the bridge is in
-`mcp` mode) and Rumen reads Mnestra's schema, so publishing the layer
-underneath first keeps the dependency graph clean.
+> Sister repos (`@jhizzard/mnestra`, `@jhizzard/rumen`) have their own release
+> playbooks in their respective repos. If a release crosses package
+> boundaries, publish in the order **Mnestra → Rumen → TermDeck** so the
+> dependency graph stays clean.
 
 ---
 
-## 0. Preflight (all repos)
+## 1. Prepare the release
 
-Run these for every repo before touching `npm version`:
+- [ ] On `main`, up to date with `origin/main` (`git pull --ff-only`)
+- [ ] `npm whoami` returns the identity that owns `@jhizzard`
+- [ ] Bump `version` in `package.json` (and any per-package `package.json` if
+      relevant)
+- [ ] Add a dated `## [X.Y.Z] - YYYY-MM-DD` entry to `CHANGELOG.md` with
+      Added / Changed / Fixed sections
+- [ ] Skim `README.md` and `docs/GETTING-STARTED.md` for any version refs that
+      need to move
 
-- [ ] Working tree clean (`git status` empty)
-- [ ] On `main`, up to date with `origin/main`
-- [ ] Node 24 LTS active locally (`node --version`)
-- [ ] All CI checks green on the tip of `main`
-- [ ] `CHANGELOG.md` has a `[0.2.0] - 2026-04-13` heading at the top (not under `Unreleased`)
-- [ ] `README.md` install instructions reference the published package name and `bin`
-- [ ] `npm whoami` returns `jhizzard` (or whichever identity owns `@jhizzard`)
-- [ ] `~/.termdeck/secrets.env` has the rotated keys from the post-Sprint-1 rotation — publishing should not depend on the old credentials
-
----
-
-## 1. `@jhizzard/mnestra` v0.2.0
+## 2. Run the automated verification
 
 ```bash
-cd ~/Documents/Graciella/mnestra
+./scripts/verify-release.sh
 ```
 
-- [ ] `git pull --ff-only`
-- [ ] `rm -rf node_modules && npm install`
-- [ ] `npm run typecheck` — clean
-- [ ] `npm test` — expect 21+ green (includes Sprint 2 webhook + privacy + layered tests)
-- [ ] `npm run build` — verify `dist/mcp-server/index.js` and `dist/src/webhook-server.js` exist
-- [ ] Smoke test stdio MCP: `node dist/mcp-server/index.js < /dev/null` exits cleanly
-- [ ] Smoke test webhook: `node dist/mcp-server/index.js serve &` then `curl -s :37778/healthz` returns `{"ok":true,...}`; kill the background proc
-- [ ] Apply production migration: open Supabase SQL editor, paste `migrations/004_mnestra_match_count_cap_and_explain.sql`, run, confirm "Success"
-- [ ] `npm version 0.2.0 --no-git-tag-version` (skip if the CHANGELOG bump already synced `package.json`)
-- [ ] Commit any version bump: `git add package.json package-lock.json && git commit -m "chore: release v0.2.0"`
-- [ ] `git tag v0.2.0 && git push origin main --tags`
-- [ ] `npm publish --access public`
-- [ ] Verify on https://www.npmjs.com/package/@jhizzard/mnestra — version 0.2.0 listed, README rendered
-- [ ] Post-publish smoke: in a scratch dir, `npx @jhizzard/mnestra serve` starts the webhook on :37778
+This script must exit 0. It runs:
 
----
+1. `package.json` version matches the latest `CHANGELOG.md` entry
+2. Working tree is clean (`git status --porcelain` is empty)
+3. `node -c` parses every JS file under `packages/`
+4. `scripts/lint-docs.sh` passes (no banned names; version consistency)
+5. `node --test tests/*.test.js` (skipped if no tests present)
+6. The bin entry `packages/cli/src/index.js` starts with a `#!/usr/bin/env node`
+   shebang
+7. `npm pack --dry-run` would publish every path in the expected-publish list
 
-## 2. `@jhizzard/rumen` v0.2.0
+If any check fails: fix the underlying issue and re-run. Do not bypass.
+
+## 3. Commit, tag, push
+
+- [ ] `git add package.json CHANGELOG.md` (plus any other touched files)
+- [ ] `git commit -m "chore: release v<X.Y.Z>"`
+- [ ] `git tag v<X.Y.Z>`
+- [ ] `git push origin main --tags`
+
+## 4. Publish
 
 ```bash
-cd ~/Documents/Graciella/rumen
+npm publish --access public --auth-type=web
 ```
 
-- [ ] `git pull --ff-only`
-- [ ] `rm -rf node_modules && npm install`
-- [ ] `npx tsc --noEmit` — clean
-- [ ] GitHub Actions integration-test job is green on the tip of `main` (was red on commit 7e24750; Sprint 2 fix is in the Mnestra fixture)
-- [ ] `npx tsc` — builds `dist/`
-- [ ] `DATABASE_URL=... npx tsx scripts/test-locally.ts` against a throwaway DB, confirm at least one `rumen_insights` row written
-- [ ] Bump `CHANGELOG.md` `[Unreleased]` → `[0.2.0] - 2026-04-13`
-- [ ] `npm version 0.2.0 --no-git-tag-version`
-- [ ] Commit: `git add CHANGELOG.md package.json package-lock.json && git commit -m "chore: release v0.2.0"`
-- [ ] `git tag v0.2.0 && git push origin main --tags`
-- [ ] `npm publish --access public`
-- [ ] Verify on https://www.npmjs.com/package/@jhizzard/rumen — version 0.2.0 listed
+- [ ] Browser opens for npm web auth; approve from a logged-in session
+- [ ] Wait for `+ @jhizzard/termdeck@<X.Y.Z>` confirmation
 
----
+## 5. Verify the publish
 
-## 3. `@jhizzard/termdeck` v0.2.0
+- [ ] `npm view @jhizzard/termdeck version` returns the new version
+- [ ] https://www.npmjs.com/package/@jhizzard/termdeck shows the new version
+      and a rendered README
+- [ ] In a scratch directory: `npx -y @jhizzard/termdeck@<X.Y.Z> --no-open`
+      starts the server, http://localhost:3000 loads, one panel can spawn a
+      shell, no C++ compile happens during install
 
-```bash
-cd ~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck
-```
+## 6. Announce (only for minor / major releases)
 
-- [ ] `git pull --ff-only`
-- [ ] `rm -rf node_modules && npm install` — confirm `node-pty` and `better-sqlite3` install from prebuilds (no C++ compile)
-- [ ] `node -c packages/server/src/index.js` — parses
-- [ ] `node -c packages/server/src/session.js` — parses
-- [ ] `node -c packages/cli/src/index.js` — parses
-- [ ] Start the server: `npm run server`, open http://localhost:3000, spawn 2 panels, verify PTY + metadata + reply button all work
-- [ ] Stop the server; with `ANTHROPIC_API_KEY` set in `~/.termdeck/secrets.env`, run `termdeck --session-logs`, open a panel, run some commands, close the panel, confirm `~/.termdeck/sessions/*.md` contains a Haiku summary
-- [ ] Confirm `@jhizzard/termdeck` is not already squatted on npm (`npm view @jhizzard/termdeck` should 404 pre-publish or show 0.1.0)
-- [ ] Bump `packages/cli/package.json` version 0.1.0 → 0.2.0
-- [ ] Update `CHANGELOG.md` heading to `[0.2.0] - 2026-04-13`
-- [ ] Commit: `git add packages/cli/package.json CHANGELOG.md && git commit -m "chore: release @jhizzard/termdeck v0.2.0"`
-- [ ] `git tag v0.2.0 && git push origin main --tags`
-- [ ] `cd packages/cli && npm publish --access public`
-- [ ] Verify on https://www.npmjs.com/package/@jhizzard/termdeck — 0.2.0 listed, README rendered
-- [ ] Post-publish smoke on a clean machine or a scratch dir: `npx @jhizzard/termdeck --no-open`, hit http://localhost:3000, spawn one shell panel, `ls`, close — should complete without touching the monorepo's local workspace
+- [ ] Update `docs-site/` content sync if release ships user-visible changes
+- [ ] Post to launch channels listed in `docs/launch/` (only if a notable
+      feature shipped — patch releases stay quiet)
 
----
+## 7. Rollback (if something went wrong)
 
-## 4. Post-release announcement
-
-After all three packages are published:
-
-- [ ] Update the docs-site (TermDeck repo, `docs-site/`) so the synced `README.md` + `CHANGELOG.md` files reflect v0.2.0. `node scripts/sync-content.mjs` then `npx astro build`.
-- [ ] Deploy `docs-site/dist/` to the chosen host (Vercel or `termdeck.dev` — whichever is live).
-- [ ] Cross-link the three npm pages in the docs-site Overview page.
-- [ ] Post promotion drafts from `docs/promotion-drafts/` (if any) to the planned channels.
-
----
-
-## 5. Rollback plan
-
-If anything goes sideways after `npm publish`:
-
-- `npm unpublish @jhizzard/<pkg>@0.2.0` is allowed within 72 hours of publish, otherwise deprecate with `npm deprecate @jhizzard/<pkg>@0.2.0 "see v0.2.1"`.
-- Git: `git revert` the release commit, bump `0.2.1`, go through §1–§3 again.
-- Do **not** re-publish the same version number; npm rejects it.
+- Within 72 hours of publish: `npm unpublish @jhizzard/termdeck@<X.Y.Z>`
+- Otherwise: `npm deprecate @jhizzard/termdeck@<X.Y.Z> "see v<next>"`,
+  `git revert` the release commit, bump to the next patch, repeat from §1
+- Never republish the same version number — npm rejects it
