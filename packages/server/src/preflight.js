@@ -65,7 +65,8 @@ async function checkRumen(config) {
   }
 
   let pg;
-  try { pg = require('pg'); } catch {
+  try { pg = require('pg'); } catch (err) { pg = null; }
+  if (!pg) {
     return { name: 'rumen_recent', passed: false, detail: 'pg module not installed' };
   }
 
@@ -111,7 +112,8 @@ async function checkDatabase() {
   }
 
   let pg;
-  try { pg = require('pg'); } catch {
+  try { pg = require('pg'); } catch (err) { pg = null; }
+  if (!pg) {
     return { name: 'database_url', passed: false, detail: 'pg module not installed' };
   }
 
@@ -170,11 +172,13 @@ async function checkShellSanity() {
 
   return new Promise((resolve) => {
     let ptyMod;
-    try { ptyMod = require('@homebridge/node-pty-prebuilt-multiarch'); } catch {
-      try { ptyMod = require('node-pty'); } catch {
-        resolve({ name: 'shell_sanity', passed: false, detail: 'node-pty not available' });
-        return;
-      }
+    try { ptyMod = require('@homebridge/node-pty-prebuilt-multiarch'); } catch (err) { ptyMod = null; }
+    if (!ptyMod) {
+      try { ptyMod = require('node-pty'); } catch (err) { ptyMod = null; }
+    }
+    if (!ptyMod) {
+      resolve({ name: 'shell_sanity', passed: false, detail: 'node-pty not available' });
+      return;
     }
 
     const t0 = Date.now();
@@ -215,7 +219,7 @@ async function checkShellSanity() {
     setTimeout(() => {
       if (!resolved) {
         resolved = true;
-        try { proc.kill(); } catch {}
+        try { proc.kill(); } catch (err) { /* cleanup — process may already be dead */ }
         resolve({ name: 'shell_sanity', passed: false, detail: `${shellName} timed out after 3s` });
       }
     }, 3000);
@@ -245,7 +249,7 @@ function httpGet(url, timeoutMs) {
 }
 
 function tryParseJSON(str) {
-  try { return JSON.parse(str); } catch { return null; }
+  try { return JSON.parse(str); } catch (err) { return null; }
 }
 
 // ---------------------------------------------------------------------------

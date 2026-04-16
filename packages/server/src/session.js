@@ -300,7 +300,7 @@ class Session {
     // Mirror status-change callback so T1 sees 'errored' in status_broadcast without
     // waiting for the 3s debounce.
     if (oldStatus !== 'errored' && this.onStatusChange) {
-      try { this.onStatusChange(this, oldStatus, 'errored'); } catch {}
+      try { this.onStatusChange(this, oldStatus, 'errored'); } catch (err) { console.error('[pty] onStatusChange error:', err.message); }
     }
 
     // Server-side rate limit: at most one error_detected event every 30s per session

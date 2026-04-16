@@ -207,7 +207,7 @@ function createBridge(config) {
     } catch (err) {
       // Kill child so it respawns next call
       if (state.mcpChild) {
-        try { state.mcpChild.kill(); } catch {}
+        try { state.mcpChild.kill(); } catch (err) { /* process may already be dead */ }
         state.mcpChild = null;
       }
       throw err;

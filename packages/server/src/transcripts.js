@@ -5,7 +5,7 @@
 // Circuit breaker prevents cascade failure if the database is unreachable.
 
 let pg;
-try { pg = require('pg'); } catch { pg = null; }
+try { pg = require('pg'); } catch (err) { pg = null; }
 
 // Strip ANSI escape codes (CSI sequences, OSC sequences, simple escapes)
 function stripAnsi(str) {
@@ -281,7 +281,7 @@ class TranscriptWriter {
     await this.flush();
 
     if (this._pool) {
-      try { await this._pool.end(); } catch { /* ignore */ }
+      try { await this._pool.end(); } catch (err) { console.warn('[transcript] pool close error:', err.message); }
       this._pool = null;
     }
   }
