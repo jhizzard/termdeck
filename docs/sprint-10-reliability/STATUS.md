@@ -226,3 +226,99 @@ Against `TERMDECK_URL=http://127.0.0.1:1` (unreachable):
 - tests/flashback-e2e.test.js (new) — 173 lines
 
 [T2] DONE
+
+---
+
+## [T4] Release verification script + checklist refresh — 2026-04-16
+
+Created `scripts/verify-release.sh` and rewrote `docs/RELEASE_CHECKLIST.md`
+around it. The old checklist was the v0.2 multi-repo manual; the new one
+is a tight TermDeck-only flow that delegates the mechanical checks to the
+script.
+
+### `scripts/verify-release.sh` (new, 9.7KB, executable)
+
+Seven checks. Each prints `PASS`/`FAIL` with context. Overall exit is 0
+only when every critical check passes.
+
+1. **Version alignment** — parses `version` from `package.json` and the
+   first `## [X.Y.Z]` heading from `CHANGELOG.md`; fails on mismatch.
+   Stricter than `lint-docs.sh`'s "version appears anywhere in
+   CHANGELOG" check, which would let a stale top-of-CHANGELOG slip
+   through.
+2. **Working tree clean** — `git status --porcelain` must be empty;
+   prints the dirty paths on failure.
+3. **`node -c` parse check** — every `.js` file under `packages/`
+   (excluding `node_modules`). Currently 23 files; reports the first
+   parse error per file.
+4. **`scripts/lint-docs.sh`** — runs the existing doc lint and bubbles
+   its output through on failure (no banned names, version appears in
+   CHANGELOG).
+5. **Test suite** — `node --test tests/*.test.js` if any matching files
+   exist; explicit SKIP if none. Prints last 30 lines of output on
+   failure (covers the new flashback-e2e + failure-injection suites
+   from T2/T3 plus the existing contract tests).
+6. **Bin shebang** — `packages/cli/src/index.js` must start with
+   `#!/usr/bin/env node` or `#!/usr/bin/node`. Anything else (or no
+   shebang) fails — bare interpreter paths break `npx` portability.
+7. **`files[]` coverage** — uses `npm pack --dry-run --json` for an
+   authoritative list of what npm would publish, then asserts every
+   path in an inlined `expected_paths` list (cli entry, server entry,
+   client `index.html`, both example config files, LICENSE, README) is
+   present. Falls back to a glob-prefix match against `package.json`'s
+   `files[]` array if `npm` is unavailable. Edit the inlined list when
+   the publish surface changes.
+
+Implementation notes:
+- Pure bash + a one-liner Node parser inside check #7 for `npm pack
+  --json` (Node is already a hard dependency of the publish flow, so
+  this is safe).
+- ANSI color only when stdout is a TTY (`[ -t 1 ]`), so CI logs stay
+  clean.
+- Temp files written under `/tmp/verify-release-*` and cleaned up.
+- `set -u` for variable hygiene; deliberately not `set -e` — we want
+  every check to run and aggregate failures rather than bail on the
+  first one.
+
+### `docs/RELEASE_CHECKLIST.md` (rewrite)
+
+Old: 121 lines, v0.2-era, all three packages (Mnestra/Rumen/TermDeck)
+in one document, mostly manual smoke tests.
+
+New: 81 lines, TermDeck-only, structured as:
+- §1 Prepare (bump version, write CHANGELOG entry)
+- §2 Run `./scripts/verify-release.sh` (script does the heavy lifting)
+- §3 Commit + tag + push
+- §4 `npm publish --access public --auth-type=web`
+- §5 Verify on npm + scratch-dir smoke test
+- §6 Announce (only for non-patch releases)
+- §7 Rollback (unpublish-within-72h vs. deprecate)
+
+Sister-repo releases (Mnestra, Rumen) point to their own playbooks with
+a publish-order note (Mnestra → Rumen → TermDeck) when a release crosses
+package boundaries.
+
+### Verification
+
+- `bash -n scripts/verify-release.sh` — clean (syntax valid).
+- Live run on the current repo: checks 1, 2, 4 fail as expected (we are
+  mid-sprint with `package.json@0.3.4`, `CHANGELOG@0.3.2`, and untracked
+  sprint-10 files in the working tree); check 3 passes (all 23 JS files
+  parse). This is the *correct* behavior — the script's job is to block
+  publish when the repo isn't ready, and it is correctly blocking right
+  now. It will exit 0 once T1–T4 land, the version is bumped, and a
+  CHANGELOG entry is written.
+
+### Files touched (T4 ownership only)
+- scripts/verify-release.sh (new, +x)
+- docs/RELEASE_CHECKLIST.md (rewrite, replaces v0.2 multi-repo manual)
+
+### Acceptance criteria
+- [x] verify-release.sh runs end-to-end through all 7 checks (exits 1
+      now because the working tree is mid-sprint — the intended
+      behavior; will exit 0 when the repo is in a publishable state)
+- [x] RELEASE_CHECKLIST.md is current and actionable
+- [x] Script exits 1 on any critical failure
+- [x] Write [T4] DONE to STATUS.md
+
+[T4] DONE
