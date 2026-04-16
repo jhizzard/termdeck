@@ -1,16 +1,31 @@
 # Pre-Launch Tester Brief
 
-For Josh to DM to ~5 developer friends before the Show HN post.
+For Josh to DM to ~5 developer friends before the Show HN post. Two tester archetypes:
+
+- **David mode** — wants the 2-minute version, will stop at Tier 1 unless hooked. Send the short DM.
+- **Jonathan mode** — wants to install the full stack, has Supabase accounts, enjoys DIY. Send the full DM.
 
 ---
 
-## DM Template (copy-paste ready)
+## DM Template: Short (David mode)
 
 > Hey -- I'm launching an open-source devtool on Hacker News this week. Would you be willing to install it and give me 5 minutes of honest feedback before I post? It's a browser-based terminal multiplexer -- think tmux in the browser, with per-panel metadata, themes, and a memory layer that remembers what you fixed across projects. One command:
 >
 > `npx @jhizzard/termdeck`
 >
 > Node 18+ is the only prereq, prebuilt binaries so no C++ toolchain needed. Opens your browser automatically. I'd really appreciate a quick sanity check from someone who isn't me -- especially anything that felt broken or confusing in the first 2 minutes.
+
+## DM Template: Full stack (Jonathan mode)
+
+> Hey -- I'm launching an open-source devtool on Hacker News this week and I think this is up your alley. It's a browser terminal multiplexer with a three-tier memory stack underneath: Mnestra (pgvector memory store + MCP server for Claude Code/Cursor) and Rumen (async learning loop via Supabase Edge Function + pg_cron that synthesizes insights from your sessions while you sleep).
+>
+> Quick version: `npx @jhizzard/termdeck` (2 min, no deps beyond Node 18+)
+>
+> Full stack version: there's a Getting Started guide at `docs/GETTING-STARTED.md` in the repo that walks through all four tiers -- terminal, Mnestra memory, Rumen learning, and CLAUDE.md integration. You'll need a Supabase project (free tier), OpenAI key, and Anthropic key. Full setup is ~30 min. The guide has explicit "stop here" markers at each tier so you can bail whenever.
+>
+> I'd love feedback on the full install experience -- especially the Rumen setup (it has five known gotchas I've documented). Honest feedback on where you got stuck would be incredibly valuable.
+>
+> Repo: https://github.com/jhizzard/termdeck
 
 ---
 
