@@ -1,6 +1,6 @@
-# Show HN draft — TermDeck v0.3.2 (Sprint 6 T4)
+# Show HN draft — TermDeck v0.3.5 (Sprint 12 final pass)
 
-Supersedes the earlier Sprint 3 draft at the same path. Written after the 2026-04-15 19:47 UTC Rumen kickstart.
+Supersedes the earlier Sprint 3 draft at the same path. Written after the 2026-04-15 19:47 UTC Rumen kickstart and refreshed through Sprints 6–11.
 
 ## Title
 

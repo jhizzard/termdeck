@@ -1,4 +1,4 @@
-# LinkedIn launch post — TermDeck v0.3.2 (Sprint 6 T4)
+# LinkedIn launch post — TermDeck v0.3.5 (Sprint 12 final pass)
 
 Single post, no thread. Target: 1,300–3,000 characters.
 
@@ -20,9 +20,9 @@ The whole loop closed end-to-end for the first time on 2026-04-15 at 19:47 UTC. 
 
 Two independent post-sprint audits — one by Claude Opus 4.6, one by Gemini 3.1 Pro — scored the stack at 9.25/10 and 9.5/9.0/8.5. Both reports are in the repo; I'd rather ship the reviews alongside the code than quote them selectively.
 
-Honest limits, because I care more about this than the pitch: Flashback only fires when the PTY output analyzer pattern-matches a known error class. If it misses your error, no flashback fires. It's a shortest-path to a memory you already wrote — if the memory isn't there, the feature does nothing. Mnestra currently needs Supabase and OpenAI; a fully-local SQLite + local-embedding path is on the roadmap and not shipped in v0.3.2. Validated against one developer's store. No multi-user data yet.
+Honest limits, because I care more about this than the pitch: Flashback only fires when the PTY output analyzer pattern-matches a known error class. If it misses your error, no flashback fires. It's a shortest-path to a memory you already wrote — if the memory isn't there, the feature does nothing. Mnestra currently needs Supabase and OpenAI; a fully-local SQLite + local-embedding path is on the roadmap and not shipped in v0.3.5. Validated against one developer's store. No multi-user data yet.
 
-v0.3.2 is live on npm as `@jhizzard/termdeck`. Try it with `npx @jhizzard/termdeck` — Node 18+, no global install needed. v0.3.2 added startup health checks (a "Stack: OK" badge in the top bar) and automatic session transcript backup. I'd love feedback from anyone who has hit the same "my tools don't remember" wall.
+v0.3.5 is live on npm as `@jhizzard/termdeck`. Try it with `npx @jhizzard/termdeck` — Node 18+, no global install needed. Recent releases added startup health checks (a "Stack: OK" badge in the top bar), session transcript backup, contract tests, a two-row toolbar, optional token auth with a refuse-to-bind-0.0.0.0-without-auth guardrail, and a `verify-release.sh` pre-publish script. I'd love feedback from anyone who has hit the same "my tools don't remember" wall.
 
 Repo: https://github.com/jhizzard/termdeck
 npm: https://www.npmjs.com/package/@jhizzard/termdeck
