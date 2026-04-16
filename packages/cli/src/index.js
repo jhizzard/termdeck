@@ -86,6 +86,7 @@ for (let i = 0; i < args.length; i++) {
 
 // Load and start server
 const { createServer, loadConfig } = require(path.join(__dirname, '..', '..', 'server', 'src', 'index.js'));
+const { runPreflight, printHealthBanner } = require(path.join(__dirname, '..', '..', 'server', 'src', 'preflight'));
 
 // Flag-driven env vars must be set BEFORE loadConfig() so any module that
 // reads process.env at require-time sees them.
@@ -115,6 +116,13 @@ server.listen(port, host, async () => {
   ║  Ctrl+C to stop                      ║
   ╚══════════════════════════════════════╝
   `);
+
+  // Run preflight health checks (non-blocking — warn but don't prevent startup)
+  runPreflight(config).then((result) => {
+    printHealthBanner(result);
+  }).catch((err) => {
+    console.error(`  \x1b[31m[health] Preflight failed: ${err.message}\x1b[0m\n`);
+  });
 
   // Skip auto-open in Codespaces/CI (port forwarding handles it)
   const isCodespaces = !!process.env.CODESPACES || !!process.env.GITHUB_CODESPACE_TOKEN;
