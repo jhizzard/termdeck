@@ -12,7 +12,7 @@ dist/
 
 # generated content (produced by `pnpm run sync-content`)
 src/content/docs/termdeck/
-src/content/docs/engram/
+src/content/docs/mnestra/
 src/content/docs/rumen/
 
 # OS
