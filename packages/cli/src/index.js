@@ -119,9 +119,17 @@ if (!LOOPBACK.has(host)) {
 }
 
 server.listen(port, host, async () => {
+  // Box inner width is 38 (count of ═ between ╔ and ╗). Center the title
+  // dynamically so the right border stays aligned regardless of version length.
+  const innerWidth = 38;
+  const version = require(path.join(__dirname, '..', '..', '..', 'package.json')).version;
+  const title = `TermDeck v${version}`;
+  const leftPad = Math.max(0, Math.floor((innerWidth - title.length) / 2));
+  const titleLine = ' '.repeat(leftPad) + title + ' '.repeat(Math.max(0, innerWidth - leftPad - title.length));
+
   console.log(`
   ╔══════════════════════════════════════╗
-  ║            TermDeck v${require(path.join(__dirname, '..', '..', '..', 'package.json')).version.padEnd(14)}║
+  ║${titleLine}║
   ╠══════════════════════════════════════╣
   ║  ${url.padEnd(34)}  ║
   ║                                      ║

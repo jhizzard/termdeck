@@ -55,7 +55,11 @@ const PATTERNS = {
   // tools (cat, ls, cd, rm, etc.) report filesystem misses in plain English
   // without ever emitting the ENOENT errno code. Flagged as a gap by Rumen's
   // first production kickstart insight on 2026-04-15.
-  error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied|\b5\d\d\b)\b/
+  error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied|\b5\d\d\b)\b/,
+  // Stricter line-anchored variant for Claude Code, whose tool output (grep
+  // results, test logs, file contents) routinely mentions "Error" mid-line
+  // without representing an actual failure of the agent itself.
+  errorLineStart: /^\s*(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied)\b/m
 };
 
 class Session {
@@ -291,7 +295,20 @@ class Session {
   }
 
   _detectErrors(clean) {
-    if (!PATTERNS.error.test(clean)) return;
+    // After a clean PTY exit (code 0), the session has already completed
+    // successfully — index.js sets status='exited' / exitCode=0 in onExit.
+    // Trailing data events that contain error-like strings (Claude Code tool
+    // output, log tails) shouldn't retroactively flip the panel back to
+    // 'errored'. Real errors surface via non-zero exit codes.
+    if (this.meta.exitCode === 0) return;
+
+    // Claude Code's tool output frequently contains "error"/"Error" mid-line
+    // (grep matches, test results, log dumps). Use a line-anchored pattern
+    // for that session type so we don't flag content as failure.
+    const pattern = this.meta.type === 'claude-code'
+      ? PATTERNS.errorLineStart
+      : PATTERNS.error;
+    if (!pattern.test(clean)) return;
 
     const oldStatus = this.meta.status;
     this.meta.status = 'errored';
