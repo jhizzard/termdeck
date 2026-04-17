@@ -106,6 +106,18 @@ const port = config.port || 3000;
 const host = config.host || '127.0.0.1';
 const url = `http://${host}:${port}`;
 
+// Bind guardrail: refuse non-loopback without auth token
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
+if (!LOOPBACK.has(host)) {
+  const authToken = config.auth?.token || process.env.TERMDECK_AUTH_TOKEN;
+  if (!authToken) {
+    console.error('[security] Refusing to bind to ' + host + ' without auth.token set.');
+    console.error('[security] Set auth.token in ~/.termdeck/config.yaml or TERMDECK_AUTH_TOKEN env var.');
+    console.error('[security] To bind locally only, set host: 127.0.0.1 in config.yaml');
+    process.exit(1);
+  }
+}
+
 server.listen(port, host, async () => {
   console.log(`
   ╔══════════════════════════════════════╗

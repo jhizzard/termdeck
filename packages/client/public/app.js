@@ -2565,9 +2565,13 @@
     const TIER23_CHECKS = new Set(['mnestra_reachable', 'mnestra_has_memories', 'rumen_recent', 'database_url']);
 
     function filterChecksByTier(checks) {
-      const hasDb = checks.some(c => c.name === 'database_url' && c.passed);
-      if (hasDb) return checks; // full stack configured — show everything
-      // No DATABASE_URL: only show Tier 1 checks
+      // Show Tier 2/3 checks if DATABASE_URL was ATTEMPTED (exists in results),
+      // regardless of pass/fail. Only hide higher-tier checks when the user
+      // has no DATABASE_URL at all (detail says "not set").
+      const dbCheck = checks.find(c => c.name === 'database_url');
+      const dbConfigured = dbCheck && !/not set/i.test(dbCheck.detail || '');
+      if (dbConfigured) return checks; // full stack configured — show everything
+      // No DATABASE_URL configured: only show Tier 1 checks
       return checks.filter(c => TIER1_CHECKS.has(c.name));
     }
 
