@@ -585,11 +585,16 @@ function createServer(config) {
     const unseen = typeof req.query.unseen === 'string' &&
       /^(1|true|yes)$/i.test(req.query.unseen);
 
+    let minConfidence = parseFloat(req.query.minConfidence);
+    if (!Number.isFinite(minConfidence)) minConfidence = 0.15;
+    minConfidence = Math.max(0, Math.min(1, minConfidence));
+
     const where = [];
     const params = [];
     if (project) { params.push(project); where.push(`$${params.length} = ANY(projects)`); }
     if (since)   { params.push(since);   where.push(`created_at >= $${params.length}`); }
     if (unseen)  { where.push(`acted_upon = FALSE`); }
+    params.push(minConfidence); where.push(`confidence >= $${params.length}`);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     try {
