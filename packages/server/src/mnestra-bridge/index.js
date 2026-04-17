@@ -9,6 +9,7 @@
 // Errors are thrown as plain Error objects; the caller maps them to HTTP responses.
 
 const { spawn } = require('child_process');
+const { resolveProjectName } = require('../rag');
 
 function createBridge(config) {
   const mode = config.rag?.mnestraMode || 'direct';
@@ -214,15 +215,27 @@ function createBridge(config) {
     }
   }
 
-  async function queryMnestra({ question, project, searchAll }) {
+  async function queryMnestra({ question, project, searchAll, sessionContext, cwd }) {
+    // Flashback callers pass the session's project (from config.yaml). If that
+    // slot is empty — e.g. a session created without an explicit project — fall
+    // back to resolving the session's cwd against config.projects so queries
+    // don't leak into unrelated repos via basename collisions.
+    let effectiveProject = project;
+    if (!effectiveProject) {
+      const ctxCwd = cwd || (sessionContext && sessionContext.cwd);
+      if (ctxCwd) {
+        effectiveProject = resolveProjectName(ctxCwd, config);
+      }
+    }
+
     switch (mode) {
       case 'webhook':
-        return queryWebhook({ question, project, searchAll });
+        return queryWebhook({ question, project: effectiveProject, searchAll });
       case 'mcp':
-        return queryMcp({ question, project, searchAll });
+        return queryMcp({ question, project: effectiveProject, searchAll });
       case 'direct':
       default:
-        return queryDirect({ question, project, searchAll });
+        return queryDirect({ question, project: effectiveProject, searchAll });
     }
   }
 

@@ -2,7 +2,43 @@
 // Layers: session → project → developer (cross-project)
 // Syncs to Supabase tables with configurable namespaces
 
+const path = require('path');
+const os = require('os');
 const { logRagEvent, getUnsyncedRagEvents, markRagEventsSynced } = require('./database');
+
+// Resolve a working directory to a canonical project name defined in
+// ~/.termdeck/config.yaml. Sessions without an explicit `project` field
+// otherwise end up tagged with raw directory segments (e.g. "chopin-nashville"
+// from ~/Documents/Graciella/ChopinNashville/...), which pollutes Mnestra
+// memory tagging across unrelated repos that share an ancestor folder.
+//
+// Strategy: walk config.projects and pick the entry whose resolved path is the
+// longest prefix of cwd (supports subdirectories of a registered project).
+// Fallback is the directory basename, which is still better than an arbitrary
+// mid-path segment.
+function resolveProjectName(cwd, config) {
+  if (!cwd) return null;
+
+  const cwdResolved = path.resolve(String(cwd).replace(/^~/, os.homedir()));
+  const projects = (config && config.projects) || {};
+
+  const entries = Object.entries(projects)
+    .map(([name, def]) => {
+      const rawPath = def && def.path;
+      if (!rawPath || typeof rawPath !== 'string') return null;
+      const resolved = path.resolve(rawPath.replace(/^~/, os.homedir()));
+      return { name, resolved };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.resolved.length - a.resolved.length);
+
+  for (const { name, resolved } of entries) {
+    if (cwdResolved === resolved) return name;
+    if (cwdResolved.startsWith(resolved + path.sep)) return name;
+  }
+
+  return path.basename(cwdResolved) || null;
+}
 
 class RAGIntegration {
   constructor(config, db) {
@@ -55,6 +91,13 @@ class RAGIntegration {
     }
   }
 
+  // Canonical project tag for a session. Prefers the explicit config.yaml name
+  // (set at session creation), falls back to cwd → config.projects resolution.
+  _projectFor(session) {
+    if (session.meta.project) return session.meta.project;
+    return resolveProjectName(session.meta.cwd, this.config);
+  }
+
   // Event types to record
   onSessionCreated(session) {
     this.record(session.id, 'session_created', {
@@ -62,7 +105,7 @@ class RAGIntegration {
       command: session.meta.command,
       cwd: session.meta.cwd,
       reason: session.meta.reason
-    }, session.meta.project);
+    }, this._projectFor(session));
   }
 
   onCommandExecuted(session, command, outputSnippet) {
@@ -70,7 +113,7 @@ class RAGIntegration {
       command,
       output_snippet: outputSnippet?.slice(0, 500), // Truncate for storage
       type: session.meta.type
-    }, session.meta.project);
+    }, this._projectFor(session));
   }
 
   onStatusChanged(session, oldStatus, newStatus) {
@@ -79,7 +122,7 @@ class RAGIntegration {
       to: newStatus,
       detail: session.meta.statusDetail,
       type: session.meta.type
-    }, session.meta.project);
+    }, this._projectFor(session));
   }
 
   onSessionEnded(session) {
@@ -88,7 +131,7 @@ class RAGIntegration {
       duration_ms: Date.now() - new Date(session.meta.createdAt).getTime(),
       command_count: session.meta.lastCommands.length,
       exit_code: session.meta.exitCode
-    }, session.meta.project);
+    }, this._projectFor(session));
   }
 
   onFileEdited(session, filepath, editType) {
@@ -96,7 +139,7 @@ class RAGIntegration {
       filepath,
       edit_type: editType,
       type: session.meta.type
-    }, session.meta.project);
+    }, this._projectFor(session));
   }
 
   // Circuit breaker check — returns true if pushes to this table are disabled
@@ -259,4 +302,4 @@ class RAGIntegration {
   }
 }
 
-module.exports = { RAGIntegration };
+module.exports = { RAGIntegration, resolveProjectName };
