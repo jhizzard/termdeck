@@ -158,7 +158,7 @@ class RAGIntegration {
     state.count += 1;
     if (state.count >= 3 && !state.open) {
       state.open = true;
-      console.error(`[rag] circuit breaker open for ${table} — 3 consecutive 404s, disabling pushes until server restart`);
+      console.warn(`[rag] circuit breaker open for ${table} — disabling pushes (table may not exist in Supabase)`);
     }
   }
 
@@ -208,7 +208,10 @@ class RAGIntegration {
       // Success — reset any accumulated 404 count for this table
       this._resetCircuit(table);
     } catch (err) {
-      console.error('[mnestra] Push failed:', err.message);
+      // Log at warn (not error) to reduce noise — the circuit breaker handles persistence
+      if (!this._isCircuitOpen(table)) {
+        console.warn('[rag] push to', table, 'failed:', err.message);
+      }
       throw err; // Propagate to caller so sync loop knows this event failed
     }
   }
@@ -243,7 +246,8 @@ class RAGIntegration {
             });
             synced.push(event.id);
           } catch (err) {
-            console.error('[rag] sync push failed for event', event.id + ':', err);
+            // Don't print full stack traces for expected 404s (missing tables)
+            console.debug('[rag] sync push failed for event', event.id + ':', err.message);
             break; // Stop on first failure, retry next cycle
           }
         }
