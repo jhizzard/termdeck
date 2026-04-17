@@ -1,10 +1,10 @@
 # TermDeck Post-Launch Roadmap
 
-Consolidated debt from five independent audits of v0.3.6 (Claude Opus 4.6, Gemini 3.1 Pro, Grok 4.20 Heavy, ChatGPT GPT-5.4 Pro) plus the Codex Sprint 13 readiness reassessment. Pruned against what v0.3.7 already shipped.
+Consolidated debt from five independent audits of v0.3.6 (Claude Opus 4.6, Gemini 3.1 Pro, Grok 4.20 Heavy, ChatGPT GPT-5.4 Pro) plus the Codex Sprint 13 readiness reassessment. Pruned against what v0.3.8 already shipped.
 
-**Base version:** 0.3.7 · **Updated:** 2026-04-17
+**Base version:** 0.3.8 · **Updated:** 2026-04-17
 
-## Already closed in v0.3.7 (reference)
+## Already closed in v0.3.8 (reference)
 
 - CLI bind guardrail bypass — `packages/cli/src/index.js` now enforces guard before `listen()` (**ChatGPT**, critical)
 - Health badge false-green when DB configured-but-failing — `filterChecksByTier()` fixed (**ChatGPT**, critical)
@@ -104,4 +104,4 @@ Flagged by: **ChatGPT S12, Grok S12**
 - **"Flagged by"** cites the audit(s) that surfaced the item. S6 = sprint-6 audit, S12 = sprint-12 audit.
 - Grok S12 also listed "Make RAG flush synchronous on session destroy" as a new risk; **Claude S12** confirms this was closed in Sprint 10 (`index.js` L874–886, 5s budget on `transcriptWriter.close()`). Not carried forward.
 - Grok S12 also flagged "no hard size cap on TranscriptWriter"; **Claude S12** notes the 10K-chunk cap shipped in commit `1f1d1e6`. Only the spill-to-disk enhancement remains (B-7).
-- ChatGPT's two critical findings (CLI bypass, health false-green) are closed in v0.3.7. Keep them in CHANGELOG for audit-trail purposes only; do not carry forward.
+- ChatGPT's two critical findings (CLI bypass, health false-green) are closed in v0.3.8. Keep them in CHANGELOG for audit-trail purposes only; do not carry forward.

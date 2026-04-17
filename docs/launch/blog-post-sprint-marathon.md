@@ -4,7 +4,7 @@ published: false
 description: "I ran 7 development sprints in 2 hours and 15 minutes using 4 parallel Claude Code terminals orchestrated through the product I was building. 50+ commits, ~4,000 lines. Here is exactly what happened."
 tags: ai, devtools, productivity, opensource
 cover_image: /docs/screenshots/flashback-demo.gif
-series: TermDeck v0.3.7 launch
+series: TermDeck v0.3.8 launch
 ---
 
 ## The starting state
@@ -108,7 +108,7 @@ Three things fell out of this marathon that I did not expect:
 
 The ecosystem is getting more capable in the obvious sense — models keep improving. But it is also getting more capable in a less-discussed sense: the connective tissue between agents and tools is getting thinner. The same 120-line endpoint kept showing up in more workflows than I ever imagined when I wrote it. Narrow, typed, transport-agnostic interfaces compose in ways their authors never planned for.
 
-TermDeck is at v0.3.7. It is MIT-licensed. The orchestration guide, benchmarks, and all five audit reports are in the repo.
+TermDeck is at v0.3.8. It is MIT-licensed. The orchestration guide, benchmarks, and all five audit reports are in the repo.
 
 ```bash
 npx @jhizzard/termdeck

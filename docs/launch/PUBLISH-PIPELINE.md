@@ -1,6 +1,6 @@
 # TermDeck Launch-Day Publishing Pipeline
 
-Mechanical, step-by-step pipeline for publishing TermDeck v0.3.7 across every channel. The goal is to remove all decision-making from launch day — every step has a source file, a URL, and a copy-paste string.
+Mechanical, step-by-step pipeline for publishing TermDeck v0.3.8 across every channel. The goal is to remove all decision-making from launch day — every step has a source file, a URL, and a copy-paste string.
 
 Companion script: `scripts/publish-launch.sh` runs the pre-flight checks and opens the composer URLs for each channel.
 
@@ -29,11 +29,11 @@ Run the script: `./scripts/publish-launch.sh --check`
 
 Manual checklist:
 
-- [ ] **npm version matches** — `npm view @jhizzard/termdeck version` returns `0.3.7`
+- [ ] **npm version matches** — `npm view @jhizzard/termdeck version` returns `0.3.8`
 - [ ] **Docs site is live** — `curl -sI https://termdeck-docs.vercel.app` returns `200 OK`
 - [ ] **Flashback GIF loads** — `curl -sI https://raw.githubusercontent.com/jhizzard/termdeck/main/docs/screenshots/flashback-demo.gif` returns `200 OK`
 - [ ] **GitHub repo is public and README renders** — open `https://github.com/jhizzard/termdeck`
-- [ ] **Release tag exists** — `git tag -l v0.3.7`
+- [ ] **Release tag exists** — `git tag -l v0.3.8`
 - [ ] **Tester feedback collected** — David, Jonathan, Yasin responses reviewed; blockers resolved
 - [ ] **HN account ready** — built minimal karma (at least a few comments on other threads), account older than a week
 - [ ] **Twitter thread drafted** — tweets 1-7 in Twitter compose drafts, GIF attached to tweet 5

@@ -4,7 +4,7 @@ published: false
 description: "Five independent AI auditors scored the TermDeck + Mnestra + Rumen stack. Average: 9.53/10. The hardest grader found the most important bugs. All five audit reports ship with the code."
 tags: ai, opensource, codereview, devtools
 cover_image: /docs/screenshots/flashback-demo.gif
-series: TermDeck v0.3.7 launch
+series: TermDeck v0.3.8 launch
 ---
 
 ## The experiment
