@@ -517,15 +517,135 @@
       });
       toast.addEventListener('click', () => {
         dismiss();
-        focusSessionById(id);
-        // Open the Memory tab so the user lands directly on the hit list
-        const entry2 = state.sessions.get(id);
-        if (entry2 && (!entry2.drawerOpen || entry2.activeTab !== 'memory')) {
-          toggleDrawerTab(id, 'memory');
-        }
+        showFlashbackModal(hit, id);
       });
 
       toast._autoTimer = setTimeout(dismiss, 30000);
+    }
+
+    // ===== Flashback modal (Sprint 16 T2) =====
+    let _flashbackModalEl = null;
+    let _flashbackKeyHandler = null;
+    let _flashbackPrevFocus = null;
+
+    function closeFlashbackModal() {
+      if (!_flashbackModalEl) return;
+      _flashbackModalEl.remove();
+      _flashbackModalEl = null;
+      if (_flashbackKeyHandler) {
+        document.removeEventListener('keydown', _flashbackKeyHandler);
+        _flashbackKeyHandler = null;
+      }
+      if (_flashbackPrevFocus && typeof _flashbackPrevFocus.focus === 'function') {
+        try { _flashbackPrevFocus.focus(); } catch {}
+      }
+      _flashbackPrevFocus = null;
+    }
+
+    function logFlashbackFeedback(hit, sessionId, verdict) {
+      // Fire-and-forget; no dedicated endpoint yet.
+      const payload = {
+        verdict,
+        sessionId: sessionId || null,
+        project: hit?.project || null,
+        sourceType: hit?.source_type || hit?.sourceType || null,
+        similarity: typeof hit?.similarity === 'number' ? hit.similarity : null,
+        contentPreview: (hit?.content || hit?.text || '').slice(0, 160),
+        at: new Date().toISOString(),
+      };
+      console.log('[flashback] feedback', payload);
+    }
+
+    function showFlashbackModal(hit, sessionId) {
+      // Replace any existing modal (new toast wins).
+      if (_flashbackModalEl) closeFlashbackModal();
+
+      _flashbackPrevFocus = document.activeElement;
+
+      const content = (hit?.content || hit?.text || '').trim();
+      const project = hit?.project || '';
+      const sourceType = hit?.source_type || hit?.sourceType || '';
+      const createdAt = hit?.created_at || hit?.createdAt || '';
+      const scoreNum = typeof hit?.similarity === 'number' ? hit.similarity : null;
+      const scorePct = scoreNum !== null ? `${(scoreNum * 100).toFixed(0)}%` : '';
+
+      const overlay = document.createElement('div');
+      overlay.className = 'flashback-modal open';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'flashbackTitle');
+
+      const projectChip = project
+        ? `<span class="fb-chip fb-chip-project">${escapeHtml(project)}</span>`
+        : '';
+      const scoreChip = scorePct
+        ? `<span class="fb-chip fb-chip-score">${escapeHtml(scorePct)}</span>`
+        : '';
+      const sourceLine = sourceType
+        ? `<span class="fb-meta-item"><span class="fb-meta-label">source</span> ${escapeHtml(sourceType)}</span>`
+        : '';
+      const timeLine = createdAt
+        ? `<span class="fb-meta-item"><span class="fb-meta-label">when</span> ${escapeHtml(timeAgo(createdAt))}</span>`
+        : '';
+      const projectLine = project
+        ? `<span class="fb-meta-item"><span class="fb-meta-label">project</span> ${escapeHtml(project)}</span>`
+        : '';
+
+      overlay.innerHTML = `
+        <div class="fb-backdrop"></div>
+        <div class="fb-card" tabindex="-1">
+          <header>
+            <h3 id="flashbackTitle">
+              <span class="fb-title-text">Flashback — similar issue found</span>
+              <span class="fb-title-chips">${projectChip}${scoreChip}</span>
+            </h3>
+            <button class="fb-x" type="button" aria-label="Close">×</button>
+          </header>
+          <div class="fb-body">
+            <pre class="fb-content">${escapeHtml(content || '(empty memory)')}</pre>
+            <div class="fb-meta">
+              ${projectLine}
+              ${sourceLine}
+              ${timeLine}
+            </div>
+          </div>
+          <footer>
+            <div class="fb-feedback">
+              <button class="fb-btn fb-helped" type="button">This helped</button>
+              <button class="fb-btn fb-not-relevant" type="button">Not relevant</button>
+            </div>
+            <button class="fb-btn fb-dismiss" type="button">Dismiss</button>
+          </footer>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+      _flashbackModalEl = overlay;
+
+      overlay.querySelector('.fb-backdrop').addEventListener('click', closeFlashbackModal);
+      overlay.querySelector('.fb-x').addEventListener('click', closeFlashbackModal);
+      overlay.querySelector('.fb-dismiss').addEventListener('click', closeFlashbackModal);
+      overlay.querySelector('.fb-helped').addEventListener('click', () => {
+        logFlashbackFeedback(hit, sessionId, 'helped');
+        closeFlashbackModal();
+      });
+      overlay.querySelector('.fb-not-relevant').addEventListener('click', () => {
+        logFlashbackFeedback(hit, sessionId, 'not_relevant');
+        closeFlashbackModal();
+      });
+
+      _flashbackKeyHandler = (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeFlashbackModal();
+        }
+      };
+      document.addEventListener('keydown', _flashbackKeyHandler);
+
+      setTimeout(() => {
+        const card = overlay.querySelector('.fb-card');
+        if (card) card.focus();
+      }, 30);
     }
 
     // ===== Reply / send-to-terminal (T1.3) =====
