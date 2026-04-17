@@ -68,7 +68,7 @@ interaction.
    file paths, error signatures, port numbers, agent states.
 2. **Relate.** For each extracted fact, Rumen searches Mnestra for similar
    prior facts and builds a lightweight graph of "seen this before" edges.
-3. **Synthesize.** (Rumen v0.2) A cached Haiku prompt takes a cluster of
+3. **Synthesize.** (Rumen v0.4.1) A cached Haiku prompt takes a cluster of
    related facts and writes a short insight — "same CORS fix as last week",
    "this error mode has happened 3 times in scheduling-saas".
 4. **Surface.** Insights are written to `rumen_insights`, tagged with
