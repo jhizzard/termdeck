@@ -11,15 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
 
-## [0.3.7] - 2026-04-17
-
-### Fixed
-- **CLI bind guardrail bypass**: the 0.0.0.0 bind guard was only in `index.js` `require.main` path, not in the CLI entrypoint users actually run. Now enforced in `packages/cli/src/index.js` before `server.listen()`. Found by ChatGPT GPT-5.4 Pro audit.
-- **Health badge false-green**: `filterChecksByTier()` collapsed to "Tier 1: OK" when DATABASE_URL was configured but failing, hiding the real failure. Now shows all checks whenever DATABASE_URL is configured, regardless of pass/fail.
+## [0.3.8] - 2026-04-17
 
 ### Added
-- **`scripts/bump-version.sh`**: one-command version bump across package.json + all active docs. Prevents the version-truth drift that 3 auditors flagged.
-- **CLI banner reads version dynamically** from package.json (was hardcoded `v0.2.0` since Sprint 2).
+- **Flashback modal**: clicking a Flashback toast now opens a proper centered modal with content, project tag, similarity score, and feedback buttons (previously opened buried drawer tab)
+- **Project name resolution**: sessions and insights use config.yaml project names instead of directory path segments (fixes "chopin-nashville" appearing everywhere)
+- **Insight confidence filter**: `GET /api/rumen/insights` accepts `?minConfidence=0.15` (default) to filter low-quality noise
+- **Insight quality guide**: `docs/INSIGHT-QUALITY.md` with confidence score interpretation and tuning recommendations
+- **`scripts/bump-version.sh`**: one-command version bump across package.json + all active docs
+
+### Fixed
+- **CLI banner right border**: dynamic version string now centers correctly in the ASCII box
+- **Error detection false positive**: clean PTY exits (code 0) no longer persist "Error detected in output" status. Claude Code sessions use stricter line-start error matching to avoid flagging grep results and tool output
+- **CLI bind guardrail bypass**: guard now enforced in the CLI entrypoint, not just the direct server path
+- **Health badge false-green**: shows all checks when DATABASE_URL is configured, regardless of pass/fail
 
 ## [0.3.6] - 2026-04-16
 
@@ -198,8 +203,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status broadcast** every 2 seconds for live metadata updates
 - **Keyboard shortcuts**: Ctrl+Shift+N for prompt bar, Ctrl+Shift+1-6 for layouts, Ctrl+Shift+]/[ to cycle terminals, Escape to exit focus
 
-[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.3.7...HEAD
-[0.3.7]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.3.7
+[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.3.8
 [0.3.4]: https://github.com/jhizzard/termdeck/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jhizzard/termdeck/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jhizzard/termdeck/compare/v0.3.1...v0.3.2
