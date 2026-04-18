@@ -1,4 +1,4 @@
-# Show HN draft — TermDeck v0.4.1 (Sprint 12 final pass)
+# Show HN draft — TermDeck v0.4.2 (Sprint 12 final pass)
 
 Supersedes the earlier Sprint 3 draft at the same path. Written after the 2026-04-15 19:47 UTC Rumen kickstart and refreshed through Sprints 6–11.
 
@@ -20,6 +20,6 @@ Honest limits: Flashback fires on pattern-matched error strings from the PTY out
 
 ## First comment
 
-Author here. What I'd most like feedback on is Rumen's Extract → Relate → Synthesize → Surface loop. As of rumen@0.4.1 (Sprint 5), Relate uses real pgvector embeddings — the keyword-only path (`NULL::vector`, `semantic_weight: 0.0`) shipped in v0.3 has been replaced. Sprint 6 added startup health checks (the "Stack: OK" badge you see in the top bar) and automatic session transcript backup. I'm specifically curious about: (1) is 15 minutes the right pg_cron cadence, or should it be event-driven off session close? (2) Haiku-first with an escalate-on-similarity rule and a soft cap of 100 LLM calls/day/dev — does that cost posture hold up at real usage? (3) Writing synthesized insights back into the same store as first-class memories — is that sound, or will it drift into noise over a year? Code is MIT and all three repos are linked from https://github.com/jhizzard/termdeck.
+Author here. What I'd most like feedback on is Rumen's Extract → Relate → Synthesize → Surface loop. As of rumen@0.4.2 (Sprint 5), Relate uses real pgvector embeddings — the keyword-only path (`NULL::vector`, `semantic_weight: 0.0`) shipped in v0.3 has been replaced. Sprint 6 added startup health checks (the "Stack: OK" badge you see in the top bar) and automatic session transcript backup. I'm specifically curious about: (1) is 15 minutes the right pg_cron cadence, or should it be event-driven off session close? (2) Haiku-first with an escalate-on-similarity rule and a soft cap of 100 LLM calls/day/dev — does that cost posture hold up at real usage? (3) Writing synthesized insights back into the same store as first-class memories — is that sound, or will it drift into noise over a year? Code is MIT and all three repos are linked from https://github.com/jhizzard/termdeck.
 
 <!-- first comment target: 300–800 chars -->

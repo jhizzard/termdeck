@@ -11,9 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
 
-## [0.4.1] - 2026-04-18
+## [0.4.2] - 2026-04-18
 
 ### Added
+- **SkillForge foundation** (Tier 5): `termdeck forge` CLI command reads memory count from Mnestra and projects Opus cost. 4-phase prompt template (quality audit → pattern extraction → skill generation → self-critique). Skill installer writes .md files to `~/.claude/skills/`. Actual Opus call stubbed for v0.5.
+- **Orchestrator layout fix**: explicit 4-row grid (fixes `grid-row: 1/-1` failure with auto rows)
 - **Setup wizard**: click "config" to see 4-tier status (green/amber/gray), next-step commands, and a re-check button. Auto-opens on first run.
 - **GET /api/setup**: tier detection endpoint returning config state and firstRun flag
 - **First-run detection**: CLI prints setup hint when no config.yaml exists
@@ -222,8 +224,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status broadcast** every 2 seconds for live metadata updates
 - **Keyboard shortcuts**: Ctrl+Shift+N for prompt bar, Ctrl+Shift+1-6 for layouts, Ctrl+Shift+]/[ to cycle terminals, Escape to exit focus
 
-[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.4.1
+[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.4.2
 [0.3.4]: https://github.com/jhizzard/termdeck/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jhizzard/termdeck/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jhizzard/termdeck/compare/v0.3.1...v0.3.2

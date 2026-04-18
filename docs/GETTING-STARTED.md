@@ -96,7 +96,7 @@ Dashboard > **Connect** (green button) > **Transaction pooler** tab > **toggle O
 ```bash
 export DATABASE_URL="<paste the URL you just copied>"
 
-for i in 001 002 003 0.4.105 006; do
+for i in 001 002 003 0.4.205 006; do
   psql "$DATABASE_URL" -f "$(npm root -g)/@jhizzard/mnestra/migrations/${i}_*.sql"
 done
 ```
