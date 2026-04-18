@@ -10,7 +10,7 @@ This is the one-page reference for Show HN day. If a row is unchecked at T-minus
 
 | Package | Version | npm | Repo |
 |---|---|---|---|
-| `@jhizzard/termdeck` | **0.3.8** | https://www.npmjs.com/package/@jhizzard/termdeck | https://github.com/jhizzard/termdeck |
+| `@jhizzard/termdeck` | **0.3.9** | https://www.npmjs.com/package/@jhizzard/termdeck | https://github.com/jhizzard/termdeck |
 | `@jhizzard/mnestra` | **0.2.0** | https://www.npmjs.com/package/@jhizzard/mnestra | https://github.com/jhizzard/mnestra |
 | `@jhizzard/rumen` | **0.4.1** | https://www.npmjs.com/package/@jhizzard/rumen | https://github.com/jhizzard/rumen |
 
@@ -33,7 +33,7 @@ Feature name inside TermDeck: **Flashback** — proactive memory recall when a p
 
 ### T-minus-24 hours
 - [ ] `scripts/verify-release.sh` exits 0 on a fresh clone of `main`
-- [ ] `npm view @jhizzard/termdeck version` == `0.3.8` (likewise mnestra @ 0.2.0, rumen @ 0.4.1)
+- [ ] `npm view @jhizzard/termdeck version` == `0.3.9` (likewise mnestra @ 0.2.0, rumen @ 0.4.1)
 - [ ] CI green on latest `main` commit
 - [ ] `docs/screenshots/flashback-demo.gif` exists, renders in the README, and shows the current UI (not pre-Sprint-5)
 - [ ] `docs-site/` deployed; `help` button in `packages/client/public/index.html` points at the live URL
@@ -81,11 +81,11 @@ All times relative to **T0 = Show HN submission time**.
 
 Quoted from `docs/launch/NAMING-DECISIONS.md` §"Honest limits paragraph". Reproduce verbatim in the Show HN body and the README:
 
-> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3.8. Validated against one developer's store (~3,527 memories). No multi-user data yet.
+> Flashback fires on pattern-matched error strings from the PTY output analyzer. If the analyzer misses your error class, no flashback. It's a shortest-path to a memory *you already wrote* — if the memory isn't there, the feature does nothing. Mnestra reaches out to Supabase for storage and OpenAI for embeddings; a fully-local path (SQLite + local embeddings) is on the roadmap but not shipped in v0.3.9. Validated against one developer's store (~3,527 memories). No multi-user data yet.
 
 Additional limits worth pre-empting:
 - **Windows** support is partial (node-pty works via conpty; Flashback loop tested on macOS + Debian only).
-- **Ollama embeddings** not supported in v0.3.8 (single fixed embedding model per index; migration path exists).
+- **Ollama embeddings** not supported in v0.3.9 (single fixed embedding model per index; migration path exists).
 - **Single-user scale**: ~3,527 memories is one developer over roughly 6 months. No multi-user or high-concurrency data yet.
 
 ---
@@ -94,7 +94,7 @@ Additional limits worth pre-empting:
 
 **If an npm install reliably fails on a tier-1 platform (macOS 14+ or Ubuntu 22.04):**
 1. Don't delete the HN post. Edit the first comment with a link to the tracking issue.
-2. Publish a patch release (`0.3.8`) with the fix. Target time-to-fix: < 2 hours.
+2. Publish a patch release (`0.3.9`) with the fix. Target time-to-fix: < 2 hours.
 3. Reply to affected HN commenters with the new version and an apology; keep the tone concrete and non-defensive.
 
 **If Mnestra or Rumen hits a Supabase quota limit during the launch rush:**

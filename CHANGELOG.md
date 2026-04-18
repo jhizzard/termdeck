@@ -11,6 +11,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
 
+## [0.3.9] - 2026-04-18
+
+### Added
+- **Orchestrator layout**: new "orch" preset — 1 large panel (60% left) + stacked workers (40% right). Keyboard shortcut: Cmd/Ctrl+Shift+7
+- **Session ID in panel headers**: first 8 chars visible at a glance for orchestration workflows
+- **Mnestra auto-start**: `mnestra.autoStart: true` in config.yaml makes start.sh boot Mnestra automatically. Detects already-running instances.
+
+### Changed
+- `actions/checkout` v4→v6 in CI workflow
+- `uuid` 9→13 (named export `{ v4 }` verified)
+- Contradictions #6 marked resolved (engram/ directory no longer exists)
+- Docs-site rebuilt with fixed Rumen changelog, Mnestra migration list, security cookie name
+
 ## [0.3.8] - 2026-04-17
 
 ### Added
@@ -203,8 +216,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status broadcast** every 2 seconds for live metadata updates
 - **Keyboard shortcuts**: Ctrl+Shift+N for prompt bar, Ctrl+Shift+1-6 for layouts, Ctrl+Shift+]/[ to cycle terminals, Escape to exit focus
 
-[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.3.8...HEAD
-[0.3.8]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.3.8
+[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.3.9
 [0.3.4]: https://github.com/jhizzard/termdeck/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jhizzard/termdeck/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jhizzard/termdeck/compare/v0.3.1...v0.3.2

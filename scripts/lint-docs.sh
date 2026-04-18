@@ -40,7 +40,7 @@ fail=0
 #
 # Line-level exclusions: lines whose context marks them as historical.
 
-excluded_paths_regex='(^\./node_modules/|/node_modules/|^\./dist/|^\./\.git/|^\./docs/launch/|^\./docs/sprint-|^\./docs/name-dispute|^\./docs/DOCS-HYGIENE-ROADMAP-TO-10\.md$|^\./docs/rumen-deploy-log\.md$|^\./docs/SESSION-STATUS-|^\./docs/tier2-verification\.md$|^\./docs/STATUS\.md$|^\./docs/CONTRADICTIONS\.md$|^\./docs/screenshots/|^\./docs-site/src/content/docs/engram/|^\./docs-site/src/content/docs/termdeck/docs/|^\./SESSION-HISTORY\.md$|^\./PLAN-rename-and-architecture\.md$)'
+excluded_paths_regex='(^\./node_modules/|/node_modules/|^\./dist/|^\./\.git/|^\./docs/launch/|^\./docs/sprint-|^\./docs/name-dispute|^\./docs/DOCS-HYGIENE-ROADMAP-TO-10\.md$|^\./docs/rumen-deploy-log\.md$|^\./docs/SESSION-STATUS-|^\./docs/tier2-verification\.md$|^\./docs/STATUS\.md$|^\./docs/CONTRADICTIONS\.md$|^\./docs/screenshots/|^\./docs-site/src/content/docs/engram/|^\./docs-site/src/content/docs/rumen/|^\./docs-site/src/content/docs/termdeck/docs/|^\./SESSION-HISTORY\.md$|^\./PLAN-rename-and-architecture\.md$)'
 
 md_files=$(find . -type f \( -name '*.md' -o -name '*.mdx' \) 2>/dev/null \
   | grep -Ev "$excluded_paths_regex" || true)
