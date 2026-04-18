@@ -12,6 +12,8 @@
 // `--mnestra` / `init-mnestra.js` together.
 
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { execSync } = require('child_process');
 
 // Parse CLI args
@@ -94,6 +96,11 @@ if (flags.sessionLogs) {
   process.env.TERMDECK_SESSION_LOGS = '1';
 }
 
+// First-run detection (Sprint 19 T3): surface a one-line hint pointing at
+// the setup wizard when no config.yaml exists yet. Check happens before
+// loadConfig() so the message reflects on-disk state, not defaults.
+const firstRun = !fs.existsSync(path.join(os.homedir(), '.termdeck', 'config.yaml'));
+
 const config = loadConfig();
 if (flags.port) config.port = flags.port;
 if (flags.sessionLogs) {
@@ -136,6 +143,10 @@ server.listen(port, host, async () => {
   ║  Ctrl+C to stop                      ║
   ╚══════════════════════════════════════╝
   `);
+
+  if (firstRun) {
+    console.log("  First run detected. Open http://localhost:3000 and click 'config' to set up.\n");
+  }
 
   // Run preflight health checks (non-blocking — warn but don't prevent startup)
   runPreflight(config).then((result) => {
