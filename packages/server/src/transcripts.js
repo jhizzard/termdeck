@@ -46,6 +46,8 @@ class TranscriptWriter {
     // Lazy pool
     this._pool = null;
     this._poolFailed = false;
+    this._poolFailedAt = 0;
+    this._poolRetryMs = 30_000;
 
     // Start flush timer
     this._timer = null;
@@ -56,7 +58,13 @@ class TranscriptWriter {
 
   // Lazy-init pg.Pool (same pattern as getRumenPool in index.js)
   _getPool() {
-    if (this._pool || this._poolFailed) return this._pool;
+    if (this._pool) return this._pool;
+    if (this._poolFailed) {
+      if (Date.now() - this._poolFailedAt < this._poolRetryMs) return null;
+      console.warn('[transcript] retrying pool creation after 30s cooldown');
+      this._poolFailed = false;
+      this._poolFailedAt = 0;
+    }
     if (!pg || !this._databaseUrl) return null;
     try {
       this._pool = new pg.Pool({
@@ -72,6 +80,7 @@ class TranscriptWriter {
     } catch (err) {
       console.error('[transcript] pool creation failed:', err.message);
       this._poolFailed = true;
+      this._poolFailedAt = Date.now();
       return null;
     }
   }
