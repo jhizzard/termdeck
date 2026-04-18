@@ -59,8 +59,12 @@ class RAGIntegration {
     };
 
     // Circuit breaker: track consecutive 404s per table name.
-    // After 3 consecutive 404s, disable pushes to that table until restart.
-    this._circuitBreaker = new Map(); // table -> { count: number, open: boolean }
+    // After 3 consecutive 404s, open the breaker. The breaker auto-transitions
+    // to half-open after 5 minutes, allowing one retry attempt. A successful
+    // retry fully resets the breaker; a failed retry re-opens it for another
+    // 5-minute backoff window.
+    this._circuitBreaker = new Map(); // table -> { count, open, openedAt, halfOpen }
+    this._halfOpenDelayMs = 5 * 60 * 1000;
 
     if (this.enabled) {
       this._startSync();
@@ -142,22 +146,34 @@ class RAGIntegration {
     }, this._projectFor(session));
   }
 
-  // Circuit breaker check — returns true if pushes to this table are disabled
+  // Circuit breaker check — returns true if pushes to this table are disabled.
+  // Has a side effect: when the 5-minute half-open window has elapsed, flips
+  // the breaker to half-open and permits one retry attempt through.
   _isCircuitOpen(table) {
     const state = this._circuitBreaker.get(table);
-    return !!(state && state.open);
+    if (!state || !state.open) return false;
+    if (state.halfOpen) return true; // retry already in flight — block concurrent pushes
+
+    const elapsed = Date.now() - (state.openedAt || 0);
+    if (elapsed >= this._halfOpenDelayMs) {
+      state.halfOpen = true;
+      console.log(`[rag] circuit breaker half-open for ${table}, retrying`);
+      return false; // allow one attempt through
+    }
+    return true;
   }
 
   // Record a 404 for a table; opens the breaker after 3 consecutive hits
   _record404(table) {
     let state = this._circuitBreaker.get(table);
     if (!state) {
-      state = { count: 0, open: false };
+      state = { count: 0, open: false, openedAt: null, halfOpen: false };
       this._circuitBreaker.set(table, state);
     }
     state.count += 1;
     if (state.count >= 3 && !state.open) {
       state.open = true;
+      state.openedAt = Date.now();
       console.warn(`[rag] circuit breaker open for ${table} — disabling pushes (table may not exist in Supabase)`);
     }
   }
@@ -208,8 +224,14 @@ class RAGIntegration {
       // Success — reset any accumulated 404 count for this table
       this._resetCircuit(table);
     } catch (err) {
-      // Log at warn (not error) to reduce noise — the circuit breaker handles persistence
-      if (!this._isCircuitOpen(table)) {
+      const state = this._circuitBreaker.get(table);
+      if (state && state.halfOpen) {
+        // Half-open retry failed — re-open for another 5-minute backoff window
+        state.halfOpen = false;
+        state.openedAt = Date.now();
+        console.warn(`[rag] circuit breaker re-opened for ${table} after half-open retry failed`);
+      } else if (!state || !state.open) {
+        // Log at warn (not error) to reduce noise — the circuit breaker handles persistence
         console.warn('[rag] push to', table, 'failed:', err.message);
       }
       throw err; // Propagate to caller so sync loop knows this event failed
