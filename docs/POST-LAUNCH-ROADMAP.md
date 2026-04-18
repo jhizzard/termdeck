@@ -2,13 +2,19 @@
 
 Consolidated debt from five independent audits of v0.3.6 (Claude Opus 4.6, Gemini 3.1 Pro, Grok 4.20 Heavy, ChatGPT GPT-5.4 Pro) plus the Codex Sprint 13 readiness reassessment. Pruned against what v0.3.8 already shipped.
 
-**Base version:** 0.3.8 · **Updated:** 2026-04-17
+**Base version:** 0.3.9 · **Updated:** 2026-04-18
 
 ## Already closed in v0.3.8 (reference)
 
 - CLI bind guardrail bypass — `packages/cli/src/index.js` now enforces guard before `listen()` (**ChatGPT**, critical)
 - Health badge false-green when DB configured-but-failing — `filterChecksByTier()` fixed (**ChatGPT**, critical)
 - Version-truth drift + stale CLI banner `v0.2.0` — `bump-version.sh` + dynamic banner from `package.json` (**Codex**, **Claude**, **Gemini**)
+
+## Closed in Sprint 18 (v0.3.10)
+
+- **V4-2** TranscriptWriter permanent pool failure latch — 30s TTL retry pattern applied (T2)
+- **V4-4** Client WebSocket hardcoded `ws://` — protocol-aware `wss://` switch on HTTPS (T1)
+- **V5-8** RAG circuit-breaker half-open + telemetry — timed half-open probes + `/api/health` exposure (T3)
 
 ---
 
@@ -20,17 +26,19 @@ Items flagged by **3+ auditors**, security hardening for beyond-localhost, and t
 `generateEmbedding` in `rumen/src/relate.ts` handles 4 failure modes (AbortController timeout, non-2xx, malformed vector, network error) with zero unit tests. `relate.test.ts` deletes `OPENAI_API_KEY` and only exercises keyword-only mode. Mock `fetch` at the module boundary and add the 4 tests.
 Flagged by: **Claude S6 + S12, Gemini S12, Grok S12, ChatGPT S12** (4 auditors, longest-deferred)
 
-### V4-2 · `TranscriptWriter` permanent pool failure latch (MEDIUM)
-`transcripts.js` L74 sets `_poolFailed = true` with no retry — exact same bug class `getRumenPool` had. A transient DB outage at startup permanently disables transcript writing for the life of the process. Apply the 30s TTL pattern already proven in `index.js` (`RUMEN_POOL_RETRY_MS`).
-Flagged by: **Claude S12, Gemini S12, ChatGPT S12** (3 auditors)
+### ~~V4-2 · `TranscriptWriter` permanent pool failure latch (MEDIUM)~~ **RESOLVED Sprint 18 T2**
+~~`transcripts.js` L74 sets `_poolFailed = true` with no retry — exact same bug class `getRumenPool` had. A transient DB outage at startup permanently disables transcript writing for the life of the process. Apply the 30s TTL pattern already proven in `index.js` (`RUMEN_POOL_RETRY_MS`).~~
+~~Flagged by: **Claude S12, Gemini S12, ChatGPT S12** (3 auditors)~~
+**Closed:** Sprint 18 T2 ported the `RUMEN_POOL_RETRY_MS` TTL pattern into `transcripts.js`.
 
 ### V4-3 · Mnestra direct-bridge contract drift (HIGH)
 `mnestra-bridge` direct mode posts `recency_weight` + `decay_days` (10 args) but the bundled `memory_hybrid_search` SQL takes 8. Bridge reads `m.similarity`; SQL returns `score`. Either bump the bundled migration or align the call site. Add a contract test that mirrors `health-contract.test.js`.
 Flagged by: **ChatGPT S12**, open in **CONTRADICTIONS #1** since Sprint 8
 
-### V4-4 · Client WebSocket URL is hardcoded `ws://` (HIGH for HTTPS deploys)
-`app.js` `WS_BASE = \`ws://${window.location.host}/ws\`` — HTTPS deploys break on mixed-content. Switch to protocol-aware `wss://` when `location.protocol === 'https:'`. Required before any beyond-localhost story can be called production-ready.
-Flagged by: **ChatGPT S12**
+### ~~V4-4 · Client WebSocket URL is hardcoded `ws://` (HIGH for HTTPS deploys)~~ **RESOLVED Sprint 18 T1**
+~~`app.js` `WS_BASE = \`ws://${window.location.host}/ws\`` — HTTPS deploys break on mixed-content. Switch to protocol-aware `wss://` when `location.protocol === 'https:'`. Required before any beyond-localhost story can be called production-ready.~~
+~~Flagged by: **ChatGPT S12**~~
+**Closed:** Sprint 18 T1 made `WS_BASE` protocol-aware in `app.js`. Mixed-content failure mode removed.
 
 ### V4-5 · Auth brute-force rate limiting (security hardening)
 `auth.js` does strict-equality token comparison with no delay or IP throttle on failed 401s. Add in-memory bucket delay on failures; consider switching comparison to `crypto.timingSafeEqual`.
@@ -77,9 +85,10 @@ Flagged by: **Claude S6 + S12, Gemini S12** (2 auditors, cross-sprint)
 `failure-injection.test.js` skips gracefully when no server is up — correct for local dev but silent in CI. Add `TERMDECK_REQUIRE_LIVE=1` that upgrades skips to failures.
 Flagged by: **Claude S12, Gemini S12**
 
-### V5-8 · RAG circuit-breaker telemetry + half-open state
-Per-table breaker works but has no observability and no explicit half-open recovery. Expose state via `/api/health` and add timed half-open probes.
-Flagged by: **ChatGPT S12, Grok S12**
+### ~~V5-8 · RAG circuit-breaker telemetry + half-open state~~ **RESOLVED Sprint 18 T3**
+~~Per-table breaker works but has no observability and no explicit half-open recovery. Expose state via `/api/health` and add timed half-open probes.~~
+~~Flagged by: **ChatGPT S12, Grok S12**~~
+**Closed:** Sprint 18 T3 added timed half-open recovery in `rag.js` and exposed breaker state through `/api/health`.
 
 ---
 

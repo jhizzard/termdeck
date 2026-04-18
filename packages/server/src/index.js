@@ -133,6 +133,11 @@ function createServer(config) {
   // ==================== REST API ====================
 
   // GET /api/health - preflight health checks (Sprint 6 T1, wired by T3)
+  // SECURITY NOTE: Returns operational detail (memory counts, DB latency, project paths,
+  // RAG breaker state). Intentional for local-first use — TermDeck binds to 127.0.0.1 by
+  // default and the CLI guardrail blocks beyond-localhost binds without explicit opt-in.
+  // For any non-loopback deployment (Sprint 18+ remote story), gate this route behind auth
+  // or scope the response to a minimal {status, version} payload.
   app.get('/api/health', createHealthHandler(config));
 
   // GET /api/sessions - list all active sessions
