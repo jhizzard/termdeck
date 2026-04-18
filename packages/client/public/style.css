@@ -312,6 +312,16 @@
     .grid-container.layout-4x2 { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
     .grid-container.layout-2x4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr 1fr; }
 
+    /* Orchestrator: 1 large left panel (60%), remaining stack on the right (40%). */
+    .grid-container.layout-orch {
+      grid-template-columns: 3fr 2fr;
+      grid-auto-rows: 1fr;
+    }
+    .grid-container.layout-orch .term-panel:first-child {
+      grid-row: 1 / -1;
+      grid-column: 1;
+    }
+
     /* Focus mode: single terminal fills the grid */
     .grid-container.layout-focus { grid-template-columns: 1fr; grid-template-rows: 1fr; }
     .grid-container.layout-focus .term-panel:not(.focused) { display: none; }
@@ -392,6 +402,19 @@
       white-space: nowrap;
     }
     .panel-index:empty { display: none; }
+
+    /* Short session ID (first 8 chars) — orchestrator-friendly: lets the
+       overseer reference a terminal without hitting the API. */
+    .panel-sid {
+      font-family: 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+      font-size: 10px;
+      color: var(--tg-text-dim);
+      background: var(--tg-surface-hover);
+      padding: 1px 5px;
+      border-radius: 3px;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
 
     .panel-project {
       font-size: 10px;

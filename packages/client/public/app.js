@@ -122,6 +122,7 @@
             <span class="panel-type">${getTypeLabel(meta.type)}</span>
             ${meta.project ? `<span class="panel-project ${projClass}">${meta.project}</span>` : ''}
             <span class="panel-index" id="idx-${id}"></span>
+            <span class="panel-sid" title="Session ID: ${id}">${id.slice(0, 8)}</span>
             <span class="panel-status" id="status-${id}">${meta.statusDetail || meta.status}</span>
           </div>
           <div class="panel-header-right">
@@ -2032,7 +2033,7 @@
       {
         target: '.topbar-center',
         title: 'Layout modes',
-        body: `Seven preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd> plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+6</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>6</kbd>) do the same.`,
+        body: `Eight preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd>, <strong>orch</strong> (1 large + stacked, for 4+1 sprints), plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+7</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>7</kbd>) do the same.`,
       },
       {
         target: '#termSwitcher',
@@ -2508,10 +2509,10 @@
           document.getElementById('promptInput').focus();
         }
       }
-      // Ctrl+Shift+1-6 OR Cmd+Shift+1-6 → layout switch (Mac friendly)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '1' && e.key <= '6') {
+      // Ctrl+Shift+1-7 OR Cmd+Shift+1-7 → layout switch (Mac friendly)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '1' && e.key <= '7') {
         e.preventDefault();
-        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2'];
+        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2', 'orch'];
         setLayout(layouts[parseInt(e.key) - 1]);
       }
       // Ctrl+Shift+] / [ → cycle between terminals
