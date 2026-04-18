@@ -11,9 +11,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
 
-## [0.4.0] - 2026-04-18
+## [0.4.1] - 2026-04-18
 
 ### Added
+- **Setup wizard**: click "config" to see 4-tier status (green/amber/gray), next-step commands, and a re-check button. Auto-opens on first run.
+- **GET /api/setup**: tier detection endpoint returning config state and firstRun flag
+- **First-run detection**: CLI prints setup hint when no config.yaml exists
 - **Orchestrator layout**: new "orch" preset — 1 large panel (60% left) + stacked workers (40% right). Keyboard shortcut: Cmd/Ctrl+Shift+7
 - **Session ID in panel headers**: first 8 chars visible at a glance for orchestration workflows
 - **Mnestra auto-start**: `mnestra.autoStart: true` in config.yaml makes start.sh boot Mnestra automatically. Detects already-running instances.
@@ -219,8 +222,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status broadcast** every 2 seconds for live metadata updates
 - **Keyboard shortcuts**: Ctrl+Shift+N for prompt bar, Ctrl+Shift+1-6 for layouts, Ctrl+Shift+]/[ to cycle terminals, Escape to exit focus
 
-[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.4.0
+[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.4.1
 [0.3.4]: https://github.com/jhizzard/termdeck/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jhizzard/termdeck/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jhizzard/termdeck/compare/v0.3.1...v0.3.2
