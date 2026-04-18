@@ -1977,6 +1977,302 @@
       border-color: var(--tg-border-active);
     }
 
+    /* ===== Setup wizard modal (Sprint 19 T2) =====
+       Full-screen overlay with a 4-tier vertical progress rail showing
+       configuration status. Visual language is aligned with .rumen-modal
+       and .add-project-modal so the dashboard feels consistent. */
+    .setup-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 3200;
+      align-items: center;
+      justify-content: center;
+    }
+    .setup-modal.open { display: flex; }
+    .setup-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+    }
+    .setup-card {
+      position: relative;
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-accent-dim);
+      border-radius: 10px;
+      width: 720px;
+      max-width: calc(100vw - 40px);
+      max-height: calc(100vh - 80px);
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+      font-family: var(--tg-sans);
+      color: var(--tg-text);
+    }
+    .setup-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 20px 22px 12px;
+      border-bottom: 1px solid var(--tg-border);
+    }
+    .setup-header h3 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      color: var(--tg-accent);
+    }
+    .setup-subtitle {
+      margin: 0;
+      font-size: 12px;
+      color: var(--tg-text-dim);
+    }
+    .setup-close {
+      background: transparent;
+      border: none;
+      color: var(--tg-text-dim);
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 4px;
+      font-family: var(--tg-sans);
+    }
+    .setup-close:hover { color: var(--tg-text-bright); }
+    .setup-body {
+      padding: 16px 22px;
+      overflow-y: auto;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .setup-tiers {
+      display: flex;
+      flex-direction: column;
+    }
+    .setup-loading,
+    .setup-error {
+      padding: 20px 8px;
+      text-align: center;
+      color: var(--tg-text-dim);
+      font-size: 13px;
+    }
+    .setup-error {
+      color: var(--tg-red);
+      text-align: left;
+    }
+    .setup-error code {
+      background: var(--tg-bg);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text);
+    }
+    .setup-tier {
+      display: flex;
+      gap: 14px;
+      padding: 4px 0;
+      position: relative;
+    }
+    .setup-tier-rail {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-shrink: 0;
+      padding-top: 4px;
+      width: 18px;
+    }
+    .setup-tier-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--tg-border);
+      border: 2px solid var(--tg-bg);
+      box-shadow: 0 0 0 1px var(--tg-border);
+      flex-shrink: 0;
+      z-index: 1;
+    }
+    .setup-tier-line {
+      flex: 1;
+      width: 2px;
+      background: var(--tg-border);
+      margin: 2px 0;
+      min-height: 24px;
+    }
+    .setup-tier-active .setup-tier-dot {
+      background: var(--tg-green);
+      box-shadow: 0 0 0 1px var(--tg-green), 0 0 10px rgba(158, 206, 106, 0.35);
+    }
+    .setup-tier-partial .setup-tier-dot {
+      background: var(--tg-amber);
+      box-shadow: 0 0 0 1px var(--tg-amber);
+    }
+    .setup-tier-not_configured .setup-tier-dot {
+      background: var(--tg-surface-hover);
+      box-shadow: 0 0 0 1px var(--tg-border);
+    }
+    .setup-tier-next .setup-tier-dot {
+      animation: setup-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes setup-pulse {
+      0%, 100% { box-shadow: 0 0 0 1px var(--tg-accent); }
+      50% { box-shadow: 0 0 0 4px rgba(122, 162, 247, 0.18); }
+    }
+    .setup-tier-body {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-bottom: 16px;
+    }
+    .setup-tier-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 2px;
+    }
+    .setup-tier-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--tg-text-bright);
+    }
+    .setup-tier-status {
+      font-family: var(--tg-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      border: 1px solid var(--tg-border);
+      background: var(--tg-bg);
+      color: var(--tg-text-dim);
+      flex-shrink: 0;
+    }
+    .setup-tier-status-active {
+      color: var(--tg-green);
+      border-color: var(--tg-green);
+      background: rgba(158, 206, 106, 0.08);
+    }
+    .setup-tier-status-partial {
+      color: var(--tg-amber);
+      border-color: var(--tg-amber);
+      background: rgba(224, 175, 104, 0.08);
+    }
+    .setup-tier-status-not_configured {
+      color: var(--tg-text-dim);
+      border-color: var(--tg-border);
+    }
+    .setup-tier-desc {
+      font-size: 12px;
+      color: var(--tg-text-dim);
+      margin-bottom: 4px;
+    }
+    .setup-tier-detail {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text);
+      margin-bottom: 8px;
+    }
+    .setup-cmds {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .setup-cmd {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+    }
+    .setup-cmd code {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-family: var(--tg-mono);
+      font-size: 12px;
+      color: var(--tg-cyan);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .setup-copy {
+      background: transparent;
+      border: 1px solid var(--tg-border);
+      color: var(--tg-text-dim);
+      font-family: var(--tg-sans);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 3px 9px;
+      border-radius: 3px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .setup-copy:hover {
+      color: var(--tg-text);
+      border-color: var(--tg-border-active);
+    }
+    .setup-copy.copied {
+      color: var(--tg-green);
+      border-color: var(--tg-green);
+    }
+    .setup-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 22px 16px;
+      border-top: 1px solid var(--tg-border);
+      flex-wrap: wrap;
+    }
+    .setup-hint {
+      font-size: 11px;
+      color: var(--tg-text-dim);
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .setup-hint code {
+      background: var(--tg-bg);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: var(--tg-mono);
+      font-size: 10px;
+      color: var(--tg-text);
+    }
+    .setup-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .setup-recheck,
+    .setup-done {
+      font-family: var(--tg-sans);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid var(--tg-border);
+    }
+    .setup-recheck {
+      background: transparent;
+      color: var(--tg-text);
+    }
+    .setup-recheck:hover {
+      color: var(--tg-text-bright);
+      border-color: var(--tg-border-active);
+    }
+    .setup-recheck:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .setup-done {
+      background: var(--tg-accent);
+      color: var(--tg-bg);
+      border-color: var(--tg-accent);
+    }
+    .setup-done:hover { filter: brightness(1.1); }
+
     /* ===== SCROLLBAR ===== */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }

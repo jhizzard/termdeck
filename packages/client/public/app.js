@@ -80,6 +80,10 @@
           setTimeout(() => { if (!tourState.active) startTour(); }, 1200);
         }
       } catch {}
+
+      // Sprint 19 T2: auto-open setup wizard if /api/setup reports firstRun.
+      // Silent-fail if the endpoint isn't available yet (T1 not merged).
+      maybeAutoOpenSetupWizard();
     }
 
     // ===== Create Terminal Panel =====
@@ -2419,6 +2423,203 @@
       return html;
     }
 
+    // ===== Setup Wizard (Sprint 19 T2) =====
+    // Progressive-disclosure modal that shows TermDeck's 4 configuration tiers
+    // and their live status. Detection only — does not write config files.
+    const SETUP_TIERS = [
+      {
+        id: '1',
+        name: 'Tier 1 — TermDeck core',
+        desc: 'Local terminal multiplexer running in your browser.',
+        commands: []
+      },
+      {
+        id: '2',
+        name: 'Tier 2 — Mnestra RAG',
+        desc: 'Persistent cross-session memory backed by Postgres + pgvector.',
+        commands: ['termdeck init --mnestra']
+      },
+      {
+        id: '3',
+        name: 'Tier 3 — Rumen learning loop',
+        desc: 'Async insight extraction and morning briefings (Supabase Edge Function).',
+        commands: ['termdeck init --rumen']
+      },
+      {
+        id: '4',
+        name: 'Tier 4 — Projects',
+        desc: 'Named project roots so you can launch with "cc <name>" shorthand.',
+        commands: ['Click the + button in the prompt bar, or edit ~/.termdeck/config.yaml']
+      }
+    ];
+
+    let setupModalOpen = false;
+
+    function ensureSetupModal() {
+      if (document.getElementById('setupModal')) return;
+      const modal = document.createElement('div');
+      modal.className = 'setup-modal';
+      modal.id = 'setupModal';
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('aria-labelledby', 'setupTitle');
+      modal.innerHTML = `
+        <div class="setup-backdrop" id="setupBackdrop"></div>
+        <div class="setup-card">
+          <header class="setup-header">
+            <div>
+              <h3 id="setupTitle">Setup wizard</h3>
+              <p class="setup-subtitle" id="setupSubtitle">Checking status…</p>
+            </div>
+            <button type="button" class="setup-close" id="setupClose" aria-label="Close">×</button>
+          </header>
+          <div class="setup-body">
+            <div class="setup-tiers" id="setupTiers">
+              <div class="setup-loading">Checking tier status…</div>
+            </div>
+          </div>
+          <footer class="setup-footer">
+            <div class="setup-hint">
+              Edit <code>~/.termdeck/config.yaml</code> and <code>~/.termdeck/secrets.env</code>, then re-check.
+            </div>
+            <div class="setup-actions">
+              <button type="button" class="setup-recheck" id="setupRecheck">re-check</button>
+              <button type="button" class="setup-done" id="setupDone">done</button>
+            </div>
+          </footer>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      document.getElementById('setupBackdrop').addEventListener('click', closeSetupModal);
+      document.getElementById('setupClose').addEventListener('click', closeSetupModal);
+      document.getElementById('setupDone').addEventListener('click', closeSetupModal);
+      document.getElementById('setupRecheck').addEventListener('click', refreshSetupStatus);
+      modal.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); closeSetupModal(); }
+      });
+    }
+
+    async function openSetupModal() {
+      ensureSetupModal();
+      document.getElementById('setupModal').classList.add('open');
+      setupModalOpen = true;
+      await refreshSetupStatus();
+    }
+
+    function closeSetupModal() {
+      const m = document.getElementById('setupModal');
+      if (m) m.classList.remove('open');
+      setupModalOpen = false;
+    }
+
+    async function refreshSetupStatus() {
+      const tiersEl = document.getElementById('setupTiers');
+      const subtitle = document.getElementById('setupSubtitle');
+      const recheckBtn = document.getElementById('setupRecheck');
+      if (!tiersEl) return;
+      tiersEl.innerHTML = '<div class="setup-loading">Checking tier status…</div>';
+      if (subtitle) subtitle.textContent = 'Checking status…';
+      if (recheckBtn) { recheckBtn.disabled = true; recheckBtn.textContent = 're-checking…'; }
+      try {
+        const data = await api('GET', '/api/setup');
+        renderSetupTiers(data);
+        const cur = Number(data.tier) || 1;
+        if (subtitle) {
+          subtitle.textContent = cur >= 4
+            ? 'All tiers configured — you are good to go.'
+            : `Current tier: ${cur} of 4. Install the next tier below to unlock more features.`;
+        }
+      } catch (err) {
+        tiersEl.innerHTML = `<div class="setup-error">
+          Failed to load setup status: ${escapeHtml(err && err.message ? err.message : String(err))}.<br>
+          Make sure the server is reachable and supports <code>GET /api/setup</code>.
+        </div>`;
+        if (subtitle) subtitle.textContent = 'Error checking status.';
+      } finally {
+        if (recheckBtn) { recheckBtn.disabled = false; recheckBtn.textContent = 're-check'; }
+      }
+    }
+
+    function renderSetupTiers(data) {
+      const tiersEl = document.getElementById('setupTiers');
+      if (!tiersEl) return;
+      const tiers = (data && data.tiers) || {};
+      const currentTier = Number(data && data.tier) || 1;
+
+      const html = SETUP_TIERS.map((tier, idx) => {
+        const info = tiers[tier.id] || { status: 'not_configured', detail: 'Unknown' };
+        const status = info.status || 'not_configured';
+        const detail = info.detail || '';
+        const badgeLabel = status === 'active'
+          ? 'active'
+          : status === 'partial' ? 'partial' : 'not configured';
+        const isCurrent = Number(tier.id) === currentTier + 1 && status !== 'active';
+        const cmds = (status === 'active' || tier.commands.length === 0)
+          ? ''
+          : `<div class="setup-cmds">${tier.commands.map((c) => {
+              const copyable = /^termdeck\s/.test(c);
+              return `<div class="setup-cmd">
+                <code>${escapeHtml(c)}</code>
+                ${copyable ? `<button type="button" class="setup-copy" data-copy="${escapeHtml(c)}">copy</button>` : ''}
+              </div>`;
+            }).join('')}</div>`;
+
+        return `
+          <div class="setup-tier setup-tier-${status}${isCurrent ? ' setup-tier-next' : ''}">
+            <div class="setup-tier-rail" aria-hidden="true">
+              <span class="setup-tier-dot"></span>
+              ${idx < SETUP_TIERS.length - 1 ? '<span class="setup-tier-line"></span>' : ''}
+            </div>
+            <div class="setup-tier-body">
+              <div class="setup-tier-head">
+                <span class="setup-tier-name">${escapeHtml(tier.name)}</span>
+                <span class="setup-tier-status setup-tier-status-${status}">${escapeHtml(badgeLabel)}</span>
+              </div>
+              <div class="setup-tier-desc">${escapeHtml(tier.desc)}</div>
+              ${detail ? `<div class="setup-tier-detail">${escapeHtml(detail)}</div>` : ''}
+              ${cmds}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      tiersEl.innerHTML = html;
+
+      tiersEl.querySelectorAll('.setup-copy').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const txt = btn.getAttribute('data-copy') || '';
+          navigator.clipboard.writeText(txt).then(() => {
+            const original = btn.textContent;
+            btn.textContent = 'copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {
+              btn.textContent = original;
+              btn.classList.remove('copied');
+            }, 1500);
+          }).catch(() => {});
+        });
+      });
+    }
+
+    async function maybeAutoOpenSetupWizard() {
+      // Auto-open only when the server reports firstRun=true and we're not
+      // already in the middle of the onboarding tour. Silent-fail if the
+      // endpoint doesn't exist (server predates Sprint 19 T1).
+      try {
+        const res = await fetch(`${API}/api/setup`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.firstRun && !tourState.active) {
+          setTimeout(() => {
+            if (!tourState.active && !setupModalOpen) openSetupModal();
+          }, 800);
+        }
+      } catch {
+        // API not available — skip silently
+      }
+    }
+
     function fmtUptime(sec) {
       const s = Math.floor(sec);
       const h = Math.floor(s / 3600);
@@ -2460,12 +2661,9 @@
       fetch: () => api('GET', '/api/status'),
       render: renderStatusDropdown
     });
-    setupInfoDropdown({
-      btnId: 'btn-config',
-      dropdownId: 'configDropdown',
-      fetch: () => api('GET', '/api/config'),
-      render: renderConfigDropdown
-    });
+    // Sprint 19 T2: config button now opens the setup wizard instead of the
+    // legacy config dropdown (renderConfigDropdown is kept as dead code).
+    document.getElementById('btn-config').addEventListener('click', openSetupModal);
 
     // Onboarding tour wiring
     document.getElementById('btn-how').addEventListener('click', startTour);
