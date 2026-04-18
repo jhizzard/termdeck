@@ -57,7 +57,7 @@ const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./mnestra-bridge');
 const { writeSessionLog } = require('./session-logger');
 const { TranscriptWriter } = require('./transcripts');
-const { createHealthHandler } = require('./preflight');
+const { createHealthHandler, runPreflight } = require('./preflight');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
@@ -68,6 +68,11 @@ function createServer(config) {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   app.use(express.json());
+
+  // First-run detection (Sprint 19 T3): true when ~/.termdeck/config.yaml
+  // does not exist. Surfaced on /api/config so the client can offer the
+  // setup wizard on first visit. T1's /api/setup endpoint may reuse this.
+  const firstRun = !fs.existsSync(path.join(os.homedir(), '.termdeck', 'config.yaml'));
 
   // Optional token auth (Sprint 9 T3). Zero-op when no token is configured,
   // so local users see no behavior change. Mounted before static + routes so
@@ -139,6 +144,113 @@ function createServer(config) {
   // For any non-loopback deployment (Sprint 18+ remote story), gate this route behind auth
   // or scope the response to a minimal {status, version} payload.
   app.get('/api/health', createHealthHandler(config));
+
+  // GET /api/setup - setup wizard tier status (Sprint 19 T1)
+  // Reuses preflight checks (mnestra_reachable, rumen_recent) and pairs them
+  // with filesystem + config signals to classify which of the 4 TermDeck tiers
+  // the user has reached:
+  //   1. TermDeck running (always active when this handler responds)
+  //   2. Mnestra reachable + DATABASE_URL available (partial if only reachable)
+  //   3. Rumen job seen recently (partial if DATABASE_URL set but no recent job)
+  //   4. At least one project configured in config.yaml
+  // Cached for 60s so the setup UI can poll without re-running shell/PTY probes.
+  const SETUP_CONFIG_DIR = path.join(os.homedir(), '.termdeck');
+  const SETUP_SECRETS_PATH = path.join(SETUP_CONFIG_DIR, 'secrets.env');
+  const SETUP_CACHE_TTL_MS = 60_000;
+  let _setupCache = null;
+  let _setupCachedAt = 0;
+
+  app.get('/api/setup', async (req, res) => {
+    if (_setupCache && (Date.now() - _setupCachedAt) < SETUP_CACHE_TTL_MS) {
+      return res.json(_setupCache);
+    }
+
+    try {
+      const preflight = await runPreflight(config);
+      const byName = {};
+      for (const c of preflight.checks) byName[c.name] = c;
+
+      const hasConfigFile = !firstRun;
+      const hasSecretsFile = fs.existsSync(SETUP_SECRETS_PATH);
+      const hasDatabaseUrl = !!process.env.DATABASE_URL;
+      const hasMnestraRunning = !!(byName.mnestra_reachable && byName.mnestra_reachable.passed);
+      const hasRumenDeployed = !!(byName.rumen_recent && byName.rumen_recent.passed);
+      const projectCount = Object.keys(config.projects || {}).length;
+
+      const tier1 = {
+        status: 'active',
+        detail: `TermDeck running on :${config.port || 3000}`
+      };
+
+      let tier2;
+      if (hasMnestraRunning && hasDatabaseUrl) {
+        tier2 = {
+          status: 'active',
+          detail: byName.mnestra_reachable.detail || 'Mnestra reachable'
+        };
+      } else if (hasMnestraRunning && !hasDatabaseUrl) {
+        tier2 = {
+          status: 'partial',
+          detail: 'Mnestra reachable but DATABASE_URL not set'
+        };
+      } else {
+        tier2 = {
+          status: 'not_configured',
+          detail: (byName.mnestra_reachable && byName.mnestra_reachable.detail) || 'Mnestra not reachable'
+        };
+      }
+
+      let tier3;
+      if (hasRumenDeployed) {
+        tier3 = { status: 'active', detail: byName.rumen_recent.detail };
+      } else if (hasDatabaseUrl && byName.rumen_recent &&
+                 /no completed Rumen jobs|stale/i.test(byName.rumen_recent.detail || '')) {
+        tier3 = { status: 'partial', detail: byName.rumen_recent.detail };
+      } else {
+        tier3 = {
+          status: 'not_configured',
+          detail: (byName.rumen_recent && byName.rumen_recent.detail) || 'Rumen not deployed'
+        };
+      }
+
+      const tier4 = projectCount > 0
+        ? { status: 'active', detail: `${projectCount} project${projectCount === 1 ? '' : 's'} configured` }
+        : { status: 'not_configured', detail: 'No project paths in config.yaml' };
+
+      const tiers = { 1: tier1, 2: tier2, 3: tier3, 4: tier4 };
+
+      // Current tier = highest contiguous tier with status active or partial.
+      let tier = 0;
+      for (let i = 1; i <= 4; i++) {
+        if (tiers[i].status === 'active' || tiers[i].status === 'partial') {
+          tier = i;
+        } else {
+          break;
+        }
+      }
+
+      const payload = {
+        tier,
+        tiers,
+        config: {
+          hasSecretsFile,
+          hasConfigFile,
+          hasDatabaseUrl,
+          hasMnestraRunning,
+          hasRumenDeployed,
+          projectCount
+        },
+        firstRun
+      };
+
+      _setupCache = payload;
+      _setupCachedAt = Date.now();
+      res.json(payload);
+    } catch (err) {
+      console.error('[setup] /api/setup failed:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // GET /api/sessions - list all active sessions
   app.get('/api/sessions', (req, res) => {
@@ -434,7 +546,8 @@ function createServer(config) {
       defaultTheme: config.defaultTheme,
       ragEnabled: rag.enabled,
       aiQueryAvailable: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey && config.rag?.openaiApiKey),
-      statusColors
+      statusColors,
+      firstRun
     });
   });
 
