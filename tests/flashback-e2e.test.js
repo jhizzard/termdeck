@@ -203,7 +203,15 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
   // 7. If Mnestra had a hit, the bridge will have pushed a proactive_memory
   //    frame over the WS. We don't require it — the test store may not match
   //    — but emit a diagnostic so reviewers see when the full happy path
-  //    lit up.
+  //    lit up. The mnestra-bridge fetch is async and fires after rag_events
+  //    is already written, so give the frame up to 3s to arrive before we
+  //    close the socket (closing too early = dropped hit, not a real failure).
+  if (wsOpen && !proactiveMemoryFrame) {
+    await pollUntil(() => proactiveMemoryFrame || null, {
+      timeoutMs: 3000,
+      intervalMs: 100,
+    });
+  }
   if (wsOpen && proactiveMemoryFrame) {
     const preview = JSON.stringify(proactiveMemoryFrame).slice(0, 200);
     t.diagnostic(`proactive_memory frame received: ${preview}`);
