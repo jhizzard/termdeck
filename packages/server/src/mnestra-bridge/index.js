@@ -47,6 +47,24 @@ function createBridge(config) {
     const embeddingData = await embeddingRes.json();
     const embedding = embeddingData.data[0].embedding;
 
+    // NOTE: memory_hybrid_search (migrations/004) accepts exactly 8 named params:
+    //   query_text, query_embedding, match_count, full_text_weight,
+    //   semantic_weight, rrf_k, filter_project, filter_source_type.
+    // PostgREST matches RPC functions by the set of JSON keys in the body — any
+    // extra key (e.g. recency_weight, decay_days) makes it fail to resolve the
+    // overload and return 404 "Could not find the function". That was silently
+    // killing every Flashback query for 15 sprints.
+    const rpcBody = {
+      query_text: question,
+      query_embedding: `[${embedding.join(',')}]`,
+      match_count: 10,
+      full_text_weight: 1.0,
+      semantic_weight: 1.0,
+      rrf_k: 60,
+      filter_project: searchAll ? null : (project || null),
+      filter_source_type: null
+    };
+    console.log(`[flashback] direct RPC → memory_hybrid_search project=${rpcBody.filter_project ?? 'ALL'} q="${question.slice(0, 60)}"`);
     const searchRes = await fetch(`${supabaseUrl}/rest/v1/rpc/memory_hybrid_search`, {
       method: 'POST',
       headers: {
@@ -54,31 +72,23 @@ function createBridge(config) {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
       },
-      body: JSON.stringify({
-        query_text: question,
-        query_embedding: `[${embedding.join(',')}]`,
-        match_count: 10,
-        full_text_weight: 1.0,
-        semantic_weight: 1.0,
-        rrf_k: 60,
-        filter_project: searchAll ? null : (project || null),
-        filter_source_type: null,
-        recency_weight: 0.15,
-        decay_days: 30.0
-      })
+      body: JSON.stringify(rpcBody)
     });
     if (!searchRes.ok) {
       const err = await searchRes.text();
+      console.error(`[flashback] direct RPC failed ${searchRes.status}:`, err);
       console.error('[mnestra-bridge:direct] supabase search failed:', err);
-      throw new Error('Memory search failed');
+      throw new Error(`Memory search failed (${searchRes.status})`);
     }
     const rows = await searchRes.json();
+    console.log(`[flashback] direct RPC returned ${rows.length} rows`);
     return {
       memories: rows.map((m) => ({
         content: m.content,
         source_type: m.source_type,
         project: m.project,
-        similarity: m.similarity,
+        // memory_hybrid_search returns `score`, not `similarity`.
+        similarity: m.similarity ?? m.score ?? null,
         created_at: m.created_at
       })),
       total: rows.length

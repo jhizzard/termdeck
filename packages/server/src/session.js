@@ -322,7 +322,10 @@ class Session {
 
     // Server-side rate limit: at most one error_detected event every 30s per session
     const now = Date.now();
-    if (now - this._lastErrorFireAt < 30000) return;
+    if (now - this._lastErrorFireAt < 30000) {
+      console.log(`[flashback] error detected in session ${this.id} but rate-limited (${Math.round((30000 - (now - this._lastErrorFireAt)) / 1000)}s left)`);
+      return;
+    }
     this._lastErrorFireAt = now;
 
     if (this.onErrorDetected) {
@@ -333,8 +336,11 @@ class Session {
       try {
         this.onErrorDetected(this, { lastCommand, tail });
       } catch (err) {
+        console.error('[flashback] onErrorDetected handler threw:', err);
         console.error('[session] onErrorDetected handler error:', err);
       }
+    } else {
+      console.log(`[flashback] error detected in session ${this.id} but no onErrorDetected handler wired`);
     }
   }
 

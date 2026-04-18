@@ -375,6 +375,7 @@ function createServer(config) {
         // configured, regardless of the push-loop flag.
         session.onErrorDetected = (sess, ctx) => {
           const question = `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
+          console.log(`[flashback] error detected in session ${sess.id} (type=${sess.meta.type}, project=${sess.meta.project || 'none'}), querying Mnestra via ${mnestraBridge.mode}…`);
           mnestraBridge.queryMnestra({
             question,
             project: sess.meta.project,
@@ -386,16 +387,26 @@ function createServer(config) {
               status: 'errored'
             }
           }).then((result) => {
+            const count = (result.memories || []).length;
+            console.log(`[flashback] query returned ${count} matches for session ${sess.id}`);
             const hit = (result.memories || [])[0];
-            if (!hit) return;
+            if (!hit) {
+              console.log(`[flashback] no matches — skipping proactive_memory send for session ${sess.id}`);
+              return;
+            }
             if (sess.ws && sess.ws.readyState === 1) {
               try {
                 sess.ws.send(JSON.stringify({ type: 'proactive_memory', hit }));
+                console.log(`[flashback] proactive_memory sent to session ${sess.id} (source_type=${hit.source_type}, project=${hit.project})`);
               } catch (err) {
+                console.error('[flashback] proactive_memory send failed:', err);
                 console.error('[ws] proactive_memory send failed:', err);
               }
+            } else {
+              console.log(`[flashback] ws not open for session ${sess.id} (readyState=${sess.ws ? sess.ws.readyState : 'null'}) — dropped hit`);
             }
           }).catch((err) => {
+            console.error(`[flashback] query failed for session ${sess.id}: ${err.message}`);
             console.warn('[mnestra-bridge] proactive query failed:', err.message);
           });
         };
