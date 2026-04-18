@@ -8,7 +8,7 @@ Paste this (or point a fresh Claude Code session at it) to resume work without r
 
 | Package | Version | npm | Notes |
 |---------|---------|-----|-------|
-| `@jhizzard/termdeck` | 0.4.2 | published | Tier 1/2 — PTY multiplexer + local SQLite |
+| `@jhizzard/termdeck` | 0.4.3 | published | Tier 1/2 — PTY multiplexer + local SQLite |
 | `@jhizzard/mnestra` | 0.2.0 | published | Tier 3 — pgvector + MCP server |
 | `@jhizzard/rumen` | 0.4.1 | published | Tier 4 — async learning loop (Supabase Edge Fn) |
 | SkillForge (no pkg) | — | in-repo | Tier 5 — skill generator, shipped Sprint 20 |
@@ -107,12 +107,48 @@ Used for sprints where work parallelizes cleanly across file ownership boundarie
 - Flashback toast click opens Memory tab but content rendering is buried / hard to read (flagged 2026-04-17).
 - Live demo to Unagi (2026-04-16) — Claude Code in panel #1 couldn't find Rumen repo by name; likely needs project-name resolution against `config.yaml` instead of directory path segments. (Same root cause as `chopin-nashville` tagging bug fixed in S21 T2 — verify fix is complete.)
 - xterm.js pinned to @5.5.0 from CDN; vendoring considered for v0.5 if CDN reliability bites.
-- WebSocket URL hardcoded `ws://${window.location.host}/ws` — needs `wss://` for non-local deploy.
+- ~~WebSocket URL hardcoded~~ — FIXED in Sprint 18 (protocol-aware `ws://` vs `wss://`)
 - `memory_recall` and repeated searches still mix in 2.5k-star `Gentleman-Programming/engram` competitor context; the Engram→Mnestra rename is complete in package names but not in every doc reference. Grep for stray "Engram" before Show HN.
+
+## Sprint 22 Plan (next session)
+
+Sprint 22 has two objectives: re-generate high-quality Rumen insights with the fixed pipeline, and publish updated sibling packages.
+
+### T1: Rumen re-kickstart with hybrid embeddings
+- PVB has 1,599 memories in Mnestra — the largest project, never properly processed
+- Previous kickstarts used keyword-only search + broken project tags
+- Redeploy Edge Function: `termdeck init --rumen --yes`
+- Trigger manual kickstart and verify insights reference PVB patterns (Supabase migrations, Stripe Connect, AI search, multi-portal architecture)
+
+### T2: Publish Mnestra 0.2.1
+- Make `mnestra serve` auto-read `~/.termdeck/secrets.env` as fallback when env vars aren't set (the recurring startup friction bug)
+- Repo: `~/Documents/Graciella/engram/`
+- Bump, test, `npm publish --access public`
+
+### T3: Publish Rumen 0.4.2
+- Verify install.md and README are current (Sprint 15 fixes)
+- Bump, test, `npm publish --access public`
+- Update `termdeck init --rumen` to pull the new version
+
+### T4: Insight quality audit
+- After Rumen re-kickstart, review the new insights
+- Are they actionable? Do they surface real PVB patterns?
+- Compare confidence scores with the pre-cleanup noise
+- Document findings for SkillForge prompt tuning
+
+## Sibling repo publish status
+
+| Package | Published | Local | Needs publish? | Why |
+|---------|-----------|-------|----------------|-----|
+| `@jhizzard/termdeck` | 0.4.3 | 0.4.3 | No | Current |
+| `@jhizzard/mnestra` | 0.2.0 | 0.2.0 | Yes → 0.2.1 | Add secrets.env auto-read fallback |
+| `@jhizzard/rumen` | 0.4.1 | 0.4.1 | Yes → 0.4.2 | install.md + README fixes from Sprint 15 |
 
 ## First thing to do in the fresh session
 
 1. `memory_recall("TermDeck Sprint 21 flashback quality")` — pulls every S21 decision.
-2. `memory_recall("TermDeck launch status")` — current HN/X/tester state.
-3. Read `docs/sprint-21-flashback-quality/STATUS.md` for the final sign-off log.
-4. Then ask the user which Sprint 22 candidate to pick up.
+2. `memory_recall("TermDeck launch status HN X testers")` — current HN/X/tester state.
+3. `memory_recall("PVB memories Rumen re-kickstart")` — the 1,599 PVB memories context.
+4. Read `docs/sprint-21-flashback-quality/STATUS.md` for the Sprint 21 sign-off log.
+5. Read `docs/SPRINT-17-18-PLAN.md` for the Tier 5 SkillForge vision.
+6. Then execute Sprint 22 (above) or ask the user for priorities.
