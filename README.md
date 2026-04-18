@@ -18,6 +18,8 @@ Ninety seconds, one command. Node 18+ is all you need — prebuilt binaries mean
 
 This is **Tier 1**. Works immediately, fully local, no accounts, no credentials, no database. You get the full dashboard — 7 grid layouts, 8 themes, per-panel metadata overlays, terminal switcher, reply button, status logs, session history in local SQLite. **Flashback is silent at this tier** because there's no memory store to query.
 
+First-time user? The **config** button in the toolbar shows what's set up and what's next — click it for a live view of each tier's status with guided next steps.
+
 Enabling Flashback takes **one additional 15-minute setup step** — see Tier 2 below. The rest of this README explains what you get, how it works, and how to go deeper.
 
 ---

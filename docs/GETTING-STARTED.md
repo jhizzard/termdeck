@@ -66,6 +66,8 @@ Either path opens the browser at `http://127.0.0.1:3000`. No accounts, no creden
 
 **What's not active yet:** Flashback toasts (need Mnestra). Morning briefing (needs Rumen). Transcript backup to cloud (needs DATABASE_URL). All of these are silent — no errors, just features waiting for their tier.
 
+**Setup wizard:** Click **config** in the toolbar to see your setup status and get guided instructions for each tier. The wizard detects which tiers are active, flags missing pieces, and links back into the steps below.
+
 ### >> STOP HERE if you just want a browser terminal multiplexer.
 
 ---
