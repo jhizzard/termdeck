@@ -1,7 +1,8 @@
 /* Extracted from index.html 2026-04-15 — see git blame on index.html prior to commit UNCOMMITTED for history */
     // ===== TermDeck Client =====
     const API = window.location.origin;
-    const WS_BASE = `ws://${window.location.host}/ws`;
+    const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const WS_BASE = `${WS_PROTOCOL}//${window.location.host}/ws`;
 
     // State
     const state = {
