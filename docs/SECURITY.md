@@ -72,7 +72,7 @@ Clients present the token in one of three places:
 
 1. `Authorization: Bearer <token>` header on REST requests.
 2. `?token=<token>` query parameter on the WebSocket upgrade URL.
-3. `termdeck_auth` cookie (set once by the browser after a login page).
+3. `termdeck_token` cookie (set once by the browser after the login page).
 
 All three are accepted; pick whichever fits your proxy setup.
 
