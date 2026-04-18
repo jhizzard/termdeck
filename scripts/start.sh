@@ -7,6 +7,7 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'
 DIM='\033[2m'; BOLD='\033[1m'; RESET='\033[0m'
 
 SECRETS_FILE="${HOME}/.termdeck/secrets.env"
+CONFIG_FILE="${HOME}/.termdeck/config.yaml"
 MNESTRA_PORT="${MNESTRA_PORT:-37778}"
 EXTRA_ARGS=()
 
@@ -53,16 +54,32 @@ if [ -n "$DATABASE_URL" ]; then
   fi
 fi
 
-# ── Kill stale processes ──────────────────────────────────────────────
-for CHECK_PORT in $PORT $MNESTRA_PORT; do
-  STALE_PID=$(lsof -ti ":$CHECK_PORT" 2>/dev/null || true)
-  if [ -n "$STALE_PID" ]; then
-    kill $STALE_PID 2>/dev/null || true; sleep 1
-    echo -e "  ${YELLOW}⚠${RESET} Killed stale process on port $CHECK_PORT"
-  fi
-done
+# ── Kill stale TermDeck process on target port ────────────────────────
+STALE_PID=$(lsof -ti ":$PORT" 2>/dev/null || true)
+if [ -n "$STALE_PID" ]; then
+  kill $STALE_PID 2>/dev/null || true; sleep 1
+  echo -e "  ${YELLOW}⚠${RESET} Killed stale process on port $PORT"
+fi
 
-# ── Start Mnestra (if installed) ──────────────────────────────────────
+# ── Read mnestra.autoStart from config.yaml ───────────────────────────
+# Values: true | false | unset (missing file, missing key, or parse error)
+MNESTRA_AUTOSTART="unset"
+if [ -f "$CONFIG_FILE" ]; then
+  MNESTRA_AUTOSTART=$(CONFIG_FILE="$CONFIG_FILE" python3 -c "
+import os, sys
+try:
+    import yaml
+    c = yaml.safe_load(open(os.environ['CONFIG_FILE'])) or {}
+    v = (c.get('mnestra') or {}).get('autoStart', None)
+    if v is True: print('true')
+    elif v is False: print('false')
+    else: print('unset')
+except Exception:
+    print('unset')
+" 2>/dev/null || echo "unset")
+fi
+
+# ── Start Mnestra (config-gated, detect already-running) ──────────────
 MNESTRA_CMD="" MNESTRA_ROWS="0" MNESTRA_ACTIVE=false
 if command -v mnestra &>/dev/null; then
   MNESTRA_CMD="mnestra"
@@ -70,28 +87,46 @@ elif [ -f "$HOME/Documents/Graciella/engram/dist/mcp-server/index.js" ]; then
   MNESTRA_CMD="node $HOME/Documents/Graciella/engram/dist/mcp-server/index.js"
 fi
 
-if [ -n "$MNESTRA_CMD" ]; then
-  if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-    $MNESTRA_CMD serve &>/dev/null &
-    MNESTRA_PID=$!; sleep 2
-    HEALTH=$(curl -s --max-time 3 "http://localhost:$MNESTRA_PORT/healthz" 2>/dev/null || echo '{}')
-    MNESTRA_ROWS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store',{}).get('rows',0))" 2>/dev/null || echo "0")
-    if [ "$MNESTRA_ROWS" != "0" ]; then
-      MNESTRA_ACTIVE=true
-      echo -e "  ${GREEN}✓${RESET} Mnestra running ${DIM}(PID $MNESTRA_PID, $MNESTRA_ROWS memories on :$MNESTRA_PORT)${RESET}"
-    else
-      echo -e "  ${YELLOW}⚠${RESET} Mnestra started but store empty or not connected ${DIM}(PID $MNESTRA_PID)${RESET}"
-    fi
-    # Check MCP config for mnestra entry
-    MCP_CFG="${HOME}/.claude/mcp.json"
-    if [ ! -f "$MCP_CFG" ] || ! python3 -c "import json; d=json.load(open('$MCP_CFG')); assert 'mnestra' in str(d)" 2>/dev/null; then
-      echo -e "  ${DIM}  └ Hint: add a \"mnestra\" entry to ~/.claude/mcp.json so Claude Code can use it${RESET}"
-    fi
-  else
-    echo -e "  ${YELLOW}⚠${RESET} Mnestra installed but SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — skipping"
+# Probe MNESTRA_PORT: is anything there, and is it a live Mnestra?
+MNESTRA_ALREADY_RUNNING=false
+MNESTRA_PORT_OCCUPIED=false
+if lsof -ti ":$MNESTRA_PORT" &>/dev/null; then
+  MNESTRA_PORT_OCCUPIED=true
+  if curl -sf --max-time 2 "http://localhost:$MNESTRA_PORT/healthz" &>/dev/null; then
+    MNESTRA_ALREADY_RUNNING=true
   fi
-else
+fi
+
+if [ "$MNESTRA_ALREADY_RUNNING" = "true" ]; then
+  HEALTH=$(curl -s --max-time 3 "http://localhost:$MNESTRA_PORT/healthz" 2>/dev/null || echo '{}')
+  MNESTRA_ROWS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store',{}).get('rows',0))" 2>/dev/null || echo "0")
+  MNESTRA_ACTIVE=true
+  echo -e "  ${GREEN}✓${RESET} Mnestra already running ${DIM}($MNESTRA_ROWS memories on :$MNESTRA_PORT)${RESET}"
+elif [ "$MNESTRA_PORT_OCCUPIED" = "true" ]; then
+  echo -e "  ${YELLOW}⚠${RESET} Port $MNESTRA_PORT occupied by a non-Mnestra process — skipping Mnestra start"
+elif [ -z "$MNESTRA_CMD" ]; then
   echo -e "  ${DIM}─${RESET} Mnestra not installed ${DIM}(Tier 2+ — install with: npm install -g @jhizzard/mnestra)${RESET}"
+elif [ "$MNESTRA_AUTOSTART" = "false" ]; then
+  echo -e "  ${DIM}─${RESET} Mnestra auto-start disabled ${DIM}(set mnestra.autoStart: true in $CONFIG_FILE to enable)${RESET}"
+elif [ "$MNESTRA_AUTOSTART" = "unset" ]; then
+  echo -e "  ${DIM}─${RESET} Mnestra detected but not configured for auto-start ${DIM}(set mnestra.autoStart: true in $CONFIG_FILE to enable)${RESET}"
+elif [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+  echo -e "  ${YELLOW}⚠${RESET} Mnestra installed but SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — skipping"
+else
+  $MNESTRA_CMD serve &>/dev/null &
+  MNESTRA_PID=$!; sleep 2
+  HEALTH=$(curl -s --max-time 3 "http://localhost:$MNESTRA_PORT/healthz" 2>/dev/null || echo '{}')
+  MNESTRA_ROWS=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store',{}).get('rows',0))" 2>/dev/null || echo "0")
+  if [ "$MNESTRA_ROWS" != "0" ]; then
+    MNESTRA_ACTIVE=true
+    echo -e "  ${GREEN}✓${RESET} Mnestra running ${DIM}(PID $MNESTRA_PID, $MNESTRA_ROWS memories on :$MNESTRA_PORT)${RESET}"
+  else
+    echo -e "  ${YELLOW}⚠${RESET} Mnestra started but store empty or not connected ${DIM}(PID $MNESTRA_PID)${RESET}"
+  fi
+  MCP_CFG="${HOME}/.claude/mcp.json"
+  if [ ! -f "$MCP_CFG" ] || ! python3 -c "import json; d=json.load(open('$MCP_CFG')); assert 'mnestra' in str(d)" 2>/dev/null; then
+    echo -e "  ${DIM}  └ Hint: add a \"mnestra\" entry to ~/.claude/mcp.json so Claude Code can use it${RESET}"
+  fi
 fi
 
 # ── Build summary line ────────────────────────────────────────────────

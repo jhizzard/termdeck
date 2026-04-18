@@ -7,6 +7,14 @@ shell: /bin/zsh    # or /bin/bash
 
 defaultTheme: tokyo-night
 
+# Mnestra (pgvector memory store) integration
+# Controls whether scripts/start.sh launches `mnestra serve` automatically.
+#   autoStart: true   — start mnestra serve automatically when TermDeck boots
+#   autoStart: false  — never auto-start (leave Mnestra management to the user)
+#   (unset)           — start.sh prints a hint but does not launch
+mnestra:
+  autoStart: true
+
 # Project definitions
 # Each project maps a name to a directory + defaults
 # These appear in the prompt bar dropdown and enable auto-cd + default themes
