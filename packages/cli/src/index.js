@@ -50,6 +50,18 @@ if (args[0] === 'init') {
   process.exit(1);
 }
 
+// `termdeck forge` — Sprint 20 SkillForge preview. Autonomously generates
+// Claude Code skills from Mnestra memories. Lazy-loaded so the launcher
+// startup path stays unaffected.
+if (args[0] === 'forge') {
+  const forge = require(path.join(__dirname, 'forge.js'));
+  forge(args.slice(1)).then((code) => process.exit(code || 0)).catch((err) => {
+    console.error('[cli] forge failed:', err && err.stack || err);
+    process.exit(1);
+  });
+  return;
+}
+
 const flags = {};
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port' && args[i + 1]) {
@@ -70,6 +82,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
     termdeck init --mnestra      Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
+    termdeck forge              Generate Claude skills from memories (experimental)
 
   Keyboard shortcuts (in browser):
     Ctrl+Shift+N                Focus prompt bar
