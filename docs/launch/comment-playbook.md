@@ -37,7 +37,7 @@ Tier 1: free. Tier 2 (Mnestra + Flashback) on a solo developer's scale: Supabase
 
 ## Q7. "Security model — this has full shell access, right?"
 
-Yes. TermDeck spawns real PTYs with your user's privileges — same security model as any terminal emulator. The server binds to `127.0.0.1` by default with no auth required on loopback; v0.3.9 added optional token auth (Bearer / cookie / query) and a guardrail that refuses to bind `0.0.0.0` unless `auth.token` is configured. For a multi-user or remote-exposed machine, set a token or front TermDeck with nginx basic auth / WireGuard / tailscale. Mnestra's memory store is your Supabase project with your RLS policies — TermDeck never sees anyone else's memories. Session transcripts (if you enable them) are written to `~/.termdeck/termdeck.db` locally and optionally replicated to Supabase with your configured RLS. `docs/SECURITY.md` has the threat model and `docs/DEPLOYMENT.md` walks through non-loopback exposure — read both before opening TermDeck to any network beyond localhost.
+Yes. TermDeck spawns real PTYs with your user's privileges — same security model as any terminal emulator. The server binds to `127.0.0.1` by default with no auth required on loopback; v0.4.0 added optional token auth (Bearer / cookie / query) and a guardrail that refuses to bind `0.0.0.0` unless `auth.token` is configured. For a multi-user or remote-exposed machine, set a token or front TermDeck with nginx basic auth / WireGuard / tailscale. Mnestra's memory store is your Supabase project with your RLS policies — TermDeck never sees anyone else's memories. Session transcripts (if you enable them) are written to `~/.termdeck/termdeck.db` locally and optionally replicated to Supabase with your configured RLS. `docs/SECURITY.md` has the threat model and `docs/DEPLOYMENT.md` walks through non-loopback exposure — read both before opening TermDeck to any network beyond localhost.
 
 ## Q8. "Does it work on Windows?"
 
@@ -49,7 +49,7 @@ Rumen calls the LLM through a thin adapter (`packages/synthesize/adapter.ts`) �
 
 ## Q10. "Can I use Ollama instead of OpenAI for embeddings?"
 
-Not in v0.3.9. Mnestra's embedding pipeline is hardcoded to `text-embedding-3-large` (1536 dims) right now because mixing embedding providers corrupts the vector space — you can't meaningfully compare a sentence-transformers vector to an OpenAI vector in the same index. Swapping to Ollama-hosted `nomic-embed-text-v1.5` (768 dims) is a supported path in v0.4: it requires a schema migration to add a second `embedding_768` column and a rebuild of the existing memories against the new model. If you want to try it now, the SQL migration is trivial and I'd be happy to review a PR.
+Not in v0.4.0. Mnestra's embedding pipeline is hardcoded to `text-embedding-3-large` (1536 dims) right now because mixing embedding providers corrupts the vector space — you can't meaningfully compare a sentence-transformers vector to an OpenAI vector in the same index. Swapping to Ollama-hosted `nomic-embed-text-v1.5` (768 dims) is a supported path in v0.4: it requires a schema migration to add a second `embedding_768` column and a rebuild of the existing memories against the new model. If you want to try it now, the SQL migration is trivial and I'd be happy to review a PR.
 
 ---
 
