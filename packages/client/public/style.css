@@ -315,17 +315,14 @@
     /* Orchestrator: workers across the top (60%), one full-width orchestrator
        panel across the bottom (40%). The last panel is always the orchestrator.
        JS sets a data-orch-cols attribute on the grid to match the worker count. */
+    /* Orchestrator: 2x2 workers on top (60%), full-width orchestrator bottom (40%) */
     .grid-container.layout-orch {
-      grid-template-rows: 3fr 2fr;
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: 3fr 3fr 2fr;
     }
-    .grid-container.layout-orch[data-orch-cols="1"] { grid-template-columns: 1fr; }
-    .grid-container.layout-orch[data-orch-cols="2"] { grid-template-columns: repeat(2, 1fr); }
-    .grid-container.layout-orch[data-orch-cols="3"] { grid-template-columns: repeat(3, 1fr); }
-    .grid-container.layout-orch[data-orch-cols="4"] { grid-template-columns: repeat(4, 1fr); }
-    .grid-container.layout-orch[data-orch-cols="5"] { grid-template-columns: repeat(5, 1fr); }
     .grid-container.layout-orch .term-panel:last-child {
       grid-column: 1 / -1;
-      grid-row: 2;
+      grid-row: 3;
     }
     /* Single panel: fill entire grid */
     .grid-container.layout-orch[data-orch-cols="0"] {
