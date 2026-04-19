@@ -312,14 +312,33 @@
     .grid-container.layout-4x2 { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
     .grid-container.layout-2x4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr 1fr; }
 
-    /* Orchestrator: 1 large left panel (60%), remaining stack on the right (40%). */
+    /* Orchestrator: 4 workers across the top row (60%), one full-width
+       orchestrator panel across the bottom row (40%). The last panel is
+       always the orchestrator. Column count collapses to match the number of
+       worker panels when fewer than 5 panels are open. */
     .grid-container.layout-orch {
-      grid-template-columns: 3fr 2fr;
-      grid-template-rows: repeat(4, 1fr);
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: 3fr 2fr;
     }
-    .grid-container.layout-orch .term-panel:first-child {
-      grid-row: 1 / span 4;
-      grid-column: 1;
+    .grid-container.layout-orch .term-panel:last-child {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+    .grid-container.layout-orch:not(:has(.term-panel:nth-child(5))) {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .grid-container.layout-orch:not(:has(.term-panel:nth-child(4))) {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .grid-container.layout-orch:not(:has(.term-panel:nth-child(3))) {
+      grid-template-columns: 1fr;
+    }
+    /* Single panel: fill the entire grid rather than leaving the top empty. */
+    .grid-container.layout-orch:not(:has(.term-panel:nth-child(2))) {
+      grid-template-rows: 1fr;
+    }
+    .grid-container.layout-orch:not(:has(.term-panel:nth-child(2))) .term-panel:last-child {
+      grid-row: 1;
     }
 
     /* Focus mode: single terminal fills the grid */

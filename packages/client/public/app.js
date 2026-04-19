@@ -2038,7 +2038,7 @@
       {
         target: '.topbar-center',
         title: 'Layout modes',
-        body: `Eight preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd>, <strong>orch</strong> (1 large + stacked, for 4+1 sprints), plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+7</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>7</kbd>) do the same.`,
+        body: `Eight preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd>, <strong>orch</strong> (4 workers across the top + 1 full-width orchestrator across the bottom, for 4+1 sprints), plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+7</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>7</kbd>) do the same.`,
       },
       {
         target: '#termSwitcher',

@@ -61,19 +61,25 @@ jobs:
 
       - name: Check console.error tag prefix usage
         run: |
-          # Every console.error in source files should start with [
-          # Accept any opening quote/backtick followed by [ — single, double, or template literal
+          # Every console.error in source files must carry a [tag] somewhere in
+          # its first argument. The tag may be preceded by whitespace or ANSI
+          # escape codes (e.g. `  \x1b[31m[health] ...`), so we look for
+          # [lowercase-tag] anywhere inside the call — not only immediately
+          # after the opening quote.
+          #
+          # Exceptions: `console.error('Usage: ...')` and continuation lines
+          # starting with '  termdeck' are intentional stderr help output from
+          # the CLI and are allowed to be untagged.
           BT='`'
-          UNTAGGED=$(grep -rn "console.error" packages/server/src packages/cli/src packages/client/public/index.html 2>/dev/null \
-            | grep -v "console.error('\[" \
-            | grep -v 'console.error("\[' \
-            | grep -v "console.error(${BT}\[" \
+          UNTAGGED=$(grep -rn "console\.error" packages/server/src packages/cli/src packages/client/public/index.html 2>/dev/null \
+            | grep -Ev "console\.error\([^)]*\[[a-z][a-z0-9:_-]*\]" \
+            | grep -Ev "console\.error\((['\"]${BT}?|${BT})(Usage:|  termdeck)" \
             || true)
           if [ -n "$UNTAGGED" ]; then
             echo "Untagged console.error calls found:"
             echo "$UNTAGGED"
             echo ""
-            echo "All console.error must use [tag] prefix: [pty], [ws], [db], [rag], [config], [cli], [client]"
+            echo "All console.error must include a [tag]: [pty], [ws], [db], [rag], [config], [cli], [client], [flashback], [mnestra-bridge], etc."
             exit 1
           fi
           echo "All console.error calls use the [tag] prefix convention."
