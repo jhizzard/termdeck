@@ -318,7 +318,7 @@
     /* Orchestrator: 2x2 workers on top (60%), full-width orchestrator bottom (40%) */
     .grid-container.layout-orch {
       grid-template-columns: repeat(2, 1fr);
-      grid-template-rows: 3fr 3fr 2fr;
+      grid-template-rows: 2fr 2fr 2fr;
     }
     .grid-container.layout-orch .term-panel:last-child {
       grid-column: 1 / -1;
