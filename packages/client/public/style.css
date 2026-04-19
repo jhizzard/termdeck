@@ -312,32 +312,27 @@
     .grid-container.layout-4x2 { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
     .grid-container.layout-2x4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr 1fr; }
 
-    /* Orchestrator: 4 workers across the top row (60%), one full-width
-       orchestrator panel across the bottom row (40%). The last panel is
-       always the orchestrator. Column count collapses to match the number of
-       worker panels when fewer than 5 panels are open. */
+    /* Orchestrator: workers across the top (60%), one full-width orchestrator
+       panel across the bottom (40%). The last panel is always the orchestrator.
+       JS sets a data-orch-cols attribute on the grid to match the worker count. */
     .grid-container.layout-orch {
-      grid-template-columns: repeat(4, 1fr);
       grid-template-rows: 3fr 2fr;
     }
+    .grid-container.layout-orch[data-orch-cols="1"] { grid-template-columns: 1fr; }
+    .grid-container.layout-orch[data-orch-cols="2"] { grid-template-columns: repeat(2, 1fr); }
+    .grid-container.layout-orch[data-orch-cols="3"] { grid-template-columns: repeat(3, 1fr); }
+    .grid-container.layout-orch[data-orch-cols="4"] { grid-template-columns: repeat(4, 1fr); }
+    .grid-container.layout-orch[data-orch-cols="5"] { grid-template-columns: repeat(5, 1fr); }
     .grid-container.layout-orch .term-panel:last-child {
       grid-column: 1 / -1;
       grid-row: 2;
     }
-    .grid-container.layout-orch:not(:has(.term-panel:nth-child(5))) {
-      grid-template-columns: repeat(3, 1fr);
-    }
-    .grid-container.layout-orch:not(:has(.term-panel:nth-child(4))) {
-      grid-template-columns: repeat(2, 1fr);
-    }
-    .grid-container.layout-orch:not(:has(.term-panel:nth-child(3))) {
+    /* Single panel: fill entire grid */
+    .grid-container.layout-orch[data-orch-cols="0"] {
+      grid-template-rows: 1fr;
       grid-template-columns: 1fr;
     }
-    /* Single panel: fill the entire grid rather than leaving the top empty. */
-    .grid-container.layout-orch:not(:has(.term-panel:nth-child(2))) {
-      grid-template-rows: 1fr;
-    }
-    .grid-container.layout-orch:not(:has(.term-panel:nth-child(2))) .term-panel:last-child {
+    .grid-container.layout-orch[data-orch-cols="0"] .term-panel:last-child {
       grid-row: 1;
     }
 

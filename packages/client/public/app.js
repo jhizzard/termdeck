@@ -1852,6 +1852,15 @@
       const grid = document.getElementById('termGrid');
       grid.className = `grid-container layout-${layout}`;
 
+      // Orchestrator layout: set column count based on worker panels (total - 1)
+      if (layout === 'orch') {
+        const panelCount = grid.querySelectorAll('.term-panel').length;
+        const workerCount = Math.max(0, panelCount - 1);
+        grid.setAttribute('data-orch-cols', String(workerCount || panelCount));
+      } else {
+        grid.removeAttribute('data-orch-cols');
+      }
+
       // Remove focus/half states
       document.querySelectorAll('.term-panel').forEach(p => {
         p.classList.remove('focused', 'primary');
