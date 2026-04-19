@@ -63,7 +63,7 @@ The Edge Function model is specifically valuable because it means Rumen **doesn'
 
 ## What Rumen v0.5 will add: question generation
 
-Right now (rumen@0.4.4) Rumen only generates insights in response to observed memories. A v0.5 path will add **question generation**: Rumen will occasionally write a memory of `source_type: question` — an open question it noticed across the store that it can't answer on its own. Those questions show up in TermDeck's Flashback surface so the next time you're in a related context, you see the question and can answer it (or decide it's not worth answering). The loop becomes: write → relate → synthesize → question → surface → answer → write. Not shipped yet; roadmap item.
+Right now (rumen@0.4.5) Rumen only generates insights in response to observed memories. A v0.5 path will add **question generation**: Rumen will occasionally write a memory of `source_type: question` — an open question it noticed across the store that it can't answer on its own. Those questions show up in TermDeck's Flashback surface so the next time you're in a related context, you see the question and can answer it (or decide it's not worth answering). The loop becomes: write → relate → synthesize → question → surface → answer → write. Not shipped yet; roadmap item.
 
 The goal is a memory store that gets more useful the longer you run it. Not just more populated — actually smarter. That's why I called it Rumen. The chewing happens when you're not looking.
 
