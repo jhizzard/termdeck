@@ -11,9 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
 
-## [0.4.3] - 2026-04-18
+## [0.4.4] - 2026-04-19
+
+### Added
+- **Orchestrator layout v2**: 4 workers TOP (60% height) + 1 full-width orchestrator BOTTOM (40% height). Handles 2-5 panels gracefully.
+- **Bulletproof start.sh**: numbered step-by-step output, smart Mnestra handling (kill/restart if 0 memories), first-run config creation
+- **Rumen re-kickstart**: 166 insights generated with hybrid embeddings, 44 PVB-specific (up from 13). Cross-project pattern discovery confirmed working.
 
 ### Fixed
+- **CI lint failures**: docs-lint job now handles clean checkouts without synced docs-site content
 - **Flashback resurrection**: root cause found — `queryDirect` sent `recency_weight`/`decay_days` to an 8-argument SQL function. Removed the extra args. Flashback now fires end-to-end (verified: error → analyzer → Mnestra query → toast). Silent for 15 sprints due to this bug.
 - **Data quality cleanup**: 145 sub-0.10 confidence noise insights deleted, all "chopin-nashville" project tags fixed to real config.yaml names (termdeck, scheduling, claimguard)
 
@@ -228,8 +234,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status broadcast** every 2 seconds for live metadata updates
 - **Keyboard shortcuts**: Ctrl+Shift+N for prompt bar, Ctrl+Shift+1-6 for layouts, Ctrl+Shift+]/[ to cycle terminals, Escape to exit focus
 
-[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.4.3...HEAD
-[0.4.3]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.4.3
+[Unreleased]: https://github.com/jhizzard/termdeck/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/jhizzard/termdeck/compare/v0.3.4...v0.4.4
 [0.3.4]: https://github.com/jhizzard/termdeck/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/jhizzard/termdeck/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/jhizzard/termdeck/compare/v0.3.1...v0.3.2
