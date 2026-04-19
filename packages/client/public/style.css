@@ -355,7 +355,8 @@
       border-radius: var(--tg-radius);
       overflow: hidden;
       transition: border-color 0.2s;
-      min-height: 0;
+      min-height: 150px;
+      min-width: 200px;
     }
 
     .term-panel:hover { border-color: var(--tg-border-active); }
@@ -2289,3 +2290,57 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--tg-border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--tg-border-active); }
+
+    /* ===== RESPONSIVE BREAKPOINTS (Sprint 23 T1) =====
+       13" MacBook Air (1280x800 / 1440x900) up through 27" iMac (2560x1440).
+       Goals: (1) compact toolbar on short viewports to reclaim vertical space
+       for terminals, (2) collapse wide grids (3x2, 4x2) to 2 columns on
+       narrow viewports so panels never drop below readable size (combined
+       with the 200px min-width on .term-panel). */
+
+    /* Short viewports (13" laptops at 1280x800 / 1440x900): shrink the two
+       toolbar rows from 74px to 64px total, and tighten button padding so
+       the quick-launch + layout buttons still fit on one row at 1280px. */
+    @media (max-height: 800px) {
+      .topbar-row-1 { height: 36px; }
+      .topbar-row-2 { height: 28px; }
+      .layout-btn { padding: 3px 7px; font-size: 10px; }
+      .topbar-right button { padding: 3px 6px; font-size: 10px; }
+      .topbar-ql-btn { padding: 3px 6px; font-size: 10px; }
+    }
+
+    /* Narrow viewports: 3x2 (6 panels) and 4x2 (8 panels) become
+       too cramped below ~1280px given the 200px panel min-width. Degrade to
+       2 columns and add rows so every panel stays visible. */
+    @media (max-width: 1280px) {
+      .grid-container.layout-3x2 {
+        grid-template-columns: repeat(2, 1fr);
+        grid-template-rows: repeat(3, 1fr);
+      }
+      .grid-container.layout-4x2 {
+        grid-template-columns: repeat(2, 1fr);
+        grid-template-rows: repeat(4, 1fr);
+      }
+    }
+
+    /* Very narrow viewports (rare — sub-1024 widths): also collapse 2x4
+       and orch to something sane. 2x4 already uses 2 columns, so we just
+       let it scroll; orch falls back to a single-column stack. */
+    @media (max-width: 900px) {
+      .grid-container.layout-orch {
+        grid-template-columns: 1fr;
+        grid-template-rows: repeat(var(--orch-worker-rows, 3), 1fr) 1.2fr;
+      }
+      .grid-container.layout-orch .term-panel:last-child {
+        grid-column: 1;
+      }
+      .grid-container { overflow: auto; }
+    }
+
+    /* Large viewports (27" iMac and ultrawide monitors): keep panels filling
+       their allocated grid area. Raise the panel floor so a single terminal
+       in 1x1 mode on a 2560-wide display still fills its space rather than
+       sitting at the 150px min. */
+    @media (min-width: 1920px) {
+      .term-panel { min-height: 200px; min-width: 300px; }
+    }

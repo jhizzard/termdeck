@@ -10,5 +10,6 @@ module.exports = {
   yaml: require('./yaml-io'),
   supabaseUrl: require('./supabase-url'),
   migrations: require('./migrations'),
-  pgRunner: require('./pg-runner')
+  pgRunner: require('./pg-runner'),
+  migrationRunner: require('./migration-runner')
 };

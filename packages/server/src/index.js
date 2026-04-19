@@ -3,6 +3,7 @@
 
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { WebSocketServer } = require('ws');
 const path = require('path');
 const os = require('os');
@@ -249,6 +250,171 @@ function createServer(config) {
     } catch (err) {
       console.error('[setup] /api/setup failed:', err.message);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/setup/configure - Sprint 23 T2
+  // Accepts pasted credentials from the browser wizard, validates each,
+  // then writes ~/.termdeck/secrets.env (chmod 600) and updates
+  // ~/.termdeck/config.yaml with rag.enabled: true plus ${VAR} references.
+  // Security: the bind guardrail refuses non-loopback binds without auth,
+  // so this endpoint only ever responds on 127.0.0.1 in the default config.
+  app.post('/api/setup/configure', async (req, res) => {
+    const b = req.body || {};
+    const supabaseUrl = typeof b.supabaseUrl === 'string' ? b.supabaseUrl.trim() : '';
+    const supabaseServiceRoleKey = typeof b.supabaseServiceRoleKey === 'string' ? b.supabaseServiceRoleKey.trim() : '';
+    const openaiApiKey = typeof b.openaiApiKey === 'string' ? b.openaiApiKey.trim() : '';
+    const anthropicApiKey = typeof b.anthropicApiKey === 'string' ? b.anthropicApiKey.trim() : '';
+    const databaseUrl = typeof b.databaseUrl === 'string' ? b.databaseUrl.trim() : '';
+
+    const missing = [];
+    if (!supabaseUrl) missing.push('supabaseUrl');
+    if (!supabaseServiceRoleKey) missing.push('supabaseServiceRoleKey');
+    if (!openaiApiKey) missing.push('openaiApiKey');
+    if (!databaseUrl) missing.push('databaseUrl');
+    if (missing.length) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing required credentials: ${missing.join(', ')}`
+      });
+    }
+
+    if (!/^https?:\/\//i.test(supabaseUrl)) {
+      return res.status(400).json({
+        success: false,
+        error: 'supabaseUrl must start with http:// or https://'
+      });
+    }
+
+    const [supaRes, oaiRes, dbRes] = await Promise.all([
+      validateSupabase(supabaseUrl, supabaseServiceRoleKey).catch((e) => ({ ok: false, detail: e.message })),
+      validateOpenAI(openaiApiKey).catch((e) => ({ ok: false, detail: e.message })),
+      validateDatabase(databaseUrl).catch((e) => ({ ok: false, detail: e.message }))
+    ]);
+    const validation = { supabase: supaRes, openai: oaiRes, database: dbRes };
+
+    const allValid = validation.supabase.ok && validation.openai.ok && validation.database.ok;
+    if (!allValid) {
+      return res.status(400).json({
+        success: false,
+        validation,
+        error: 'One or more credentials failed validation'
+      });
+    }
+
+    try {
+      if (!fs.existsSync(SETUP_CONFIG_DIR)) {
+        fs.mkdirSync(SETUP_CONFIG_DIR, { recursive: true });
+      }
+
+      const secretsBody = buildSecretsEnv({
+        SUPABASE_URL: supabaseUrl,
+        SUPABASE_SERVICE_ROLE_KEY: supabaseServiceRoleKey,
+        OPENAI_API_KEY: openaiApiKey,
+        ANTHROPIC_API_KEY: anthropicApiKey,
+        DATABASE_URL: databaseUrl
+      });
+      const tmpPath = SETUP_SECRETS_PATH + '.tmp';
+      fs.writeFileSync(tmpPath, secretsBody, { mode: 0o600 });
+      fs.renameSync(tmpPath, SETUP_SECRETS_PATH);
+      try { fs.chmodSync(SETUP_SECRETS_PATH, 0o600); } catch (err) {
+        console.warn('[setup] chmod 600 on secrets.env failed:', err.message);
+      }
+
+      process.env.SUPABASE_URL = supabaseUrl;
+      process.env.SUPABASE_SERVICE_ROLE_KEY = supabaseServiceRoleKey;
+      process.env.OPENAI_API_KEY = openaiApiKey;
+      if (anthropicApiKey) process.env.ANTHROPIC_API_KEY = anthropicApiKey;
+      process.env.DATABASE_URL = databaseUrl;
+
+      updateConfigYamlForRag(config);
+
+      _setupCache = null;
+      _setupCachedAt = 0;
+
+      console.log('[setup] Credentials saved, RAG enabled via wizard');
+
+      return res.json({
+        success: true,
+        tier: 2,
+        detail: 'Secrets saved, RAG enabled',
+        validation
+      });
+    } catch (err) {
+      console.error('[setup] /api/setup/configure write failed:', err.message);
+      return res.status(500).json({
+        success: false,
+        validation,
+        error: `Failed to write config: ${err.message}`
+      });
+    }
+  });
+
+  // POST /api/setup/migrate - auto-run all 7 bootstrap migrations (Sprint 23 T3)
+  // Invoked by the browser setup wizard after credentials are saved. Reloads
+  // ~/.termdeck/secrets.env so DATABASE_URL picks up T2's just-written value
+  // without a server restart, then streams per-migration status to the server
+  // log and returns an aggregate result to the client. Idempotent — all seven
+  // migration files (6 Mnestra + 1 transcript) are authored with IF NOT EXISTS
+  // / CREATE OR REPLACE so re-runs are safe.
+  const { migrationRunner: _migrationRunner, dotenv: _dotenv } = require('./setup');
+  let _migrateInFlight = false;
+  app.post('/api/setup/migrate', async (req, res) => {
+    if (_migrateInFlight) {
+      return res.status(409).json({ ok: false, error: 'Migration already in progress' });
+    }
+    _migrateInFlight = true;
+
+    // Invalidate the /api/setup cache — tier status will shift once migrations land.
+    _setupCache = null;
+    _setupCachedAt = 0;
+
+    try {
+      // Re-read secrets.env so a freshly saved DATABASE_URL is visible without
+      // a restart. dotenv-io will not clobber pre-set process.env entries.
+      try {
+        const secrets = _dotenv.readSecrets();
+        for (const [k, v] of Object.entries(secrets)) {
+          if (process.env[k] === undefined || process.env[k] === '') {
+            process.env[k] = v;
+          }
+        }
+      } catch (_err) { /* optional refresh — fall back to explicit lookup */ }
+
+      const databaseUrl = _migrationRunner.resolveDatabaseUrl(req.body && req.body.databaseUrl);
+      if (!databaseUrl) {
+        _migrateInFlight = false;
+        return res.status(400).json({
+          ok: false,
+          error: 'DATABASE_URL not set. Save credentials in the setup wizard first.'
+        });
+      }
+
+      const total = _migrationRunner.listAllMigrations().length;
+      console.log(`[setup] /api/setup/migrate starting (${total} migrations)`);
+
+      const events = [];
+      const result = await _migrationRunner.runAll({
+        databaseUrl,
+        onProgress: (event) => {
+          events.push(event);
+          if (event.type === 'step' && event.status === 'running') {
+            console.log(`[setup] Migration ${event.index}/${event.total}: ${event.file}...`);
+          } else if (event.type === 'step' && event.status === 'done') {
+            console.log(`[setup] Migration ${event.index}/${event.total}: ${event.file} ✓ (${event.elapsedMs}ms)`);
+          } else if (event.type === 'step' && event.status === 'failed') {
+            console.error(`[setup] Migration ${event.index}/${event.total}: ${event.file} ✗ ${event.error}`);
+          }
+        }
+      });
+
+      console.log(`[setup] Migrations ${result.ok ? 'complete' : 'halted'} (${result.applied}/${result.total} applied)`);
+      res.json({ ok: result.ok, ...result, events });
+    } catch (err) {
+      console.error('[setup] /api/setup/migrate failed:', err.message);
+      res.status(500).json({ ok: false, error: err.message, code: err.code || null });
+    } finally {
+      _migrateInFlight = false;
     }
   });
 
@@ -971,6 +1137,193 @@ function createServer(config) {
   });
 
   return { app, server, wss, sessions, rag, db, transcriptWriter };
+}
+
+// ==================== Setup-configure helpers (Sprint 23 T2) ====================
+// Scoped to module level so they can be unit tested without spinning the server.
+// Each validator resolves to { ok: boolean, detail: string } — never throws.
+
+function validateSupabase(url, key) {
+  return new Promise((resolve) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (err) {
+      return resolve({ ok: false, detail: `invalid URL: ${err.message}` });
+    }
+    const client = parsed.protocol === 'http:' ? http : https;
+    const probePath = '/rest/v1/';
+    const req = client.request({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: probePath,
+      method: 'GET',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`
+      },
+      timeout: 8000
+    }, (r) => {
+      let body = '';
+      r.on('data', (c) => { body += c; });
+      r.on('end', () => {
+        // 200 = PostgREST OpenAPI doc served, 404 = URL reachable but no doc —
+        // both indicate the host + key passed the edge auth check.
+        if (r.statusCode === 200 || r.statusCode === 404) {
+          resolve({ ok: true, detail: `Supabase reachable (HTTP ${r.statusCode})` });
+        } else if (r.statusCode === 401 || r.statusCode === 403) {
+          resolve({ ok: false, detail: `Authentication failed (HTTP ${r.statusCode}) — check service role key` });
+        } else {
+          resolve({ ok: false, detail: `Unexpected response HTTP ${r.statusCode}` });
+        }
+      });
+    });
+    req.on('error', (err) => resolve({ ok: false, detail: err.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, detail: 'timeout after 8s' }); });
+    req.end();
+  });
+}
+
+function validateOpenAI(key) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({
+      model: 'text-embedding-3-small',
+      input: 'termdeck setup test'
+    });
+    const req = https.request({
+      hostname: 'api.openai.com',
+      port: 443,
+      path: '/v1/embeddings',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+        'Content-Length': Buffer.byteLength(payload)
+      },
+      timeout: 10000
+    }, (r) => {
+      let body = '';
+      r.on('data', (c) => { body += c; });
+      r.on('end', () => {
+        if (r.statusCode === 200) {
+          resolve({ ok: true, detail: 'Embedding test succeeded' });
+          return;
+        }
+        let msg = `HTTP ${r.statusCode}`;
+        try {
+          const parsed = JSON.parse(body);
+          if (parsed && parsed.error && parsed.error.message) msg = parsed.error.message;
+        } catch (_err) { /* ignore body parse */ }
+        resolve({ ok: false, detail: msg });
+      });
+    });
+    req.on('error', (err) => resolve({ ok: false, detail: err.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, detail: 'timeout after 10s' }); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function validateDatabase(connStr) {
+  let pgMod;
+  try { pgMod = require('pg'); } catch (err) { pgMod = null; }
+  if (!pgMod) return { ok: false, detail: 'pg module not installed' };
+
+  const pool = new pgMod.Pool({
+    connectionString: connStr,
+    max: 1,
+    connectionTimeoutMillis: 6000
+  });
+  try {
+    const t0 = Date.now();
+    const r = await pool.query('SELECT 1 AS ok');
+    const ms = Date.now() - t0;
+    if (r.rows[0] && r.rows[0].ok === 1) {
+      return { ok: true, detail: `connected in ${ms}ms` };
+    }
+    return { ok: false, detail: 'unexpected query result' };
+  } catch (err) {
+    return { ok: false, detail: err.message };
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+function buildSecretsEnv(vars) {
+  const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
+  const existing = {};
+  if (fs.existsSync(secretsPath)) {
+    try {
+      const raw = fs.readFileSync(secretsPath, 'utf-8');
+      for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq === -1) continue;
+        const k = trimmed.slice(0, eq).trim();
+        if (!k) continue;
+        let v = trimmed.slice(eq + 1).trim();
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+          v = v.slice(1, -1);
+        }
+        existing[k] = v;
+      }
+    } catch (err) {
+      console.warn('[setup] Could not parse existing secrets.env:', err.message);
+    }
+  }
+  const merged = { ...existing };
+  for (const [k, v] of Object.entries(vars)) {
+    if (v != null && v !== '') merged[k] = v;
+  }
+  const lines = [
+    '# TermDeck secrets — written by setup wizard',
+    '# Do not commit this file.',
+    ''
+  ];
+  for (const [k, v] of Object.entries(merged)) {
+    const needsQuote = /[\s#"']/.test(v);
+    lines.push(needsQuote ? `${k}="${String(v).replace(/"/g, '\\"')}"` : `${k}=${v}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+function updateConfigYamlForRag(runningConfig) {
+  const yaml = require('yaml');
+  const configPath = path.join(os.homedir(), '.termdeck', 'config.yaml');
+  let parsed = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      parsed = yaml.parse(fs.readFileSync(configPath, 'utf-8')) || {};
+    } catch (err) {
+      console.warn('[setup] config.yaml parse failed, starting from empty:', err.message);
+      parsed = {};
+    }
+  }
+  parsed.rag = parsed.rag || {};
+  parsed.rag.enabled = true;
+  if (!parsed.rag.supabaseUrl) parsed.rag.supabaseUrl = '${SUPABASE_URL}';
+  if (!parsed.rag.supabaseKey) parsed.rag.supabaseKey = '${SUPABASE_SERVICE_ROLE_KEY}';
+  if (!parsed.rag.openaiApiKey) parsed.rag.openaiApiKey = '${OPENAI_API_KEY}';
+  if (!parsed.rag.anthropicApiKey) parsed.rag.anthropicApiKey = '${ANTHROPIC_API_KEY}';
+
+  if (fs.existsSync(configPath)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    try { fs.copyFileSync(configPath, `${configPath}.${ts}.bak`); } catch (err) {
+      console.warn('[setup] config.yaml backup failed:', err.message);
+    }
+  }
+  fs.writeFileSync(configPath, yaml.stringify(parsed), 'utf-8');
+
+  if (runningConfig) {
+    runningConfig.rag = runningConfig.rag || {};
+    runningConfig.rag.enabled = true;
+    runningConfig.rag.supabaseUrl = process.env.SUPABASE_URL;
+    runningConfig.rag.supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    runningConfig.rag.openaiApiKey = process.env.OPENAI_API_KEY;
+    if (process.env.ANTHROPIC_API_KEY) runningConfig.rag.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  }
 }
 
 // Start server

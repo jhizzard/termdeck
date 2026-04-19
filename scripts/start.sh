@@ -110,6 +110,7 @@ sessionLogs:
   enabled: false
 EOF
   sub_note "Edit $CONFIG_FILE to add projects or tweak defaults."
+  sub_note "Open http://localhost:$PORT and click 'config' to complete setup"
   echo ""
 fi
 

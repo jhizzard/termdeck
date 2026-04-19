@@ -2028,6 +2028,20 @@
       }
     }
 
+    // Debounce: collapse a burst of calls (e.g. a window-resize drag firing
+    // dozens of events/sec) into a single invocation after `wait` ms of quiet.
+    function debounce(fn, wait) {
+      let timer = null;
+      return function debounced(...args) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => { timer = null; fn.apply(this, args); }, wait);
+      };
+    }
+
+    const fitAllDebounced = debounce(() => {
+      requestAnimationFrame(() => fitAll());
+    }, 100);
+
     // ===== ONBOARDING TOUR =====
     // Spotlight + tooltip walkthrough of every TermDeck surface. Runs once on
     // first visit (localStorage gate) and replays on demand via the "how this
@@ -2564,15 +2578,21 @@
           ? 'active'
           : status === 'partial' ? 'partial' : 'not configured';
         const isCurrent = Number(tier.id) === currentTier + 1 && status !== 'active';
-        const cmds = (status === 'active' || tier.commands.length === 0)
-          ? ''
-          : `<div class="setup-cmds">${tier.commands.map((c) => {
-              const copyable = /^termdeck\s/.test(c);
-              return `<div class="setup-cmd">
-                <code>${escapeHtml(c)}</code>
-                ${copyable ? `<button type="button" class="setup-copy" data-copy="${escapeHtml(c)}">copy</button>` : ''}
-              </div>`;
-            }).join('')}</div>`;
+
+        // Sprint 23 T2: tier 2 renders a credential form instead of CLI commands
+        // when not active, so users can paste URL/keys directly in the browser.
+        const isCredentialForm = tier.id === '2' && status !== 'active';
+        const cmds = isCredentialForm
+          ? renderSetupCredentialForm()
+          : (status === 'active' || tier.commands.length === 0)
+            ? ''
+            : `<div class="setup-cmds">${tier.commands.map((c) => {
+                const copyable = /^termdeck\s/.test(c);
+                return `<div class="setup-cmd">
+                  <code>${escapeHtml(c)}</code>
+                  ${copyable ? `<button type="button" class="setup-copy" data-copy="${escapeHtml(c)}">copy</button>` : ''}
+                </div>`;
+              }).join('')}</div>`;
 
         return `
           <div class="setup-tier setup-tier-${status}${isCurrent ? ' setup-tier-next' : ''}">
@@ -2609,24 +2629,261 @@
           }).catch(() => {});
         });
       });
+
+      const credSaveBtn = tiersEl.querySelector('#setupCredSave');
+      if (credSaveBtn) {
+        credSaveBtn.addEventListener('click', submitSetupCredentials);
+      }
+      const credForm = tiersEl.querySelector('#setupCredForm');
+      if (credForm) {
+        credForm.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            submitSetupCredentials();
+          }
+        });
+      }
+    }
+
+    // Sprint 23 T2 — credential form for Tier 2.
+    // Uses inline styles because wizard CSS is owned by T1 this sprint; these
+    // stubs fall back to CSS vars already defined in style.css so they inherit
+    // theme colours automatically.
+    function renderSetupCredentialForm() {
+      const inputStyle = 'width:100%;padding:6px 8px;background:var(--bg, #0f1017);color:var(--text, #e2e3e8);border:1px solid var(--border, #2a2c3a);border-radius:4px;font-family:monospace;font-size:12px;margin-top:4px;box-sizing:border-box;';
+      const labelStyle = 'display:block;font-size:11px;color:var(--text-dim, #8a8d9a);margin-top:10px;';
+      const helpStyle = 'font-size:10px;color:var(--text-dim, #8a8d9a);margin-top:3px;min-height:12px;';
+      const btnStyle = 'margin-top:14px;padding:8px 18px;background:var(--accent, #7aa2f7);color:#000;border:none;border-radius:4px;font-weight:600;cursor:pointer;font-size:12px;';
+      return `
+        <form class="setup-credentials" id="setupCredForm" autocomplete="off" style="margin-top:10px;padding:12px;background:rgba(0,0,0,0.2);border-radius:6px;border:1px solid var(--border, #2a2c3a);">
+          <div style="font-size:11px;color:var(--text-dim, #8a8d9a);margin-bottom:4px;">
+            Paste your Supabase + OpenAI credentials. They are written to <code>~/.termdeck/secrets.env</code> (chmod 600) and never leave this machine.
+          </div>
+          <label style="${labelStyle}">
+            Supabase URL
+            <input type="text" name="supabaseUrl" placeholder="https://xxxxxx.supabase.co" spellcheck="false" autocapitalize="off" autocorrect="off" style="${inputStyle}">
+          </label>
+          <div class="setup-cred-status" data-field="supabase" style="${helpStyle}"></div>
+          <label style="${labelStyle}">
+            Service Role Key
+            <input type="password" name="supabaseServiceRoleKey" placeholder="sb_secret_..." spellcheck="false" autocomplete="new-password" style="${inputStyle}">
+          </label>
+          <label style="${labelStyle}">
+            OpenAI API Key
+            <input type="password" name="openaiApiKey" placeholder="sk-proj-..." spellcheck="false" autocomplete="new-password" style="${inputStyle}">
+          </label>
+          <div class="setup-cred-status" data-field="openai" style="${helpStyle}"></div>
+          <label style="${labelStyle}">
+            Database URL
+            <input type="password" name="databaseUrl" placeholder="postgresql://postgres:...@...pooler.supabase.com:6543/postgres" spellcheck="false" autocomplete="new-password" style="${inputStyle}">
+          </label>
+          <div class="setup-cred-status" data-field="database" style="${helpStyle}"></div>
+          <label style="${labelStyle}">
+            Anthropic API Key <span style="opacity:0.6;">(optional — powers session-log summaries)</span>
+            <input type="password" name="anthropicApiKey" placeholder="sk-ant-..." spellcheck="false" autocomplete="new-password" style="${inputStyle}">
+          </label>
+          <div class="setup-cred-error" id="setupCredError" style="font-size:11px;margin-top:10px;min-height:14px;"></div>
+          <button type="button" class="setup-cred-save" id="setupCredSave" style="${btnStyle}">Save &amp; Connect</button>
+        </form>
+      `;
+    }
+
+    async function submitSetupCredentials() {
+      const form = document.getElementById('setupCredForm');
+      if (!form) return;
+      const btn = document.getElementById('setupCredSave');
+      const errorEl = document.getElementById('setupCredError');
+      const statuses = form.querySelectorAll('.setup-cred-status');
+
+      // Reset state
+      if (errorEl) { errorEl.textContent = ''; errorEl.style.color = ''; }
+      statuses.forEach((el) => { el.textContent = ''; el.style.color = ''; });
+
+      const body = {
+        supabaseUrl: (form.supabaseUrl.value || '').trim(),
+        supabaseServiceRoleKey: (form.supabaseServiceRoleKey.value || '').trim(),
+        openaiApiKey: (form.openaiApiKey.value || '').trim(),
+        anthropicApiKey: (form.anthropicApiKey.value || '').trim(),
+        databaseUrl: (form.databaseUrl.value || '').trim()
+      };
+
+      const missing = [];
+      if (!body.supabaseUrl) missing.push('Supabase URL');
+      if (!body.supabaseServiceRoleKey) missing.push('Service Role Key');
+      if (!body.openaiApiKey) missing.push('OpenAI API Key');
+      if (!body.databaseUrl) missing.push('Database URL');
+      if (missing.length) {
+        if (errorEl) {
+          errorEl.textContent = `Please fill in: ${missing.join(', ')} (Anthropic is optional).`;
+          errorEl.style.color = 'var(--red, #f7768e)';
+        }
+        return;
+      }
+
+      if (btn) { btn.disabled = true; btn.textContent = 'Validating…'; }
+      try {
+        const res = await fetch(`${API}/api/setup/configure`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        let data = {};
+        try { data = await res.json(); } catch { data = {}; }
+
+        if (data && data.validation) {
+          for (const field of ['supabase', 'openai', 'database']) {
+            const result = data.validation[field];
+            if (!result) continue;
+            const el = form.querySelector(`.setup-cred-status[data-field="${field}"]`);
+            if (el) {
+              el.textContent = (result.ok ? '✓ ' : '✗ ') + (result.detail || '');
+              el.style.color = result.ok ? 'var(--green, #9ece6a)' : 'var(--red, #f7768e)';
+            }
+          }
+        }
+
+        if (res.ok && data && data.success) {
+          if (errorEl) {
+            errorEl.textContent = (data.detail || 'Credentials saved.') + ' Running migrations…';
+            errorEl.style.color = 'var(--green, #9ece6a)';
+          }
+          if (btn) btn.textContent = 'Migrating…';
+          await runSetupMigrations(errorEl);
+          setTimeout(() => { refreshSetupStatus(); }, 600);
+        } else {
+          if (errorEl) {
+            errorEl.textContent = (data && data.error) || `Configuration failed (HTTP ${res.status})`;
+            errorEl.style.color = 'var(--red, #f7768e)';
+          }
+        }
+      } catch (err) {
+        if (errorEl) {
+          errorEl.textContent = `Request failed: ${err && err.message ? err.message : String(err)}`;
+          errorEl.style.color = 'var(--red, #f7768e)';
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save & Connect'; }
+      }
+    }
+
+    // Sprint 23 audit fix: chain /api/setup/migrate after credentials save so
+    // the wizard fulfills the sprint mission ("write config AND run migrations")
+    // in a single click instead of leaving the user to run `termdeck init`.
+    async function runSetupMigrations(statusEl) {
+      try {
+        const res = await fetch(`${API}/api/setup/migrate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        let data = {};
+        try { data = await res.json(); } catch { data = {}; }
+        if (statusEl) {
+          if (res.ok && data && data.ok) {
+            statusEl.textContent = `Migrations applied (${data.applied}/${data.total}). Tier 2 active.`;
+            statusEl.style.color = 'var(--green, #9ece6a)';
+          } else {
+            const applied = (data && data.applied != null) ? `${data.applied}/${data.total} applied` : '';
+            const detail = (data && data.error) ? data.error : `HTTP ${res.status}`;
+            statusEl.textContent = `Migrations failed: ${detail}${applied ? ` (${applied})` : ''}`;
+            statusEl.style.color = 'var(--red, #f7768e)';
+          }
+        }
+      } catch (err) {
+        if (statusEl) {
+          statusEl.textContent = `Migration request failed: ${err && err.message ? err.message : String(err)}`;
+          statusEl.style.color = 'var(--red, #f7768e)';
+        }
+      }
     }
 
     async function maybeAutoOpenSetupWizard() {
-      // Auto-open only when the server reports firstRun=true and we're not
-      // already in the middle of the onboarding tour. Silent-fail if the
-      // endpoint doesn't exist (server predates Sprint 19 T1).
+      // First-run users get the full wizard; returning users with at least
+      // tier 1 configured get a brief welcome-back toast (Sprint 23 T4).
+      // Silent-fail if the endpoint doesn't exist (server predates Sprint 19 T1).
       try {
         const res = await fetch(`${API}/api/setup`);
         if (!res.ok) return;
         const data = await res.json();
-        if (data && data.firstRun && !tourState.active) {
+        if (!data || tourState.active) return;
+        if (data.firstRun) {
           setTimeout(() => {
             if (!tourState.active && !setupModalOpen) openSetupModal();
+          }, 800);
+        } else if (Number(data.tier) >= 1) {
+          setTimeout(() => {
+            if (!tourState.active && !setupModalOpen) showWelcomeBackToast(data);
           }, 800);
         }
       } catch {
         // API not available — skip silently
       }
+    }
+
+    // Sprint 23 T4: returning-user welcome-back toast. Non-blocking, dismisses
+    // on click or after 5s. Inline-styled so we don't touch style.css (T1's
+    // ownership). The config button still opens the full wizard.
+    function showWelcomeBackToast(data) {
+      const existing = document.getElementById('welcomeBackToast');
+      if (existing) existing.remove();
+
+      const tier = Number(data.tier) || 1;
+      const tierNames = {
+        1: 'TermDeck core',
+        2: 'TermDeck + Mnestra',
+        3: 'TermDeck + Mnestra + Rumen',
+        4: 'Full stack + projects'
+      };
+      const stackLabel = tierNames[tier] || 'TermDeck';
+
+      const tiers = data.tiers || {};
+      const mnestraDetail = (tiers[2] && tiers[2].detail) || '';
+      const rumenDetail = (tiers[3] && tiers[3].detail) || '';
+
+      const memMatch = mnestraDetail.match(/([\d,]+)\s*memories/i);
+      const memoryCount = memMatch ? memMatch[1] : null;
+      const rumenMatch = rumenDetail.match(/last job\s+([^,]+?)(?:\s+ago|,|$)/i);
+      const rumenAgo = rumenMatch ? rumenMatch[1].trim() : null;
+
+      const parts = [`Stack: ${stackLabel}.`];
+      if (memoryCount) parts.push(`${memoryCount} memories.`);
+      if (rumenAgo) parts.push(`Last Rumen job: ${rumenAgo} ago.`);
+
+      const toast = document.createElement('div');
+      toast.id = 'welcomeBackToast';
+      toast.setAttribute('role', 'status');
+      toast.style.cssText = [
+        'position:fixed',
+        'top:64px',
+        'right:16px',
+        'z-index:9999',
+        'max-width:360px',
+        'padding:10px 14px',
+        'background:rgba(20,22,28,0.95)',
+        'color:#cdd6f4',
+        'border:1px solid rgba(137,180,250,0.35)',
+        'border-radius:6px',
+        'box-shadow:0 4px 18px rgba(0,0,0,0.4)',
+        'font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace',
+        'cursor:pointer',
+        'opacity:0',
+        'transition:opacity 180ms ease'
+      ].join(';');
+      toast.innerHTML = `
+        <div style="font-weight:600;color:#89b4fa;margin-bottom:2px">Welcome back</div>
+        <div>${parts.map(p => escapeHtml(p)).join(' ')}</div>
+      `;
+
+      document.body.appendChild(toast);
+      requestAnimationFrame(() => { toast.style.opacity = '1'; });
+
+      const dismiss = () => {
+        clearTimeout(timer);
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 200);
+      };
+      toast.addEventListener('click', dismiss);
+      const timer = setTimeout(dismiss, 5000);
     }
 
     function fmtUptime(sec) {
@@ -2684,10 +2941,8 @@
       if (e.target.id === 'tourBackdrop') endTour();
     });
 
-    // Resize handler
-    window.addEventListener('resize', () => {
-      requestAnimationFrame(() => fitAll());
-    });
+    // Resize handler — debounced so a resize drag doesn't re-fit every frame.
+    window.addEventListener('resize', fitAllDebounced);
 
     // Re-render the tour on viewport changes so the spotlight tracks resizes
     window.addEventListener('resize', () => {
