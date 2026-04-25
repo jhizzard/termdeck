@@ -25,7 +25,12 @@ const SITE_ROOT = path.resolve(__dirname, '..');
 // From /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/docs-site
 // up to             /Users/joshuaizzard/Documents/Graciella/ is six levels.
 const DEFAULT_TERMDECK = path.resolve(SITE_ROOT, '..');
-const DEFAULT_MNESTRA = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'mnestra');
+// Mnestra's repo dir is still named 'engram' on disk (legacy from before the
+// 2026-04-15 rename). Try the new name first, fall back to the legacy name
+// so the docs still build on machines that haven't renamed the directory.
+const MNESTRA_NEW_PATH = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'mnestra');
+const MNESTRA_LEGACY_PATH = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'engram');
+const DEFAULT_MNESTRA = await fs.stat(MNESTRA_NEW_PATH).then(() => MNESTRA_NEW_PATH).catch(() => MNESTRA_LEGACY_PATH);
 const DEFAULT_RUMEN = path.resolve(SITE_ROOT, '..', '..', '..', '..', '..', 'rumen');
 
 const REPOS = [
