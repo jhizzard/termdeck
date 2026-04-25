@@ -16,6 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.2] - 2026-04-25
+
+### Fixed
+- **`termdeck init --mnestra` cancelling after the Anthropic API key prompt — third report from Brad after v0.6.1.** v0.6.1 hardened `askSecret` against CRLF leaks, ANSI escape pollution, and hard-SIGINT-on-Ctrl-C, but the wizard still aborted on Brad's terminal because the `confirm("Proceed with setup for project X?")` gate that ran immediately after the key prompt was the consistent failure surface — leftover bytes (CRLF tail, terminal cursor reports, paste-bracketing markers) carried into the readline that powered the confirm and resolved it as a cancel before the user could answer. Removed the confirm. The user already opted in by typing `termdeck init --mnestra` and supplying every secret; Mnestra's migrations are `IF NOT EXISTS` so re-runs are idempotent; Ctrl-C still aborts cleanly. The `--yes` flag is preserved as a no-op for forward compatibility (scripts that already pass it keep working). `termdeck init --rumen`'s confirm is intentionally retained — it gates a heavier deploy step and runs before any secret prompt, so the byte-contamination surface is different there.
+
+### Notes
+- Reported by Brad on 2026-04-25 (third occurrence). Upgrade with `npm install -g @jhizzard/termdeck@latest` and the Anthropic key prompt is the last interactive step before the wizard runs.
+- `@jhizzard/termdeck-stack` does **not** need a republish — it always installs `@jhizzard/termdeck@latest`, so a fresh `npx @jhizzard/termdeck-stack` picks this up. `termdeck doctor` will surface the available update on existing installs.
+
 ## [0.6.1] - 2026-04-25
 
 ### Fixed

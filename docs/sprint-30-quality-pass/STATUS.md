@@ -50,3 +50,28 @@ Goal: every Codex score lands ≥ 8.5 after this sprint and Sprint 31's external
 
 ---
 (append below)
+
+## 2026-04-25 — v0.6.2 wizard hotfix (Brad's third report)
+
+Brad re-tested after v0.6.1 and the wizard still cancelled after the
+Anthropic key prompt. Re-investigated the flow and the root cause was
+**not** in `askSecret` (the v0.6.1 hardening held) — it was the
+`prompts.confirm("Proceed with setup for project X?")` gate that ran
+immediately after the last secret prompt in `init-mnestra.js`. On
+Brad's terminal, byte residue from the secret prompts (or his Enter
+keystroke) was carrying into the readline that powered the confirm
+and resolving it as a soft-cancel before he could answer.
+
+Fix: **removed the confirm in `init-mnestra.js`**. Justification:
+the user already opted in by typing `termdeck init --mnestra` and
+supplying four secrets; Mnestra migrations are `IF NOT EXISTS` so
+re-runs are idempotent; Ctrl-C still aborts cleanly. The `--yes`
+flag is preserved as a no-op for forward compatibility.
+
+`init-rumen.js`'s confirm is intentionally retained — it gates a
+heavier deploy step (Edge Function + secret-set + pg_cron) and runs
+*before* any secret prompt, so its byte-contamination surface is
+different. If a similar report comes back from Rumen we'll revisit.
+
+T1/T2/T3-bridge-contracts/T4 from this sprint remain queued. This
+hotfix did not consume sprint capacity beyond Brad-unblock.

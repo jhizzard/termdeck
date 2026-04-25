@@ -13,7 +13,7 @@
 //
 // Flags:
 //   --help              Print usage and exit
-//   --yes               Accept defaults, skip confirmations (still prompts for secrets)
+//   --yes               Reserved (no-op as of v0.6.2 — wizard no longer asks "Proceed?" after secrets)
 //   --dry-run           Print what the wizard would do; don't touch the DB or filesystem
 //   --skip-verify       Skip the final memory_status_aggregation() check
 //
@@ -41,7 +41,7 @@ const HELP = [
   '',
   'Flags:',
   '  --help            Print this message and exit',
-  '  --yes             Assume "yes" on confirmations (still prompts for secret values)',
+  '  --yes             Reserved (no-op as of v0.6.2 — kept for forward compatibility)',
   '  --dry-run         Print the plan without touching the database or filesystem',
   '  --skip-verify     Skip the final memory_status_aggregation() sanity call',
   '',
@@ -129,14 +129,17 @@ async function collectInputs({ yes }) {
     }
   }
 
-  if (!yes) {
-    process.stdout.write('\n');
-    const go = await prompts.confirm(`Proceed with setup for project ${projectUrl.projectRef}?`);
-    if (!go) {
-      process.stdout.write('Cancelled.\n');
-      process.exit(0);
-    }
-  }
+  // No confirm here — the user already opted in by typing
+  // `termdeck init --mnestra` and supplying every secret. The previous
+  // confirm gate was the consistent failure point in Brad's reports
+  // (2026-04-25 twice + a third report after v0.6.1) on terminals that
+  // emit stray bytes (CRLF, ANSI cursor reports, paste-bracketing) which
+  // contaminated readline and made the confirm fast-resolve to "no" or
+  // an empty cancel. Migrations are `IF NOT EXISTS` so a re-run is safe;
+  // Ctrl-C still aborts cleanly. The `--yes` flag is preserved as a
+  // stable CLI surface for callers/scripts and for future use.
+  void yes;
+  process.stdout.write('\n');
 
   return {
     projectUrl,
