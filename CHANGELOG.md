@@ -16,6 +16,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.3] - 2026-04-25
+
+### Fixed
+- **`termdeck init --mnestra` discarding the user's typed-in DATABASE_URL when the Postgres connection or migration step failed — fourth report from Brad after v0.6.2.** v0.6.2 dropped the post-key confirm gate and the wizard ran cleanly past the Anthropic prompt, but if the subsequent `pgRunner.connect`, `checkExistingStore`, or `applyMigrations` step threw, the wizard exited before `writeLocalConfig()` ever ran — so `~/.termdeck/secrets.env` was never updated and the user had to retype every secret on the next attempt. Brad's exact words: *"It's killing before writing the file. Postgrep line not added to my existing file, so it wasn't changed."*
+- The fix splits the file writes into two passes: (1) `writeSecretsFile()` runs immediately after `collectInputs()` returns, before any pg work — `secrets.env` lands on disk regardless of what the database does; (2) `writeYamlConfig()` (which flips `rag.enabled: true`) runs only after migrations apply cleanly, so the server can never come up against a half-applied schema.
+- Added a resume path: `collectInputs()` now reads `~/.termdeck/secrets.env` at start and, if a complete set of required keys is present, offers *"Found saved secrets … Reuse?"*. With `--yes` the wizard skips the prompt and proceeds straight to the database step. With `--reset` the wizard ignores saved secrets and re-prompts from scratch. Both flags answer Brad's 17:50 ET question *"If it got that far did it write the correct secret.env? If so, can I manually do the next steps?"*
+- On any pg-side failure the wizard now prints the resume hint: `termdeck init --mnestra --yes`.
+- New `tests/init-mnestra-resume.test.js` (3 cases): persist-first under pg failure, `--yes` skips prompts when saved secrets are complete, `--reset` re-prompts and overwrites.
+
+### Notes
+- Reported by Brad on 2026-04-25 (fourth occurrence — first three drove v0.6.1 and v0.6.2). No retype required on existing partial installs: rerun `npx @jhizzard/termdeck-stack` (or `npm i -g @jhizzard/termdeck@latest`), then `termdeck init --mnestra --yes` will pick up the saved keys.
+- `@jhizzard/termdeck-stack` does not need a republish — it always installs `@jhizzard/termdeck@latest`. An audit-trail bump to `@jhizzard/termdeck-stack@0.2.2` follows in `packages/stack-installer/CHANGELOG.md` to validate against this release.
+
 ## [0.6.2] - 2026-04-25
 
 ### Fixed

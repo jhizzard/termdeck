@@ -30,7 +30,7 @@ Think: tmux in the browser, but with a control-room UI showing what every termin
 
 ### CLI (`packages/cli/src/`)
 - **index.js** — `termdeck` command. Parses `--port`, `--no-open`, `--session-logs`, `--help`. Boots server, opens browser. Graceful shutdown on SIGINT.
-- **init-mnestra.js** — `termdeck init --mnestra` wizard. Applies Mnestra migrations, writes config, verifies connection.
+- **init-mnestra.js** — `termdeck init --mnestra` wizard. Persists `~/.termdeck/secrets.env` first (so a pg failure can't lose typed-in keys), then applies Mnestra migrations, writes `config.yaml`, verifies connection. Supports `--yes` (reuse saved secrets, skip prompts) and `--reset` (re-prompt from scratch).
 - **init-rumen.js** — `termdeck init --rumen` wizard. Deploys the Rumen Supabase Edge Function, applies migration, sets secrets, installs the `pg_cron` schedule.
 
 ### Config (`config/`)

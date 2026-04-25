@@ -5,6 +5,26 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.2] — 2026-04-25
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.3`,
+  which shipped after a fourth report from the same tester whose
+  pre-v0.6.1 install was already half-set-up. v0.6.3 reorders
+  `termdeck init --mnestra` to persist `~/.termdeck/secrets.env`
+  immediately after collecting inputs (before any pg work), so a
+  failed Postgres connect no longer throws away the typed-in
+  `DATABASE_URL`. It also adds `--yes` (reuse saved secrets, skip
+  prompts) and `--reset` (ignore saved secrets, re-prompt). See the
+  root `CHANGELOG.md` for the full v0.6.3 entry.
+
+### Notes
+- No installer behavior change. `npx @jhizzard/termdeck-stack` always
+  pulls `@jhizzard/termdeck@latest`, so existing 0.2.x installs pick
+  up the v0.6.3 wizard fix automatically. This bump keeps the audit
+  trail tight — the CHANGELOG for 0.2.1 was written before the
+  fourth tester report came in.
+
 ## [0.2.1] — 2026-04-25
 
 ### Documentation
