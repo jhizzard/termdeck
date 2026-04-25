@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fully-local path: SQLite + local embeddings for Mnestra (currently requires Supabase + OpenAI)
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
+- Sprint 24: `termdeck` (no subcommand) auto-orchestrates the stack when a configured stack is detected — `--no-stack` opts out. Plan at `docs/sprint-24-stack-default/`.
+
+## [0.4.6] - 2026-04-25
+
+### Added
+- **`termdeck stack` subcommand**: Node port of `scripts/start.sh` that ships in the npm tarball. Boots Mnestra (when installed and `mnestra.autoStart: true`), checks Rumen via `DATABASE_URL`, and starts TermDeck — same numbered four-step output as the bash launcher. Cross-platform (no bash dependency). Closes the gap surfaced when a tester `npm install`-ed TermDeck and discovered `scripts/start.sh` wasn't in the published package.
+- `--no-mnestra` flag on `termdeck stack` for Tier-1-only stack runs.
+- README "Alternative install paths" entry pointing at the new subcommand.
+
+### Notes
+- `scripts/start.sh` continues to work for repo clones — unchanged. The new subcommand is a parallel path, not a replacement.
 
 ## [0.4.5] - 2026-04-19
 

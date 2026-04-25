@@ -62,6 +62,20 @@ if (args[0] === 'forge') {
   return;
 }
 
+// `termdeck stack` — full-stack launcher (Node port of scripts/start.sh).
+// Boots Mnestra (if installed + autoStart: true), checks Rumen, then
+// starts TermDeck. Lives in the npm package so users who installed via
+// `npm install -g @jhizzard/termdeck` don't need to clone the repo to
+// get the start.sh experience.
+if (args[0] === 'stack') {
+  const stack = require(path.join(__dirname, 'stack.js'));
+  stack(args.slice(1)).then((code) => process.exit(code || 0)).catch((err) => {
+    console.error('[cli] stack failed:', err && err.stack || err);
+    process.exit(1);
+  });
+  return;
+}
+
 const flags = {};
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port' && args[i + 1]) {
@@ -76,11 +90,12 @@ for (let i = 0; i < args.length; i++) {
   TermDeck - Web-based terminal multiplexer
 
   Usage:
-    termdeck                    Start with defaults (port 3000)
+    termdeck                    Start TermDeck only (port 3000)
+    termdeck stack              Boot Mnestra + check Rumen + start TermDeck
     termdeck --port 8080        Start on custom port
     termdeck --no-open          Don't auto-open browser
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
-    termdeck init --mnestra      Configure Tier 2 memory (Supabase + Mnestra)
+    termdeck init --mnestra     Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
     termdeck forge              Generate Claude skills from memories (experimental)
 

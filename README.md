@@ -212,6 +212,7 @@ For users who want more than `npx` — cloning from source, building a macOS `.a
 ### Alternative install paths
 
 - **Permanent global install:** `npm install -g @jhizzard/termdeck` then `termdeck` from anywhere
+- **Full-stack one-liner:** `termdeck stack` (after global install) — boots Mnestra + checks Rumen + starts TermDeck with the same numbered-step output as `scripts/start.sh` from the repo. Available since v0.4.6; no clone required.
 - **macOS native app:** `git clone && cd && ./install.sh` — creates `~/Applications/TermDeck.app`
 - **From source:** `git clone && npm install && npm run dev`
 
