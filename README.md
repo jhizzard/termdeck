@@ -211,8 +211,8 @@ For users who want more than `npx` — cloning from source, building a macOS `.a
 
 ### Alternative install paths
 
-- **Permanent global install:** `npm install -g @jhizzard/termdeck` then `termdeck` from anywhere
-- **Full-stack one-liner:** `termdeck stack` (after global install) — boots Mnestra + checks Rumen + starts TermDeck with the same numbered-step output as `scripts/start.sh` from the repo. Available since v0.4.6; no clone required.
+- **Permanent global install:** `npm install -g @jhizzard/termdeck` then `termdeck` from anywhere. From v0.5.0, `termdeck` (no subcommand) auto-detects a configured stack and boots Mnestra + checks Rumen automatically — same four-step output as `scripts/start.sh`. Use `termdeck --no-stack` to force a Tier-1-only boot.
+- **Force-orchestrate alias:** `termdeck stack` always runs the orchestrator regardless of detection — kept for backward compatibility with v0.4.6 docs and muscle memory.
 - **macOS native app:** `git clone && cd && ./install.sh` — creates `~/Applications/TermDeck.app`
 - **From source:** `git clone && npm install && npm run dev`
 

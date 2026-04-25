@@ -76,6 +76,27 @@ if (args[0] === 'stack') {
   return;
 }
 
+// Sprint 24: when `termdeck` is invoked with no subcommand AND a configured
+// stack is detected, route through stack.js so users don't have to remember
+// the `stack` subcommand. `--no-stack` is the explicit opt-out.
+const { shouldAutoOrchestrate } = require(path.join(__dirname, 'auto-orchestrate.js'));
+
+const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack']);
+const noStackIdx = args.indexOf('--no-stack');
+const noStackRequested = noStackIdx !== -1;
+if (noStackRequested) args.splice(noStackIdx, 1); // strip before flag parsing
+
+const wantsHelp = args.includes('--help') || args.includes('-h');
+
+if (!KNOWN_SUBCOMMANDS.has(args[0]) && !noStackRequested && !wantsHelp && shouldAutoOrchestrate()) {
+  const stack = require(path.join(__dirname, 'stack.js'));
+  stack(args).then((code) => process.exit(code || 0)).catch((err) => {
+    console.error('[cli] auto-stack failed:', err && err.stack || err);
+    process.exit(1);
+  });
+  return;
+}
+
 const flags = {};
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port' && args[i + 1]) {
@@ -90,8 +111,9 @@ for (let i = 0; i < args.length; i++) {
   TermDeck - Web-based terminal multiplexer
 
   Usage:
-    termdeck                    Start TermDeck only (port 3000)
-    termdeck stack              Boot Mnestra + check Rumen + start TermDeck
+    termdeck                    Auto-orchestrate stack if configured, else Tier-1-only
+    termdeck stack              Force boot Mnestra + check Rumen + start TermDeck
+    termdeck --no-stack         Skip orchestrator (force Tier-1-only boot)
     termdeck --port 8080        Start on custom port
     termdeck --no-open          Don't auto-open browser
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/

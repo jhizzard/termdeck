@@ -23,11 +23,21 @@ The full stack in four tiers. Each tier is independent — stop wherever you hav
 
 ## Quick start (any tier)
 
-If you've cloned the repo, the stack launcher handles everything — loads secrets, kills stale processes, starts Mnestra if installed, boots TermDeck:
+The stack launcher handles everything — loads secrets, kills stale processes, starts Mnestra if installed, boots TermDeck:
+
+**npm-installed (v0.4.6+):**
+
+```bash
+termdeck stack
+```
+
+**Repo clone:**
 
 ```bash
 ./scripts/start.sh
 ```
+
+Both produce identical numbered four-step output. From v0.5.0, plain `termdeck` auto-detects a configured stack and routes through the orchestrator — `termdeck stack` becomes the explicit-force form. Use `termdeck --no-stack` to force a Tier-1-only boot.
 
 It gracefully skips anything that isn't installed. Tier 1 users get a working dashboard. Full-stack users get the whole pipeline.
 
