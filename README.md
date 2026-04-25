@@ -171,7 +171,7 @@ Honest limits, stated upfront so the skeptic has nothing to chase:
 - **Not a replacement for reading docs.** It's the shortest path to a memory you already wrote. If the memory isn't there, the feature does nothing.
 - **Not fully local by default.** Tier 2+ reaches out to Supabase for storage and OpenAI for embeddings. Tier 1 is fully local. A fully-local Tier 2 (local Postgres + local embeddings) is on the roadmap.
 - **Not free forever.** Tier 2+ pays OpenAI fractions of a cent per memory for embeddings. Self-hosted embeddings via Ollama are on the roadmap.
-- **Not proven at scale.** v0.6.0, validated against 4,590 memories in one developer's production store. The Rumen 2026-04-19 re-kickstart processed 166 sessions into 166 insights in ~5.5 minutes. No multi-user data yet. Bug reports and issues welcome.
+- **Not proven at scale.** v0.6.1, validated against 4,590 memories in one developer's production store. The Rumen 2026-04-19 re-kickstart processed 166 sessions into 166 insights in ~5.5 minutes. No multi-user data yet. Bug reports and issues welcome.
 
 ---
 

@@ -13,6 +13,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.1] - 2026-04-25
+
+### Fixed
+- **`termdeck init --mnestra` aborting after the Anthropic key prompt on MobaXterm SSH and other terminals that send CRLF for Enter.** Three separate bugs in the secret-prompt raw-mode loop in `packages/server/src/setup/prompts.js`:
+  1. **CRLF leak.** When the terminal delivered `\r\n` as a single chunk (Windows / MobaXterm Enter), the loop matched the `\r`, resolved, and dropped the rest. The trailing `\n` then surfaced through the next prompt's stream and slipped through to the confirm() that follows the Anthropic prompt. With unfortunate timing the chunk also contained `` from a stray keystroke and the original SIGINT branch fired, killing the wizard mid-flow. Now: CRLF is drained inside the same chunk; non-newline trailing bytes are pushed back via `stdin.unshift` so the next consumer reads cleanly.
+  2. **ANSI escape pollution.** Some terminals emit `[…]` sequences for non-character events (focus changes, cursor reports, paste-bracketing). The original loop fed those bytes into the password buffer and echoed `*` for each one. Now consumed silently.
+  3. **Hard SIGINT during a secret prompt** is now a soft cancel — return empty string, let the caller's shape validator re-prompt — instead of `process.kill`-ing the process. The hard-kill was masking the CRLF bug above and aborting the wizard from stray bytes.
+- New `tests/setup-prompts.test.js` — 7 fixtures covering Unix LF, Windows CRLF, type-ahead carry-over, ANSI cursor-position-report mid-buffer, bracketed-paste markers, soft-cancel on Ctrl-C, and DEL/backspace. All pass.
+
+### Notes
+- Reported by Brad on 2026-04-25 (twice). No workaround required — upgrade with `npm install -g @jhizzard/termdeck@latest` (or rerun `npx @jhizzard/termdeck-stack`) and the wizard works on every terminal we've tested.
+
 ## [0.6.0] - 2026-04-25
 
 ### Added — Sprint 25 (Supabase MCP wizard)

@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Browser-based terminal multiplexer with metadata overlays, panel flashback memory recall, and AI-aware session management",
   "bin": {
     "termdeck": "./packages/cli/src/index.js"

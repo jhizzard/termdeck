@@ -14,8 +14,9 @@ Goal: every Codex score lands ≥ 8.5 after this sprint and Sprint 31's external
 |----|------|------------------------|
 | T1 | T1-server-route-split.md | Refactor `packages/server/src/index.js` into route modules under `packages/server/src/routes/{health,sessions,setup,supabase,transcripts,themes}.js`. Each <300 LOC. |
 | T2 | T2-client-module-split.md | Split `packages/client/public/app.js` into ES modules under `packages/client/public/modules/{wizard,drawer,layout,flashback,panels,switcher}.js`. Inline `<script type="module">` — no bundler. |
-| T3 | T3-wizard-bug-fix.md | Diagnose + fix the askSecret raw-mode stdin abort in `packages/server/src/setup/prompts.js` after the Anthropic key prompt. Add tests/setup-prompts.test.js with three terminal-emulator fixtures (CRLF, CR-only, raw-paste). |
-| T4 | T4-docs-shipping-and-catches.md | (a) Add `docs/ORCHESTRATION.md` + `docs/SEMVER-POLICY.md` + `docs/GETTING-STARTED.md` + `docs/WHY-THIS-EXISTS.md` (new) to `package.json` `files[]` array. (b) Address the 12 remaining silent `catch {}` blocks from the Sprint 11 audit (memory-tagged). |
+| ~~T3~~ | ~~T3-wizard-bug-fix.md~~ | **Already shipped as v0.6.1 on 2026-04-25.** Pulled out of sprint scope to unblock Brad — a working tester takes precedence over a sprint cadence. Three bugs fixed in `packages/server/src/setup/prompts.js`: CRLF leak, ANSI escape pollution, hard SIGINT during secret prompts. 7-fixture regression test at `tests/setup-prompts.test.js`. |
+| T3 | T3-docs-shipping-and-catches.md | (a) Add `docs/ORCHESTRATION.md` + `docs/SEMVER-POLICY.md` + `docs/GETTING-STARTED.md` + `docs/WHY-THIS-EXISTS.md` (new) to `package.json` `files[]` array. (b) Address the 12 remaining silent `catch {}` blocks from the Sprint 11 audit. |
+| T4 | T4-bridge-contracts.md | Add Mnestra MCP contract test + Rumen-write-back contract test (Codex audit named bridge-contract drift as a recurring debt vector). |
 
 ## File ownership table
 
