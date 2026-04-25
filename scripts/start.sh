@@ -329,4 +329,7 @@ echo -e "  ${BOLD}Stack:${RESET} ${GREEN}${SUMMARY}${RESET}"
 echo ""
 
 cd "$TERMDECK_ROOT"
-exec node packages/cli/src/index.js --port "$PORT" "${EXTRA_ARGS[@]}"
+# --no-stack tells the v0.5.0+ CLI to skip its auto-orchestrate detection,
+# since this script already did the orchestration above. Without the flag
+# the CLI would route back through stack.js and print the banner twice.
+exec node packages/cli/src/index.js --port "$PORT" --no-stack "${EXTRA_ARGS[@]}"

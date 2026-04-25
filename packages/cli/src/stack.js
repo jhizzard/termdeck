@@ -385,15 +385,32 @@ async function checkRumen() {
 // ── Step 4: TermDeck ────────────────────────────────────────────────
 
 function execTermDeck({ port, extra }) {
-  // Rather than execve, just require() the existing CLI in-process. That
-  // lets `termdeck stack` share signal handling with the server (Ctrl+C
-  // shuts everything down, including the detached Mnestra if we own it).
+  // Spawn a fresh node process for the CLI rather than require()-ing it
+  // in-process. Two reasons:
+  //   1. require() hits Node's module cache after stack.js → index.js →
+  //      stack.js bounces (the v0.5.0 auto-orchestrate path), so the
+  //      cached index.js is a no-op and the server never starts. This
+  //      manifested in `scripts/start.sh` which already exec'd node, then
+  //      v0.5.0's auto-orchestrate routed it back through stack.js, then
+  //      stack.js tried to re-require the (cached) CLI — silent exit.
+  //   2. Pass --no-stack on the way back so index.js definitively skips
+  //      the auto-orchestrate detection. Defensive even with the spawn.
   const cliPath = path.join(__dirname, 'index.js');
-  const argv = [];
+  const argv = [cliPath, '--no-stack'];
   if (port) argv.push('--port', String(port));
   argv.push(...extra);
-  process.argv = [process.argv[0], cliPath, ...argv];
-  require(cliPath);
+  const child = spawn(process.execPath, argv, {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  child.on('exit', (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    else process.exit(code == null ? 0 : code);
+  });
+  // Forward Ctrl+C cleanly so the spawned server can shut down.
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => { try { child.kill(sig); } catch (_e) { /* gone */ } });
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────

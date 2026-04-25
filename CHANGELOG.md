@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.5.1] - 2026-04-25
+
+### Fixed
+- **`scripts/start.sh` silent exit** — running the repo-clone launcher under v0.5.0 dropped users back to the shell after printing two "Stack Launcher" banners. Root cause: the v0.5.0 CLI auto-orchestrate detection routed back into `stack.js`, whose `execTermDeck` then `require()`-d the already-cached `index.js` and the server never started. Fix is two-part: (1) `stack.js` now spawns a fresh node process for the CLI (avoids the require-cache trap) and passes `--no-stack` so the inner CLI definitively skips re-detection; (2) `scripts/start.sh` itself now passes `--no-stack` to the CLI to eliminate the duplicate Stack Launcher banner. Auto-orchestrate behavior on plain `termdeck` (no script) is unchanged.
+
 ## [0.5.0] - 2026-04-25
 
 ### Changed
