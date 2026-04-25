@@ -13,6 +13,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.0] - 2026-04-25
+
+### Added — Sprint 25 (Supabase MCP wizard)
+- **One-click Supabase auto-fill** in the Tier 2 setup wizard. User pastes a Supabase Personal Access Token, the wizard lists their projects via `@supabase/mcp-server-supabase`, the user picks one, and the existing Sprint 23 configure+migrate flow takes it from there. Manual paste path is preserved. Three new endpoints: `POST /api/setup/supabase/{connect,projects,select}`. PAT held in a closure for the wizard's lifetime only — never persisted, never logged.
+- **Yellow `[hint]` line** on startup when RAG is enabled and the Supabase MCP isn't installed: `Supabase MCP not installed — wizard auto-fill unavailable. Install with: npx @jhizzard/termdeck-stack --tier 4`. Suppressed when `~/.claude/mcp.json` already declares a `supabase` server. Tier 1 users see no output.
+- **`packages/server/src/setup/supabase-mcp.js`** — bridge module that spawns `@supabase/mcp-server-supabase` as a child, JSON-RPC over stdio, timeout-protected, kills child on resolve/reject. Zero new npm deps.
+
+### Added — Sprint 28 (update-signal mechanisms)
+- **`termdeck doctor`** subcommand prints a four-package version-check table (TermDeck + Mnestra + Rumen + termdeck-stack), comparing installed vs npm latest. Exit codes 0 (all current) / 1 (updates available) / 2 (network failure). `--json` and `--no-color` flags.
+- **Rate-limited startup update-check banner.** When a TermDeck update is available, exactly one yellow `[hint]` line prints on startup. Cache at `~/.termdeck/update-check.json` enforces a 24h TTL so the check never hits the registry more than once per day. Suppressed by `TERMDECK_NO_UPDATE_CHECK=1`, by non-TTY stdout, and by a fresh cache. All failures (network, cache write, parse) are swallowed — never blocks startup.
+- **README "Staying current" section** + new `docs/SEMVER-POLICY.md` documenting per-package version semantics and the upgrade-risk table.
+
+### Notes
+- v0.5.1 was queued (start.sh silent-exit fix) but folded into v0.6.0 — the fix is included.
+- This is a minor bump because two new feature surfaces ship together: the Supabase MCP wizard auto-fill (Sprint 25) and the doctor + update-check signals (Sprint 28). No breaking changes for users on v0.5.x.
+
 ## [0.5.1] - 2026-04-25
 
 ### Fixed

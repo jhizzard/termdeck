@@ -226,6 +226,18 @@ For users who want more than `npx` — cloning from source, building a macOS `.a
 
 ---
 
+## Staying current
+
+TermDeck, Mnestra, and Rumen all evolve fast — Flashback recall quality, Mnestra search semantics, and Rumen synth quality each shift between minor releases. Running last month's stack means missing fixed bugs and degraded recall. Three layered ways to keep current:
+
+1. **One command for the whole stack:** `npx @jhizzard/termdeck-stack` — re-runs the meta-installer, which detects what's already installed and updates anything that's behind. Idempotent: safe to run any time, won't touch `~/.termdeck/{config.yaml,secrets.env,termdeck.db}`.
+2. **On demand:** `termdeck doctor` — prints a 4-row table (TermDeck, Mnestra, Rumen, termdeck-stack) of installed vs. latest versions with a status column. Exit 0 = all current, 1 = at least one update available, 2 = registry/network failure.
+3. **Passive:** TermDeck prints a single yellow `[hint]` line on startup when an update is available. Rate-limited to once per 24 hours via `~/.termdeck/update-check.json`. Never blocks startup. Suppress with `TERMDECK_NO_UPDATE_CHECK=1` (the kill switch only mutes the startup hint — `termdeck doctor` still works on demand).
+
+See **[docs/SEMVER-POLICY.md](docs/SEMVER-POLICY.md)** for what each kind of bump means across the four packages and how risky a given upgrade path is.
+
+---
+
 ## Related packages
 
 - **[@jhizzard/mnestra](https://www.npmjs.com/package/@jhizzard/mnestra)** — persistent dev memory MCP server. pgvector + hybrid search + 3-layer progressive disclosure. Works standalone with any MCP client.

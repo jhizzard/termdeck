@@ -76,12 +76,22 @@ if (args[0] === 'stack') {
   return;
 }
 
+// `termdeck doctor` — Sprint 28: version-check the whole stack.
+if (args[0] === 'doctor') {
+  const doctor = require(path.join(__dirname, 'doctor.js'));
+  doctor(args.slice(1)).then((code) => process.exit(code || 0)).catch((err) => {
+    console.error('[cli] doctor failed:', err && err.stack || err);
+    process.exit(2);
+  });
+  return;
+}
+
 // Sprint 24: when `termdeck` is invoked with no subcommand AND a configured
 // stack is detected, route through stack.js so users don't have to remember
 // the `stack` subcommand. `--no-stack` is the explicit opt-out.
 const { shouldAutoOrchestrate } = require(path.join(__dirname, 'auto-orchestrate.js'));
 
-const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack']);
+const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack', 'doctor']);
 const noStackIdx = args.indexOf('--no-stack');
 const noStackRequested = noStackIdx !== -1;
 if (noStackRequested) args.splice(noStackIdx, 1); // strip before flag parsing
@@ -120,6 +130,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck init --mnestra     Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
     termdeck forge              Generate Claude skills from memories (experimental)
+    termdeck doctor             Check whether the stack packages are up to date
 
   Keyboard shortcuts (in browser):
     Ctrl+Shift+N                Focus prompt bar
@@ -228,6 +239,16 @@ server.listen(port, host, async () => {
   }).catch((err) => {
     console.error(`  \x1b[31m[health] Preflight failed: ${err.message}\x1b[0m\n`);
   });
+
+  // Sprint 28 T3: fire-and-forget update-check banner. Lazy-required so users
+  // who never start the server don't pay the require cost. Errors are swallowed
+  // inside the module; never blocks startup. Double-protected (try/catch around
+  // the require + swallowed .catch on the promise) so a missing or broken T3
+  // module can never break startup.
+  try {
+    const { checkAndPrintHint } = require(path.join(__dirname, 'update-check.js'));
+    checkAndPrintHint(config).catch(() => { /* swallowed inside the module too */ });
+  } catch (_e) { /* never block startup on a hint module load failure */ }
 
   // Sprint 25 T4: Supabase MCP install nudge — runs alongside (not inside)
   // runPreflight. Silent unless RAG is on AND the MCP is missing AND the
