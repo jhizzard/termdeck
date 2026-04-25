@@ -81,7 +81,7 @@ What's excluded at this tier: **Flashback is silent**, the "Ask about this termi
 
 ### Tier 2 — Add Mnestra to light up Flashback
 
-Mnestra is a separate npm package — `@jhizzard/mnestra@0.2.0` — that ships a Postgres-backed persistent memory store with an MCP server, a webhook server, six search tools, and six SQL migrations. It can be consumed by TermDeck (for Flashback), by Claude Code (as an MCP memory layer), or by any tool that speaks the MCP protocol.
+Mnestra is a separate npm package — `@jhizzard/mnestra@0.2.1` — that ships a Postgres-backed persistent memory store with an MCP server, a webhook server, six search tools, and six SQL migrations. It can be consumed by TermDeck (for Flashback), by Claude Code (as an MCP memory layer), or by any tool that speaks the MCP protocol.
 
 To enable Flashback in TermDeck:
 
@@ -147,7 +147,7 @@ Restart Claude Code. Six MCP tools appear: `memory_remember`, `memory_recall`, `
 
 ### Tier 3 — Add Rumen for async learning
 
-Rumen is a separate npm package — `@jhizzard/rumen@0.4.5` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Mnestra: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Mnestra's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
+Rumen is a separate npm package — `@jhizzard/rumen@0.4.3` — that ships as a Supabase Edge Function designed to run on a 15-minute `pg_cron` schedule. It's the async reflection layer over Mnestra: it reads recent session memories, cross-references them with your entire historical corpus via hybrid search, synthesizes insights via Claude Haiku, and writes the results back into `rumen_insights` (a new table alongside Mnestra's `memory_items`). TermDeck's Flashback and Claude Code's `memory_recall` both automatically benefit because insights flow back into the same database.
 
 **Rumen is live.** First full-kickstart run against a production Mnestra store on 2026-04-15 19:47 UTC: **111 sessions processed, 111 insights generated** in one pass. Insights surfaced patterns like "the error detection regex in Flashback misses `No such file or directory` — same class of blind spot as X" and "Practice sessions exist as a separate model but frontend components were built and never wired into the schedule view." The cognitive loop is closed.
 
@@ -171,7 +171,7 @@ Honest limits, stated upfront so the skeptic has nothing to chase:
 - **Not a replacement for reading docs.** It's the shortest path to a memory you already wrote. If the memory isn't there, the feature does nothing.
 - **Not fully local by default.** Tier 2+ reaches out to Supabase for storage and OpenAI for embeddings. Tier 1 is fully local. A fully-local Tier 2 (local Postgres + local embeddings) is on the roadmap.
 - **Not free forever.** Tier 2+ pays OpenAI fractions of a cent per memory for embeddings. Self-hosted embeddings via Ollama are on the roadmap.
-- **Not proven at scale.** v0.4.5, validated against 3,527 memories in one developer's production store. First full Rumen kickstart on 2026-04-15 processed 111 sessions into 111 insights in one pass. No multi-user data yet. Bug reports and issues welcome.
+- **Not proven at scale.** v0.6.0, validated against 4,590 memories in one developer's production store. The Rumen 2026-04-19 re-kickstart processed 166 sessions into 166 insights in ~5.5 minutes. No multi-user data yet. Bug reports and issues welcome.
 
 ---
 
