@@ -10,7 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fully-local path: SQLite + local embeddings for Mnestra (currently requires Supabase + OpenAI)
 - Multi-user data validation (today's testing is single-developer)
 - Control panel dashboard with Yes/No buttons for AI agent permission prompts
-- Sprint 24: `termdeck` (no subcommand) auto-orchestrates the stack when a configured stack is detected — `--no-stack` opts out. Plan at `docs/sprint-24-stack-default/`.
+- Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
+- Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
+
+## [0.5.0] - 2026-04-25
+
+### Changed
+- **`termdeck` (no subcommand) auto-orchestrates the stack** when a configured stack is detected (`~/.termdeck/secrets.env` present AND (`mnestra.autoStart: true` OR `rag.enabled: true`)). Otherwise behavior is unchanged from v0.4.6 — Tier-1-only boot. This eliminates the discovery friction of `termdeck stack` for returning users while keeping a friction-free path for first-run testers.
+- Added `--no-stack` flag to force a Tier-1-only boot regardless of detection.
+- `termdeck stack` retained as an explicit-force alias — v0.4.6 docs and muscle memory keep working.
+
+### Added
+- 13 new tests under `tests/cli-stack-detection.test.js` (8 detection cases) and `tests/cli-default-routing.test.js` (5 dispatch cases) — covers the v0.4.5 → v0.5.0 upgrade-path silence guarantee for unconfigured users.
+- README + `docs/GETTING-STARTED.md` reflect the new default behavior.
+
+### Notes
+- No new fields required in `config.yaml`. Detection reads existing `mnestra.autoStart` / `rag.enabled` keys.
+- Users who upgrade from v0.4.5 with no `secrets.env` see no behavioral change.
 
 ## [0.4.6] - 2026-04-25
 

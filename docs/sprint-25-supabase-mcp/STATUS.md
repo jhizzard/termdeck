@@ -58,6 +58,7 @@ Cons: Hard fail when the user doesn't have Claude Code, and the experience now d
 | T2 | T2-wizard-endpoints.md | `packages/server/src/index.js` — `POST /api/setup/supabase/connect`, `/projects`, `/select` |
 | T3 | T3-wizard-ui.md | `packages/client/public/app.js` — PAT field + project picker + "back to manual paste" escape |
 | T4 | T4-mcp-detection.md | `packages/cli/src/index.js` — preflight check that warns if `@supabase/mcp-server-supabase` isn't on PATH (non-blocking) |
+| T5 | T5-flashback-regression.md | `packages/server/src/mnestra-bridge/index.js`, `packages/server/src/rag.js`, `tests/flashback-e2e.test.js` — diagnose why Flashback is silent again post-Sprint-21 fix |
 
 ## Acceptance criteria
 
