@@ -2478,6 +2478,16 @@
 
     let setupModalOpen = false;
 
+    // Sprint 25 T3 — Supabase MCP auto-flow state. Closure-scoped to this module
+    // so a re-render of the tier list (refreshSetupStatus) doesn't lose an
+    // in-flight picker step. The PAT lives here only between /connect success
+    // and /select success; we null `supabaseAutoState` after /select returns ok.
+    // Never log .pat. Never assign it to a property of `state` or `window`.
+    let supabaseAutoState = null;
+    // Cache of the last /api/setup payload so we can re-render the tier list
+    // (e.g. PAT entry → project picker) without forcing another HTTP fetch.
+    let lastSetupData = null;
+
     function ensureSetupModal() {
       if (document.getElementById('setupModal')) return;
       const modal = document.createElement('div');
@@ -2546,6 +2556,7 @@
       if (recheckBtn) { recheckBtn.disabled = true; recheckBtn.textContent = 're-checking…'; }
       try {
         const data = await api('GET', '/api/setup');
+        lastSetupData = data;
         renderSetupTiers(data);
         const cur = Number(data.tier) || 1;
         if (subtitle) {
@@ -2582,8 +2593,13 @@
         // Sprint 23 T2: tier 2 renders a credential form instead of CLI commands
         // when not active, so users can paste URL/keys directly in the browser.
         const isCredentialForm = tier.id === '2' && status !== 'active';
+        // Sprint 25 T3: above the manual paste form, offer the Supabase MCP
+        // auto-flow. Only render for tier 2 when status is not_configured or
+        // partial — once active there is nothing to configure.
+        const showSupabaseAutoFlow = tier.id === '2' && (status === 'not_configured' || status === 'partial');
+        const autoFlowHtml = showSupabaseAutoFlow ? renderSupabaseAutoFlow() : '';
         const cmds = isCredentialForm
-          ? renderSetupCredentialForm()
+          ? `${autoFlowHtml}${renderSetupCredentialForm()}`
           : (status === 'active' || tier.commands.length === 0)
             ? ''
             : `<div class="setup-cmds">${tier.commands.map((c) => {
@@ -2643,6 +2659,199 @@
           }
         });
       }
+
+      // Sprint 25 T3 — Supabase MCP auto-flow handlers. The form is only in the
+      // DOM when showSupabaseAutoFlow was true above; querying for missing nodes
+      // is a no-op and keeps this branch defensive against re-render order.
+      const autoConnectBtn = tiersEl.querySelector('#supabaseAutoConnect');
+      if (autoConnectBtn) {
+        autoConnectBtn.addEventListener('click', handleSupabaseAutoConnect);
+      }
+      const autoPatInput = tiersEl.querySelector('#supabaseAutoPat');
+      if (autoPatInput) {
+        autoPatInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            handleSupabaseAutoConnect();
+          }
+        });
+      }
+      const autoSelectBtn = tiersEl.querySelector('#supabaseAutoSelect');
+      if (autoSelectBtn) {
+        autoSelectBtn.addEventListener('click', handleSupabaseAutoSelect);
+      }
+      const autoBackBtn = tiersEl.querySelector('#supabaseAutoBack');
+      if (autoBackBtn) {
+        autoBackBtn.addEventListener('click', handleSupabaseAutoBack);
+      }
+    }
+
+    // Sprint 25 T3 — Supabase MCP auto-flow renderer.
+    // Inline-styled (Sprint 23 T1 owns style.css). Renders one of two states
+    // driven by `supabaseAutoState`: the PAT entry form (default), or the
+    // project picker (when state.picking is true). Errors render inline; the
+    // manual credential form is always still visible below as a fallback.
+    function renderSupabaseAutoFlow() {
+      const s = supabaseAutoState || {};
+      const wrapStyle = 'margin-top:10px;padding:12px;background:rgba(0,0,0,0.18);border:1px solid var(--border, #2a2c3a);border-radius:6px;';
+      const titleStyle = 'font-size:11px;font-weight:600;color:var(--text, #e2e3e8);margin-bottom:4px;';
+      const helpStyle = 'font-size:10px;color:var(--text-dim, #8a8d9a);margin-bottom:10px;line-height:1.4;';
+      const inputStyle = 'flex:1;padding:6px 8px;background:var(--bg, #0f1017);color:var(--text, #e2e3e8);border:1px solid var(--border, #2a2c3a);border-radius:4px;font-family:monospace;font-size:12px;box-sizing:border-box;';
+      const btnStyle = 'padding:6px 14px;background:var(--accent, #7aa2f7);color:#000;border:none;border-radius:4px;font-weight:600;cursor:pointer;font-size:11px;';
+      const ghostBtnStyle = 'padding:6px 14px;background:transparent;color:var(--text-dim, #8a8d9a);border:1px solid var(--border, #2a2c3a);border-radius:4px;cursor:pointer;font-size:11px;';
+      const dividerStyle = 'text-align:center;font-size:10px;color:var(--text-dim, #8a8d9a);margin:10px 0 0;text-transform:uppercase;letter-spacing:0.05em;';
+      const errStyle = 'font-size:11px;color:var(--red, #f7768e);margin-top:8px;min-height:14px;line-height:1.4;';
+      const linkStyle = 'color:var(--accent, #7aa2f7);text-decoration:underline;';
+
+      let body;
+      if (s.picking && Array.isArray(s.projects)) {
+        if (s.projects.length === 0) {
+          body = `
+            <div style="${errStyle}">
+              Token accepted, but no projects were found on this account.
+              Create one at <a href="https://supabase.com/dashboard" target="_blank" rel="noopener" style="${linkStyle}">supabase.com/dashboard</a> and try again.
+            </div>
+            <button type="button" id="supabaseAutoBack" style="margin-top:10px;${ghostBtnStyle}">Use a different token</button>
+          `;
+        } else {
+          const opts = s.projects.map((p) => {
+            const id = escapeHtml(String((p && p.id) || ''));
+            const name = (p && p.name) || 'unnamed';
+            const region = p && p.region ? ` — ${p.region}` : '';
+            return `<option value="${id}">${escapeHtml(name + region)}</option>`;
+          }).join('');
+          body = `
+            <label style="display:block;font-size:11px;color:var(--text-dim, #8a8d9a);margin-bottom:4px;">Project</label>
+            <select id="supabaseAutoProject" style="${inputStyle}width:100%;font-family:inherit;">${opts}</select>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button type="button" id="supabaseAutoSelect" style="${btnStyle}">Use this project</button>
+              <button type="button" id="supabaseAutoBack" style="${ghostBtnStyle}">Use a different token</button>
+            </div>
+            <div id="supabaseAutoError" style="${errStyle}">${s.error ? escapeHtml(s.error) : ''}</div>
+          `;
+        }
+      } else {
+        body = `
+          <div style="display:flex;gap:8px;align-items:stretch;">
+            <input type="password" id="supabaseAutoPat" name="supabase_pat_one_time"
+                   autocomplete="new-password" spellcheck="false"
+                   autocapitalize="off" autocorrect="off"
+                   placeholder="sbp_..." aria-label="Supabase Personal Access Token"
+                   style="${inputStyle}">
+            <button type="button" id="supabaseAutoConnect" style="${btnStyle}">Connect</button>
+          </div>
+          <div id="supabaseAutoError" style="${errStyle}">${s.error ? escapeHtml(s.error) : ''}</div>
+        `;
+      }
+
+      return `
+        <div style="${wrapStyle}">
+          <div style="${titleStyle}">Faster: connect Supabase automatically</div>
+          <div style="${helpStyle}">
+            Paste a Supabase Personal Access Token and pick your project from a list — we'll fetch the credentials for you.
+            Mint a PAT at <a href="https://supabase.com/dashboard/account/tokens" target="_blank" rel="noopener" style="${linkStyle}">supabase.com/dashboard/account/tokens</a>.
+          </div>
+          ${body}
+        </div>
+        <div style="${dividerStyle}">— or paste credentials manually below —</div>
+      `;
+    }
+
+    function rerenderSetupTiersFromCache() {
+      if (lastSetupData) renderSetupTiers(lastSetupData);
+    }
+
+    async function handleSupabaseAutoConnect() {
+      const input = document.getElementById('supabaseAutoPat');
+      const errEl = document.getElementById('supabaseAutoError');
+      const btn = document.getElementById('supabaseAutoConnect');
+      const pat = ((input && input.value) || '').trim();
+      if (!pat) {
+        if (errEl) errEl.textContent = 'Paste a Personal Access Token to continue.';
+        return;
+      }
+      if (errEl) errEl.textContent = '';
+      if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+      try {
+        const res = await fetch(`${API}/api/setup/supabase/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pat })
+        });
+        let data = {};
+        try { data = await res.json(); } catch { data = {}; }
+        if (res.ok && data && data.ok) {
+          const projects = Array.isArray(data.projects) ? data.projects : [];
+          // Hold the PAT in module-scope state only; never on `state`/`window`.
+          supabaseAutoState = { pat, projects, picking: true, error: null };
+          rerenderSetupTiersFromCache();
+          return;
+        }
+        const code = data && data.code;
+        let msg;
+        if (code === 'mcp_not_installed') {
+          msg = "The Supabase MCP isn't installed on this machine. Run `npx @jhizzard/termdeck-stack --tier 4` to install it, or paste credentials manually below.";
+        } else if (code === 'pat_invalid') {
+          const detail = (data && data.detail) || 'token rejected';
+          msg = `Token rejected: ${detail}. Mint a fresh PAT and try again.`;
+        } else if (code === 'mcp_timeout') {
+          msg = "Supabase didn't respond in time. Try again or paste credentials manually below.";
+        } else {
+          msg = (data && (data.error || data.detail)) || `Connect failed (HTTP ${res.status}). Paste credentials manually below.`;
+        }
+        if (errEl) errEl.textContent = msg;
+      } catch (err) {
+        if (errEl) errEl.textContent = `Request failed: ${err && err.message ? err.message : String(err)}`;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Connect'; }
+      }
+    }
+
+    async function handleSupabaseAutoSelect() {
+      if (!supabaseAutoState || !supabaseAutoState.pat) return;
+      const sel = document.getElementById('supabaseAutoProject');
+      const errEl = document.getElementById('supabaseAutoError');
+      const btn = document.getElementById('supabaseAutoSelect');
+      const projectId = sel ? sel.value : '';
+      if (!projectId) {
+        if (errEl) errEl.textContent = 'Pick a project first.';
+        return;
+      }
+      if (errEl) errEl.textContent = '';
+      if (btn) { btn.disabled = true; btn.textContent = 'Configuring…'; }
+      // Snapshot the PAT locally so we can null out module state before the
+      // network call resolves; the snapshot only lives for the duration of
+      // this async function.
+      const patSnapshot = supabaseAutoState.pat;
+      try {
+        const res = await fetch(`${API}/api/setup/supabase/select`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pat: patSnapshot, projectId })
+        });
+        let data = {};
+        try { data = await res.json(); } catch { data = {}; }
+        if (res.ok && data && data.ok) {
+          // Null out the PAT before doing anything else with the response.
+          supabaseAutoState = null;
+          await refreshSetupStatus();
+          return;
+        }
+        const detail = (data && (data.error || data.detail)) || `HTTP ${res.status}`;
+        if (errEl) {
+          errEl.textContent = `Couldn't finish setup: ${detail}. Paste credentials manually below if this keeps failing.`;
+        }
+      } catch (err) {
+        if (errEl) errEl.textContent = `Request failed: ${err && err.message ? err.message : String(err)}`;
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Use this project'; }
+      }
+    }
+
+    function handleSupabaseAutoBack() {
+      // Drop the PAT and any cached project list and re-render from scratch.
+      supabaseAutoState = null;
+      rerenderSetupTiersFromCache();
     }
 
     // Sprint 23 T2 — credential form for Tier 2.

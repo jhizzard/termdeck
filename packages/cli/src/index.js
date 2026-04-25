@@ -175,6 +175,30 @@ if (!LOOPBACK.has(host)) {
   }
 }
 
+// Sprint 25 T4: non-blocking nudge when RAG is configured but the Supabase MCP
+// (T1's `@supabase/mcp-server-supabase` detection) isn't installed. Lazy-loads
+// T1's module so Tier 1 users with no RAG never pay the require cost. Silent
+// when RAG is off, when the MCP is detected, when ~/.claude/mcp.json already
+// declares a `supabase` server, or when anything below throws.
+async function checkSupabaseMcpHint(cfg) {
+  if (!cfg || !cfg.rag || cfg.rag.enabled !== true) return null;
+  try {
+    const claudeMcpPath = path.join(os.homedir(), '.claude', 'mcp.json');
+    if (fs.existsSync(claudeMcpPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(claudeMcpPath, 'utf8'));
+        if (parsed && parsed.mcpServers && parsed.mcpServers.supabase) return null;
+      } catch (_e) { /* malformed JSON — fall through and let detectMcp decide */ }
+    }
+    const { detectMcp } = require(path.join(__dirname, '..', '..', 'server', 'src', 'setup', 'supabase-mcp.js'));
+    const result = await detectMcp();
+    if (result && result.available) return null;
+    return 'Supabase MCP not installed — wizard auto-fill unavailable. Install with: npx @jhizzard/termdeck-stack --tier 4';
+  } catch (_e) {
+    return null;
+  }
+}
+
 server.listen(port, host, async () => {
   // Box inner width is 38 (count of ═ between ╔ and ╗). Center the title
   // dynamically so the right border stays aligned regardless of version length.
@@ -204,6 +228,13 @@ server.listen(port, host, async () => {
   }).catch((err) => {
     console.error(`  \x1b[31m[health] Preflight failed: ${err.message}\x1b[0m\n`);
   });
+
+  // Sprint 25 T4: Supabase MCP install nudge — runs alongside (not inside)
+  // runPreflight. Silent unless RAG is on AND the MCP is missing AND the
+  // user hasn't already declared it in ~/.claude/mcp.json.
+  checkSupabaseMcpHint(config).then((msg) => {
+    if (msg) console.log(`  \x1b[33m[hint]\x1b[0m ${msg}`);
+  }).catch(() => { /* silent */ });
 
   // Skip auto-open in Codespaces/CI (port forwarding handles it)
   const isCodespaces = !!process.env.CODESPACES || !!process.env.GITHUB_CODESPACE_TOKEN;

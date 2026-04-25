@@ -418,6 +418,226 @@ function createServer(config) {
     }
   });
 
+  // ── Sprint 25 T2 — Supabase MCP wizard endpoints ──────────────────────────
+  //
+  // Three thin orchestrators that let the Tier-2 setup wizard skip the manual
+  // 4-credential paste step. They sit on top of T1's `supabase-mcp.callTool`
+  // bridge plus the existing Sprint 23 `configure` + `migrate` flow. The PAT
+  // travels in the request body for the lifetime of the call only — it is
+  // never persisted, never echoed, and never logged.
+  let _supabaseMcp = null;
+  try {
+    _supabaseMcp = require('./setup/supabase-mcp');
+  } catch (_err) {
+    // T1's bridge module may not exist yet on a fresh checkout, or the user
+    // may not have `@supabase/mcp-server-supabase` on PATH. Either case
+    // surfaces as `code: 'mcp_not_installed'` at request time.
+  }
+  let _supabaseSelectInFlight = false;
+
+  function _mapMcpError(err) {
+    const code = err && (err.code || (err.cause && err.cause.code));
+    const msg = (err && err.message) || '';
+    if (code === 'mcp_not_installed' || code === 'ENOENT' || /not.*installed|cannot.*spawn|module not found/i.test(msg)) {
+      return {
+        status: 400,
+        body: { ok: false, code: 'mcp_not_installed', detail: 'run: npm install -g @supabase/mcp-server-supabase' }
+      };
+    }
+    if (code === 'mcp_timeout' || code === 'ETIMEDOUT' || /timeout|timed out/i.test(msg)) {
+      return { status: 504, body: { ok: false, code: 'mcp_timeout' } };
+    }
+    return { status: 401, body: { ok: false, code: 'pat_invalid', detail: msg || 'PAT verification failed' } };
+  }
+
+  function _ensureMcpAvailable(res) {
+    if (_supabaseMcp && typeof _supabaseMcp.callTool === 'function') return true;
+    res.status(400).json({
+      ok: false,
+      code: 'mcp_not_installed',
+      detail: 'run: npm install -g @supabase/mcp-server-supabase'
+    });
+    return false;
+  }
+
+  // POST /api/setup/supabase/connect — verify a PAT works by listing projects.
+  // We only return the count; the project list itself is fetched by /projects.
+  app.post('/api/setup/supabase/connect', async (req, res) => {
+    const pat = (req.body && typeof req.body.pat === 'string') ? req.body.pat : '';
+    if (!pat) {
+      return res.status(400).json({ ok: false, code: 'pat_invalid', detail: 'pat field is required' });
+    }
+    if (!_ensureMcpAvailable(res)) return;
+    try {
+      const result = await _supabaseMcp.callTool(pat, 'list_projects', {}, { timeoutMs: 6000 });
+      const list = Array.isArray(result)
+        ? result
+        : (Array.isArray(result && result.projects) ? result.projects : []);
+      console.log(`[setup] supabase/connect ok (${list.length} projects)`);
+      return res.json({ ok: true, projectCount: list.length });
+    } catch (err) {
+      const m = _mapMcpError(err);
+      console.warn(`[setup] supabase/connect failed: ${m.body.code}`);
+      return res.status(m.status).json(m.body);
+    }
+  });
+
+  // POST /api/setup/supabase/projects — return a stable-shape project list.
+  // Mapping isolates the wizard from MCP field-name churn.
+  app.post('/api/setup/supabase/projects', async (req, res) => {
+    const pat = (req.body && typeof req.body.pat === 'string') ? req.body.pat : '';
+    if (!pat) {
+      return res.status(400).json({ ok: false, code: 'pat_invalid', detail: 'pat field is required' });
+    }
+    if (!_ensureMcpAvailable(res)) return;
+    try {
+      const result = await _supabaseMcp.callTool(pat, 'list_projects', {}, { timeoutMs: 6000 });
+      const raw = Array.isArray(result)
+        ? result
+        : (Array.isArray(result && result.projects) ? result.projects : []);
+      const projects = raw.map((p) => ({
+        id: (p && (p.id || p.ref || p.project_id)) || '',
+        name: (p && p.name) || '',
+        region: (p && (p.region || p.region_name)) || null,
+        createdAt: (p && (p.createdAt || p.created_at)) || null,
+      }));
+      console.log(`[setup] supabase/projects ok (${projects.length} returned)`);
+      return res.json({ ok: true, projects });
+    } catch (err) {
+      const m = _mapMcpError(err);
+      console.warn(`[setup] supabase/projects failed: ${m.body.code}`);
+      return res.status(m.status).json(m.body);
+    }
+  });
+
+  // POST /api/setup/supabase/select — full chain: MCP → configure → migrate.
+  // Concurrency guarded by a module-scoped boolean — second call gets 409.
+  app.post('/api/setup/supabase/select', async (req, res) => {
+    if (_supabaseSelectInFlight) {
+      return res.status(409).json({ ok: false, code: 'select_in_flight', error: 'Supabase select already in progress' });
+    }
+    const pat = (req.body && typeof req.body.pat === 'string') ? req.body.pat : '';
+    const projectId = (req.body && typeof req.body.projectId === 'string') ? req.body.projectId.trim() : '';
+    if (!pat || !projectId) {
+      return res.status(400).json({ ok: false, code: 'bad_request', detail: 'pat and projectId are required' });
+    }
+    if (!_ensureMcpAvailable(res)) return;
+
+    _supabaseSelectInFlight = true;
+    try {
+      // 1. Pull credentials via MCP. Prefer the bundled tool if T1 ships one;
+      //    fall back to the four single-field tools so we are robust to either
+      //    bridge shape.
+      let creds;
+      try {
+        creds = await _supabaseMcp.callTool(pat, 'fetch_project_credentials', { projectId }, { timeoutMs: 8000 });
+      } catch (errBundle) {
+        const code = errBundle && errBundle.code;
+        const msg = (errBundle && errBundle.message) || '';
+        const isUnknownTool = code === 'unknown_tool' || /unknown.?tool|method not found|no such tool/i.test(msg);
+        if (!isUnknownTool) throw errBundle;
+        const [proj, anon, service, db] = await Promise.all([
+          _supabaseMcp.callTool(pat, 'get_project', { projectId }, { timeoutMs: 6000 }),
+          _supabaseMcp.callTool(pat, 'get_anon_key', { projectId }, { timeoutMs: 6000 }),
+          _supabaseMcp.callTool(pat, 'get_service_role_key', { projectId }, { timeoutMs: 6000 }),
+          _supabaseMcp.callTool(pat, 'get_database_url', { projectId }, { timeoutMs: 6000 }),
+        ]);
+        creds = {
+          url: (proj && (proj.url || proj.api_url)) || '',
+          anonKey: (anon && (anon.key || anon.anon_key)) || (typeof anon === 'string' ? anon : ''),
+          serviceRoleKey: (service && (service.key || service.service_role_key)) || (typeof service === 'string' ? service : ''),
+          databaseUrl: (db && (db.connectionString || db.url || db.database_url)) || (typeof db === 'string' ? db : ''),
+        };
+      }
+
+      const supabaseUrl = (creds && (creds.url || creds.supabaseUrl || creds.api_url)) || '';
+      const serviceRoleKey = (creds && (creds.serviceRoleKey || creds.service_role_key)) || '';
+      const databaseUrl = (creds && (creds.databaseUrl || creds.database_url)) || '';
+      const anonKey = (creds && (creds.anonKey || creds.anon_key)) || '';
+
+      if (!supabaseUrl || !serviceRoleKey || !databaseUrl) {
+        return res.status(502).json({
+          ok: false,
+          code: 'mcp_incomplete',
+          detail: 'MCP did not return all required credentials (url, service role key, database url)'
+        });
+      }
+
+      // 2. Hand off to existing /api/setup/configure via in-process loopback
+      //    fetch. This keeps Sprint 23's validators and writers as the single
+      //    source of truth — no validation logic is duplicated here.
+      const port = (config && config.port) || 3000;
+      const headers = { 'content-type': 'application/json' };
+      if (req.headers.authorization) headers.authorization = req.headers.authorization;
+
+      const openaiApiKey = (req.body && typeof req.body.openaiApiKey === 'string')
+        ? req.body.openaiApiKey
+        : (process.env.OPENAI_API_KEY || '');
+      const anthropicApiKey = (req.body && typeof req.body.anthropicApiKey === 'string')
+        ? req.body.anthropicApiKey
+        : (process.env.ANTHROPIC_API_KEY || '');
+
+      const configureRes = await fetch(`http://127.0.0.1:${port}/api/setup/configure`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          supabaseUrl,
+          supabaseServiceRoleKey: serviceRoleKey,
+          databaseUrl,
+          openaiApiKey,
+          anthropicApiKey,
+          // anonKey is not part of the Sprint 23 contract — we hold it here
+          // for parity with future runtime needs but do not pass it on.
+        })
+      });
+      const configureBody = await configureRes.json().catch(() => ({}));
+      if (!configureRes.ok || configureBody.success === false) {
+        const status = configureRes.status >= 400 ? configureRes.status : 500;
+        return res.status(status).json({
+          ok: false,
+          code: 'configure_failed',
+          detail: configureBody.error || 'configure step failed',
+          validation: configureBody.validation || null,
+        });
+      }
+
+      // 3. Trigger /api/setup/migrate. Pass databaseUrl explicitly so we don't
+      //    depend on the migrate endpoint's dotenv refresh ordering.
+      const migrateRes = await fetch(`http://127.0.0.1:${port}/api/setup/migrate`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ databaseUrl })
+      });
+      const migrateBody = await migrateRes.json().catch(() => ({}));
+      if (!migrateRes.ok || migrateBody.ok === false) {
+        const status = migrateRes.status >= 400 ? migrateRes.status : 500;
+        return res.status(status).json({
+          ok: false,
+          code: 'migrate_failed',
+          detail: migrateBody.error || 'migrate step failed',
+          applied: migrateBody.applied || 0,
+        });
+      }
+
+      console.log(`[setup] supabase/select complete (${migrateBody.applied || 0} migrations applied)`);
+      // Mark the anonKey unused so lint stays clean — see comment above.
+      void anonKey;
+      return res.json({
+        ok: true,
+        configured: true,
+        migrated: true,
+        validation: configureBody.validation || null,
+        applied: migrateBody.applied || 0,
+      });
+    } catch (err) {
+      const m = _mapMcpError(err);
+      console.warn(`[setup] supabase/select failed: ${m.body.code}`);
+      return res.status(m.status).json(m.body);
+    } finally {
+      _supabaseSelectInFlight = false;
+    }
+  });
+
   // GET /api/sessions - list all active sessions
   app.get('/api/sessions', (req, res) => {
     res.json(sessions.getAll());

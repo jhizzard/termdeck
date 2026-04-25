@@ -141,3 +141,9 @@ What Josh is hitting in real sessions is not a bridge regression — it's an int
 - **Two commits planned:** one TermDeck (T1 + T4 + Sprint 26 STATUS), one Rumen (T2 + T3 + CHANGELOG bump to v0.4.2).
 
 [orchestrator] CLOSE
+
+### [T3] supersede — DONE
+
+Per user direction, supersede the earlier `[T3] BLOCKED needs T2 coordination`. Spec bug confirmed: `src/relate.ts` has no confidence-set sites (it produces `RelatedMemory[]` keyed on `similarity`); the real sites are in T2-owned `src/synthesize.ts`. Resolution: ship `src/confidence.ts` + the 8 `normalize` unit tests in `tests/relate.test.ts`; skip the relate.ts integration entirely. Wiring `normalize` into synthesize.ts is an orchestrator follow-up (queued as Sprint 27 per the orchestrator's close note above — the existing `computeConfidence` test fixtures need updating before the wrap can land green). `npm test` from rumen: 49/49 pass on the T3 branch state.
+
+[T3] DONE
