@@ -22,6 +22,14 @@ First-time user? The **config** button in the toolbar shows what's set up and wh
 
 Enabling Flashback takes **one additional 15-minute setup step** — see Tier 2 below. The rest of this README explains what you get, how it works, and how to go deeper.
 
+### Want the whole stack in one command?
+
+```bash
+npx @jhizzard/termdeck-stack
+```
+
+The meta-installer prints a layered overview of the four packages (TermDeck + Mnestra + Rumen + Supabase MCP), detects what's already on your machine, asks which tier you want, runs `npm install -g` for the missing pieces, and merges Mnestra + Supabase MCP entries into `~/.claude/mcp.json`. See [packages/stack-installer/README.md](packages/stack-installer/README.md) for details, or `npx @jhizzard/termdeck-stack --help`.
+
 ---
 
 ## Documentation hierarchy

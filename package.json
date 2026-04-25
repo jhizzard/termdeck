@@ -18,7 +18,8 @@
   "workspaces": [
     "packages/server",
     "packages/client",
-    "packages/cli"
+    "packages/cli",
+    "packages/stack-installer"
   ],
   "scripts": {
     "dev": "node packages/server/src/index.js",
