@@ -5,6 +5,25 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.1] — 2026-04-25
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.2`,
+  which shipped ~8 minutes after stack-installer 0.2.0 went live.
+  v0.6.2 removed the `Proceed with setup for project X?` confirm gate
+  in `termdeck init --mnestra` after a third report from a tester
+  whose terminal kept resolving the confirm as a soft-cancel even
+  after v0.6.1's askSecret hardening. See the root `CHANGELOG.md`
+  for the full v0.6.2 entry.
+
+### Notes
+- No installer behavior change: stack-installer 0.2.0 already pulled
+  `@jhizzard/termdeck@latest`, so a fresh `npx @jhizzard/termdeck-stack`
+  on 0.2.0 picked up the v0.6.2 wizard fix automatically. This bump
+  is purely to keep the per-package audit trail tight — the CHANGELOG
+  for 0.2.0 was written when `latest` was still 0.6.1 and had no way
+  to mention the hotfix that landed minutes later.
+
 ## [0.2.0] — 2026-04-25
 
 ### Documentation
