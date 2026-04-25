@@ -55,7 +55,7 @@ const PATTERNS = {
   // tools (cat, ls, cd, rm, etc.) report filesystem misses in plain English
   // without ever emitting the ENOENT errno code. Flagged as a gap by Rumen's
   // first production kickstart insight on 2026-04-15.
-  error: /\b(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied|\b5\d\d\b)\b/,
+  error: /(?:^|\n)\s*(?:Error:\s+\S|error:\s+\S|Traceback \(most recent call last\):|npm ERR!|error\[E\d+\]:|Uncaught Exception|Fatal:)/m,
   // Stricter line-anchored variant for Claude Code, whose tool output (grep
   // results, test logs, file contents) routinely mentions "Error" mid-line
   // without representing an actual failure of the agent itself.

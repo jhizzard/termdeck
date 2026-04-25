@@ -219,3 +219,45 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
 
   try { ws.close(); } catch { /* already closed */ }
 });
+
+// Sprint 26 T1 — bridge contract test.
+//
+// Sprint 21 T1 fixed a 15-sprint regression where queryDirect sent
+// `recency_weight` / `decay_days` keys to an 8-arg PostgREST RPC, causing
+// every Flashback query to silently 404. The trigger fired, but the bridge
+// returned an error every time, so the user-visible behavior was "Flashback
+// is silent." That class of regression is invisible to the trigger-side
+// pipeline test above, because it succeeds even when the bridge is broken.
+//
+// This test asks the bridge for a string that cannot match anything and
+// asserts the response shape: HTTP 200 with `{ memories: [], total: 0 }`.
+// If a future change to the bridge adds an unsupported RPC parameter, breaks
+// the function name, drifts on the SQL signature, or fails to map the response
+// row shape, the bridge will return an error response and this test will fail
+// loudly instead of degrading to "no Flashback."
+test('mnestra bridge returns well-shaped response when there are zero hits', async (t) => {
+  if (skipAll) return t.skip(skipReason);
+
+  const res = await fetchWithTimeout(`${BASE_URL}/api/ai/query`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      // Random ASCII salad guaranteed to miss every real memory. Includes a
+      // unique sentinel so log greppers can find this query if it ever fires
+      // a real-world false positive.
+      question: 'flashback-contract-test-zzqx-no-real-memory-should-match-this-12345',
+      project: 'flashback-contract-test-nonexistent-project'
+    })
+  });
+
+  assert.equal(
+    res.status, 200,
+    'POST /api/ai/query must return 200 even when there are zero hits — non-200 means the bridge layer (RPC signature, RPC name, auth, response mapping) regressed'
+  );
+
+  const body = await res.json();
+  assert.ok(Array.isArray(body.memories), '`memories` must be an array');
+  assert.equal(body.memories.length, 0, 'unique salad query must produce zero memories');
+  assert.equal(typeof body.total, 'number', '`total` must be a number');
+  assert.equal(body.total, 0, '`total` must be 0 when there are no hits');
+});
