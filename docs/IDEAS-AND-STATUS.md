@@ -1,6 +1,6 @@
 # TermDeck / Mnestra / Rumen — Ideas & Status Overview
 
-**Last updated:** 2026-04-19
+**Last updated:** 2026-04-25
 
 ---
 
@@ -15,10 +15,12 @@
 6. **Session ID display** — done (Sprint 17), verify visible in all layouts
 
 ### Installation / Onboarding
-7. **In-browser setup wizard** — built in Sprint 19 (config button → tier status). But it's read-only — doesn't write config yet
-8. **One-command startup** — start.sh rewritten in Sprint 22 with numbered steps
-9. **Mnestra auto-read secrets.env** — done in Sprint 22 T4 (Mnestra 0.2.1)
-10. **The installation is still too hard** — a new user needs: npm install, Supabase project, 6 SQL migrations, secrets.env, config.yaml, mnestra serve, termdeck. That's 15+ steps minimum.
+7. **In-browser setup wizard** — built in Sprint 19 (config button → tier status). Sprint 23 T2/T3 made it actually WRITE config and run migrations. DONE.
+8. **One-command startup (repo)** — `scripts/start.sh` rewritten in Sprint 22 with numbered steps. DONE.
+9. **One-command startup (npm)** — `termdeck stack` shipped in **v0.4.6 (2026-04-25)**: Node port of `start.sh`, lives in the published tarball, identical four-step output. Closes the gap surfaced when Brad (Unagi tester) tried `scripts/start.sh` from his npm install and the directory wasn't there.
+10. **`termdeck` orchestrates by default** — Sprint 24 plan at `docs/sprint-24-stack-default/`. Folds the orchestrator into the no-args path so testers don't have to learn `stack` as a separate command. `--no-stack` is the opt-out.
+11. **Mnestra auto-read secrets.env** — done in Sprint 22 T4 (Mnestra 0.2.1)
+12. **The installation is still too hard** — a new user needs: npm install, Supabase project, 6 SQL migrations, secrets.env, config.yaml, mnestra serve, termdeck. That's 15+ steps minimum. The wizard work in Sprint 23 cuts this to "paste 4 credentials in the browser" — but the wizard still has to be reached, which means a user has to start TermDeck once first.
 
 ### What's missing for real adoption
 11. **Supabase MCP** — would massively simplify setup. Instead of manual SQL migrations + credential copying, the setup wizard could use a Supabase MCP server to create the project, run migrations, and set secrets automatically
@@ -76,14 +78,26 @@ There's already one: @supabase/mcp-server-supabase or similar. Check if it can r
 
 ---
 
-## Sprint 23: Responsive Layouts + Installation Simplification
+## Sprint 23: Responsive Layouts + Installation Simplification — DONE 2026-04-19
+
+| Terminal | Task | Status |
+|----------|------|--------|
+| T1 | Responsive CSS — all layouts work on 13" laptop through 27" iMac | DONE |
+| T2 | Setup wizard Phase 2 — actually WRITES config + runs migrations | DONE |
+| T3 | Supabase credential validation in the wizard | DONE |
+| T4 | "Welcome back" returning-user flow + start.sh first-run hint | DONE |
+| orch | Audit fix — wire `runSetupMigrations` into `submitSetupCredentials` | DONE |
+
+## Sprint 24: `termdeck` Orchestrates the Stack by Default — PLANNED
+
+Plan + per-terminal specs at `docs/sprint-24-stack-default/`. Mission: make plain `termdeck` route through the v0.4.6 orchestrator when a configured stack is detected, so testers don't need to learn `termdeck stack` as a separate command. `--no-stack` opts out for diagnostics.
 
 | Terminal | Task |
 |----------|------|
-| T1 | Responsive CSS — all layouts work on 13" laptop through 27" iMac |
-| T2 | Setup wizard Phase 2 — actually WRITES config + runs migrations (not just read-only detection) |
-| T3 | Supabase credential validation in the wizard (test connection, run migrations automatically) |
-| T4 | "Welcome back" returning-user flow + start.sh integration with wizard |
+| T1 | Default-path detection (`shouldAutoOrchestrate()`) + dispatch into `stack.js` |
+| T2 | `--no-stack` flag wiring + help-text update |
+| T3 | README, INSTALL, GETTING-STARTED, and CLI help reflect new default |
+| T4 | Detection unit tests + dispatch integration tests; verify v0.4.5 → v0.5.0 upgrade is silent for unconfigured users |
 
 ---
 
