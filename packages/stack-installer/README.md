@@ -33,6 +33,35 @@ npx @jhizzard/termdeck-stack --dry-run   # print plan, don't install
 npx @jhizzard/termdeck-stack --yes       # accept defaults (combine with --tier)
 ```
 
+## Known limitations
+
+Tier 3 (Rumen) currently still requires one manual command after the
+installer finishes:
+
+```
+termdeck init --rumen
+```
+
+That command deploys the Rumen Supabase Edge Function, applies the
+migration, and installs the `pg_cron` schedule. Auto-running it from
+the meta-installer is queued — until then the wizard prints it as an
+explicit next step.
+
+## Version vs. the rest of the stack
+
+This package's version tracks the meta-installer surface, not the
+underlying packages. Each layer ships on its own release cadence:
+
+| Package | Where to look |
+|---------|---------------|
+| `@jhizzard/termdeck` | https://www.npmjs.com/package/@jhizzard/termdeck |
+| `@jhizzard/mnestra` | https://www.npmjs.com/package/@jhizzard/mnestra |
+| `@jhizzard/rumen` | https://www.npmjs.com/package/@jhizzard/rumen |
+
+The installer always pulls each layer's `latest` dist-tag, so a fresh
+`npx @jhizzard/termdeck-stack` run picks up the most recent published
+version of every layer regardless of this package's own version.
+
 ## Why this exists
 
 The TermDeck stack used to be a 15-step install: provision Supabase, run six SQL migrations, mint API keys, paste them into `secrets.env`, edit `config.yaml`, install Mnestra globally, deploy Rumen, install the Supabase MCP, wire `~/.claude/mcp.json`. Most testers bounced before step 5.

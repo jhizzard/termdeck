@@ -43,3 +43,19 @@ T1's gif capture is the only manual step — Josh records it (or Playwright capt
 
 ---
 (append below)
+
+## 2026-04-25 — meta-installer 0.2.0 published ahead of T2
+
+Codex audit on 2026-04-25 flagged that `@jhizzard/termdeck-stack` was
+still at `0.1.0` while the rest of the stack had moved to termdeck
+0.6.1 / mnestra 0.2.1 / rumen 0.4.3 — the "polished one-command
+install" looked like the least-mature published surface even though
+the installer code already wires Tiers 1–4 against the current stack.
+
+Decision: bump the meta-installer to `0.2.0` now to close the optics
+gap, and ship the **`termdeck init --rumen` auto-run (T2) when Sprint
+31 actually runs**. Until then, Tier 3 users still chain that command
+manually. The README's new "Known limitations" section calls this out
+explicitly so the gap is documented, not hidden.
+
+Sprint 31 T1, T2, T3, T4 remain queued and unchanged.

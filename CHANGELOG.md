@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Meta-installer
+- `@jhizzard/termdeck-stack` bumped 0.1.0 → 0.2.0 (2026-04-25). Docs-only refresh — README now documents the deferred `termdeck init --rumen` step for Tier 3 and the meta-installer's version-decoupling from the underlying packages. Per-package changelog at `packages/stack-installer/CHANGELOG.md`. No behavior change in `@jhizzard/termdeck` itself.
+
 ### Planned
 - Fully-local path: SQLite + local embeddings for Mnestra (currently requires Supabase + OpenAI)
 - Multi-user data validation (today's testing is single-developer)
