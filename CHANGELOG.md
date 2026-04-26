@@ -16,6 +16,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.4] - 2026-04-26
+
+### Fixed
+- **`termdeck init --rumen` failing with raw "Access token not provided" stderr from `supabase link`.** Brad reported on 2026-04-26 00:25 UTC after v0.6.3 unblocked `init --mnestra`: the Supabase CLI's actionable suggestion is *"run supabase login or set SUPABASE_ACCESS_TOKEN"*, but `supabase login` opens a browser, which doesn't work on MobaXterm SSH or any headless install. The wizard previously dumped that message verbatim and exited. Now `link()` in `packages/cli/src/init-rumen.js` detects the access-token-missing signature and prints a path-aware hint with the Supabase dashboard URL (`https://supabase.com/dashboard/account/tokens`) plus the exact `export SUPABASE_ACCESS_TOKEN=sbp_...` command and a re-run instruction. Detection lives in the small `looksLikeMissingAccessToken(stderr)` helper (anchored on the literal phrase plus the env-var name so future Supabase CLI rewordings still match).
+- New `tests/init-rumen-access-token.test.js` (4 cases): real-stderr match, env-var-name fallback match, no false positives on unrelated link errors, and a content lock on the printed hint (dashboard URL + `export sbp_` shape + retry command).
+
+### Added
+- **`termdeck init --mnestra --from-env`** — skip every `askSecret` prompt and read all five secrets from `process.env` (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). Defensive bypass for any terminal that fights with our raw-mode secret prompt and a clean primitive for CI / one-shot installers. Strict by design — missing or malformed env vars exit 2 with an actionable error including the corrected invocation. Anthropic remains optional. The persist-first guarantee from v0.6.3 still applies: secrets land on disk before any pg work.
+- New flag entries in `--help` and the head-of-file docstring at `packages/cli/src/init-mnestra.js`. 3 new tests in `tests/init-mnestra-resume.test.js` covering successful skip-prompts path, missing-env-var error path, and shape-validation rejection. Test harness now strips inherited Mnestra/Supabase env vars from spawned children so host credentials cannot leak.
+
+### Notes
+- All 10 net-new tests in this release pass. v0.6.3's resume-path tests still pass — no regressions in the `--yes` / `--reset` surface.
+- Brad's fourth incident is fully closed by v0.6.3 + this hint. He cleared his npm cache (was running v0.6.0 the whole time despite earlier installs), upgraded to v0.6.3, and Mnestra applied cleanly end-to-end against project `rrzkceirgciiqgeefvbe`. The Rumen blocker that surfaced next is what v0.6.4 addresses.
+- `@jhizzard/termdeck-stack` audit-trail bumped 0.2.2 → 0.2.3 (no installer behavior change; npx always pulls `@jhizzard/termdeck@latest`).
+
 ## [0.6.3] - 2026-04-25
 
 ### Fixed

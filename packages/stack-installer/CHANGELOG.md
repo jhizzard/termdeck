@@ -5,6 +5,29 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.3] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.4`,
+  which surfaced after v0.6.3 unblocked `init --mnestra` for Brad's
+  MobaXterm SSH install — the next step (`init --rumen`) failed with
+  the Supabase CLI's raw *"Access token not provided"* error. v0.6.4
+  detects that signature and prints a path-aware hint pointing at
+  the Supabase PAT dashboard plus the exact `export` command, since
+  `supabase login` (the CLI's other suggestion) requires a browser
+  and doesn't work over SSH. v0.6.4 also adds `termdeck init --mnestra
+  --from-env` as a defensive non-interactive bypass for any terminal
+  that fights with our raw-mode secret prompt. See the root
+  `CHANGELOG.md` for the full v0.6.4 entry.
+
+### Notes
+- No installer behavior change. `npx @jhizzard/termdeck-stack` always
+  pulls `@jhizzard/termdeck@latest`, so existing 0.2.x installs pick
+  up v0.6.4 automatically. Brad confirmed the cache trap on 0.6.0
+  the hard way; users who hit similar staleness should always run
+  `npm cache clean --force && npm i -g @jhizzard/termdeck@latest`
+  (or just re-run `npx @jhizzard/termdeck-stack`).
+
 ## [0.2.2] — 2026-04-25
 
 ### Documentation

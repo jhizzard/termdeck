@@ -210,6 +210,35 @@ function runShellCaptured(command, args, opts = {}) {
   return { ok: r.status === 0, code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
+// Detect the "no access token" signature in `supabase link` stderr so the
+// wizard can surface a path-aware hint instead of dumping raw CLI output at
+// the user. Brad hit this on 2026-04-26 00:25 UTC on MobaXterm SSH after
+// v0.6.3 unblocked init --mnestra: he had no SUPABASE_ACCESS_TOKEN env var
+// and `supabase login` requires a browser, which his SSH session doesn't
+// have. The actionable path on a non-desktop install is always a PAT from
+// the dashboard — link() now points users straight at it.
+function looksLikeMissingAccessToken(stderr) {
+  if (!stderr) return false;
+  return /Access token not provided/i.test(stderr) ||
+    /SUPABASE_ACCESS_TOKEN environment variable/i.test(stderr);
+}
+
+function printAccessTokenHint() {
+  process.stderr.write(
+    '\nThe Supabase CLI needs a Personal Access Token to link your project.\n' +
+    'On a desktop install you can run `supabase login`, but that opens a\n' +
+    'browser, so SSH/headless users should use the env-var path instead:\n' +
+    '\n' +
+    '  1. Generate a token: https://supabase.com/dashboard/account/tokens\n' +
+    '  2. Export it in your shell:\n' +
+    '       export SUPABASE_ACCESS_TOKEN=sbp_...\n' +
+    '  3. Re-run: termdeck init --rumen\n' +
+    '\n' +
+    'TermDeck does not store this token — it only lives in your shell\n' +
+    'environment for the duration of the install.\n'
+  );
+}
+
 async function link(projectRef, dryRun) {
   step(`Running: supabase link --project-ref ${projectRef}...`);
   if (dryRun) { ok('(dry-run)'); return true; }
@@ -217,6 +246,7 @@ async function link(projectRef, dryRun) {
   if (!r.ok) {
     fail(`supabase link failed (exit ${r.code})`);
     if (r.stderr) process.stderr.write(r.stderr + '\n');
+    if (looksLikeMissingAccessToken(r.stderr)) printAccessTokenHint();
     return false;
   }
   ok();
@@ -512,3 +542,6 @@ if (require.main === module) {
 }
 
 module.exports = main;
+// Test surface — kept on the same export object so the regression suite can
+// pin the access-token detection without spawning a real `supabase` binary.
+module.exports._looksLikeMissingAccessToken = looksLikeMissingAccessToken;

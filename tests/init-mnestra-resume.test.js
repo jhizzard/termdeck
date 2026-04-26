@@ -41,13 +41,28 @@ function readSecrets(home) {
 
 // Spawn `termdeck init --mnestra <args>` against the given HOME and pipe
 // `stdinLines` into stdin. Resolves to { code, out } once the child exits.
-function runWizard(home, args, stdinLines, { timeoutMs = 30000 } = {}) {
+// Pass `extraEnv` to override / inject environment variables (used by the
+// --from-env tests below to provide secrets without prompts).
+function runWizard(home, args, stdinLines, { timeoutMs = 30000, extraEnv = {} } = {}) {
+  // Strip any inherited Mnestra/Supabase secrets from process.env so the
+  // host's real credentials never leak into a test child. Tests opt-in to
+  // env vars via the `extraEnv` parameter.
+  const baseEnv = { ...process.env };
+  for (const k of [
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'DATABASE_URL',
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY'
+  ]) {
+    delete baseEnv[k];
+  }
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
       [CLI, 'init', '--mnestra', ...args],
       {
-        env: { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0' },
+        env: { ...baseEnv, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', ...extraEnv },
         stdio: ['pipe', 'pipe', 'pipe']
       }
     );
@@ -160,6 +175,74 @@ test('--reset bypasses saved secrets and re-prompts from scratch', async () => {
   const secrets = readSecrets(home);
   assert.match(secrets, /SUPABASE_URL=https:\/\/newnewnewnewnewnewne\.supabase\.co/,
     'saved secrets should be overwritten with the new values');
+});
+
+// ── --from-env: skip every prompt, read secrets from environment ───────────
+
+test('--from-env reads all secrets from env vars and never invokes askSecret', async () => {
+  const home = freshHome();
+
+  const env = {
+    SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+    SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    DATABASE_URL: 'postgres://postgres:bad@127.0.0.1:1/postgres',  // fails fast
+    OPENAI_API_KEY: 'sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    ANTHROPIC_API_KEY: 'sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  };
+
+  const { code, out } = await runWizard(home, ['--from-env'], [], { extraEnv: env });
+
+  assert.equal(code, 3, `expected exit 3 (pg connect fail) but got ${code}; output:\n${out}`);
+
+  // Critical: no prompts were rendered (askSecret never ran).
+  assert.doesNotMatch(out, /\? Supabase Project URL/, 'must skip Supabase URL prompt');
+  assert.doesNotMatch(out, /\? Supabase service_role key/, 'must skip service_role prompt');
+  assert.doesNotMatch(out, /\? Direct Postgres connection string/, 'must skip postgres URL prompt');
+  assert.doesNotMatch(out, /\? OpenAI API key/, 'must skip OpenAI prompt');
+  assert.doesNotMatch(out, /\? Anthropic API key/, 'must skip Anthropic prompt');
+  assert.match(out, /Reading secrets from environment variables/, 'must announce --from-env mode');
+
+  // Persist-first still applies — secrets.env written before pg.
+  const secrets = readSecrets(home);
+  assert.match(secrets, /^DATABASE_URL=postgres:\/\/postgres:bad@127\.0\.0\.1:1\/postgres/m);
+  assert.match(secrets, /^ANTHROPIC_API_KEY=sk-ant-/m, 'optional Anthropic key should be persisted when env-supplied');
+});
+
+test('--from-env exits 2 with an actionable message when a required env var is missing', async () => {
+  const home = freshHome();
+
+  const env = {
+    SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+    // SUPABASE_SERVICE_ROLE_KEY intentionally omitted
+    DATABASE_URL: 'postgres://postgres:bad@127.0.0.1:1/postgres',
+    OPENAI_API_KEY: 'sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  };
+
+  const { code, out } = await runWizard(home, ['--from-env'], [], { extraEnv: env });
+
+  assert.equal(code, 2, 'missing required env should exit 2 (config error path)');
+  assert.match(out, /SUPABASE_SERVICE_ROLE_KEY/, 'must name the missing variable');
+  assert.match(out, /termdeck init --mnestra --from-env/, 'must show the corrected invocation');
+});
+
+test('--from-env validates secret shapes and rejects malformed values', async () => {
+  const home = freshHome();
+
+  const env = {
+    SUPABASE_URL: 'not-a-url',
+    SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    DATABASE_URL: 'postgres://postgres:bad@127.0.0.1:1/postgres',
+    OPENAI_API_KEY: 'sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  };
+
+  const { code, out } = await runWizard(home, ['--from-env'], [], { extraEnv: env });
+
+  assert.equal(code, 2, 'malformed required env should exit 2');
+  assert.match(out, /SUPABASE_URL is malformed/);
+
+  // No secrets.env should have been created — we bailed before the write.
+  const secrets = readSecrets(home);
+  assert.equal(secrets, null, 'no secrets.env should be written when --from-env validation fails');
 });
 
 // ── Existing tests already cover prompts.askSecret reliability. ────────────

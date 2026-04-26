@@ -22,6 +22,11 @@
 //                       set is already on disk (otherwise the wizard asks
 //                       interactively before reusing)
 //   --reset             Ignore saved secrets and re-prompt for everything
+//   --from-env          Skip every prompt; read all five secrets from the
+//                       process environment (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+//                       DATABASE_URL, OPENAI_API_KEY, ANTHROPIC_API_KEY).
+//                       Required for terminals that fight with our raw-mode
+//                       secret prompt and for CI / scripted installs.
 //   --dry-run           Print what the wizard would do; don't touch the DB or filesystem
 //   --skip-verify       Skip the final memory_status_aggregation() check
 //
@@ -52,6 +57,12 @@ const HELP = [
   '  --yes             Reuse saved secrets without prompting (if a complete',
   '                    set is already on disk in ~/.termdeck/secrets.env)',
   '  --reset           Ignore saved secrets and re-prompt for everything',
+  '  --from-env        Skip every prompt; read SUPABASE_URL,',
+  '                    SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL, OPENAI_API_KEY,',
+  '                    ANTHROPIC_API_KEY from environment variables instead.',
+  '                    Useful for terminals that fight with raw-mode secret',
+  '                    prompts (MobaXterm SSH, some Windows shells) and for',
+  '                    CI / scripted installs.',
   '  --dry-run         Print the plan without touching the database or filesystem',
   '  --skip-verify     Skip the final memory_status_aggregation() sanity call',
   '',
@@ -70,15 +81,89 @@ const HELP = [
 ].join('\n');
 
 function parseFlags(argv) {
-  const out = { help: false, yes: false, reset: false, dryRun: false, skipVerify: false };
+  const out = {
+    help: false,
+    yes: false,
+    reset: false,
+    fromEnv: false,
+    dryRun: false,
+    skipVerify: false
+  };
   for (const a of argv) {
     if (a === '--help' || a === '-h') out.help = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
     else if (a === '--reset') out.reset = true;
+    else if (a === '--from-env') out.fromEnv = true;
     else if (a === '--dry-run') out.dryRun = true;
     else if (a === '--skip-verify') out.skipVerify = true;
   }
   return out;
+}
+
+// Build inputs from process.env directly, skipping every askSecret prompt.
+// Used by --from-env so callers on terminals that fight with our raw-mode
+// secret prompt (Brad's MobaXterm SSH report 2026-04-25, fourth occurrence)
+// can hand the wizard their secrets via env vars instead. Also makes the
+// wizard scriptable for CI / one-shot installers. Returns the same shape
+// as collectInputs() so the rest of main() doesn't care which path filled
+// it. Throws with an actionable message when a required env var is missing
+// or fails its shape check — `--from-env` is strict by design (no fallback
+// to prompts), since callers using it have explicitly opted into the
+// non-interactive path.
+function inputsFromEnv() {
+  const env = process.env;
+  const missing = [];
+  const required = {
+    SUPABASE_URL: env.SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+    DATABASE_URL: env.DATABASE_URL,
+    OPENAI_API_KEY: env.OPENAI_API_KEY
+  };
+  for (const [k, v] of Object.entries(required)) {
+    if (!v || !v.trim()) missing.push(k);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `--from-env is missing required environment variable(s): ${missing.join(', ')}.\n` +
+      'Set every required key in your shell or pass them on the command line, e.g.:\n' +
+      '  SUPABASE_URL=https://xyz.supabase.co \\\n' +
+      '  SUPABASE_SERVICE_ROLE_KEY=sb_secret_... \\\n' +
+      '  DATABASE_URL=postgres://postgres.<ref>:<pw>@<pooler-host>:6543/postgres \\\n' +
+      '  OPENAI_API_KEY=sk-proj-... \\\n' +
+      '  ANTHROPIC_API_KEY=sk-ant-... \\\n' +
+      '  termdeck init --mnestra --from-env'
+    );
+  }
+
+  const projectUrl = urlHelper.parseProjectUrl(required.SUPABASE_URL);
+  if (!projectUrl.ok) {
+    throw new Error(`SUPABASE_URL is malformed: ${projectUrl.error}`);
+  }
+
+  const dbErr = urlHelper.looksLikePostgresUrl(required.DATABASE_URL);
+  if (dbErr) throw new Error(`DATABASE_URL: ${dbErr}`);
+
+  const srErr = urlHelper.looksLikeServiceRole(required.SUPABASE_SERVICE_ROLE_KEY);
+  if (srErr) throw new Error(`SUPABASE_SERVICE_ROLE_KEY: ${srErr}`);
+
+  const oaErr = urlHelper.looksLikeOpenAiKey(required.OPENAI_API_KEY);
+  if (oaErr) throw new Error(`OPENAI_API_KEY: ${oaErr}`);
+
+  const anthropicKey = (env.ANTHROPIC_API_KEY || '').trim() || null;
+  if (anthropicKey) {
+    const aErr = urlHelper.looksLikeAnthropicKey(anthropicKey);
+    if (aErr) {
+      process.stdout.write(`  (warning: ANTHROPIC_API_KEY ${aErr} — storing anyway)\n`);
+    }
+  }
+
+  return {
+    projectUrl,
+    serviceRoleKey: required.SUPABASE_SERVICE_ROLE_KEY,
+    databaseUrl: required.DATABASE_URL,
+    openaiKey: required.OPENAI_API_KEY,
+    anthropicKey
+  };
 }
 
 function printBanner() {
@@ -354,11 +439,25 @@ async function main(argv) {
   printBanner();
 
   let inputs;
-  try {
-    inputs = await collectInputs({ yes: flags.yes, reset: flags.reset });
-  } catch (err) {
-    process.stderr.write(`\n[init --mnestra] ${err.message}\n`);
-    return 2;
+  if (flags.fromEnv) {
+    // Skip every interactive prompt — secrets come from process.env. Used
+    // when the user's terminal fights with the raw-mode secret prompt
+    // (Brad/MobaXterm SSH, 2026-04-25 fourth report) or when the wizard
+    // is being driven from a CI/install script.
+    process.stdout.write('Reading secrets from environment variables (--from-env).\n\n');
+    try {
+      inputs = inputsFromEnv();
+    } catch (err) {
+      process.stderr.write(`\n[init --mnestra] ${err.message}\n`);
+      return 2;
+    }
+  } else {
+    try {
+      inputs = await collectInputs({ yes: flags.yes, reset: flags.reset });
+    } catch (err) {
+      process.stderr.write(`\n[init --mnestra] ${err.message}\n`);
+      return 2;
+    }
   }
 
   // Persist secrets BEFORE pg work. If the wizard dies past this point
