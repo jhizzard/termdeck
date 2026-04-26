@@ -1,0 +1,140 @@
+---
+title: "v0.6 — what changed in the setup wizard, and why"
+description: "The v0.6.0 → v0.6.4 release arc rebuilt the init wizards around persist-first ordering, idempotent re-runs, and access-token guidance. Here's what to know if you're upgrading or installing fresh."
+draft: true
+---
+
+The v0.6 series shipped fast — five point releases between 2026-04-25 and 2026-04-26 — and most of the changes are in the setup wizards. If you ran `termdeck init --mnestra` or `termdeck init --rumen` on v0.5.x or v0.6.0 and bounced off, the rest of this post explains what was broken, what's fixed, and what your upgrade path looks like.
+
+## TL;DR
+
+```bash
+npm cache clean --force
+npm i -g @jhizzard/termdeck@latest      # should resolve 0.6.4
+termdeck --version                       # confirm: 0.6.4
+```
+
+If you have an existing partial setup from v0.6.0–v0.6.2, your `~/.termdeck/secrets.env` may have only some keys — that's expected, and v0.6.3+ recovers cleanly:
+
+```bash
+termdeck init --mnestra --yes            # reuses saved secrets, skips prompts, retries pg
+```
+
+If your terminal fights with the secret prompt entirely (rare — usually only happens on certain SSH/Windows combinations), v0.6.4 added a non-interactive bypass:
+
+```bash
+SUPABASE_URL=https://xyz.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=sb_secret_... \
+DATABASE_URL=postgres://postgres.<ref>:<pw>@<host>:6543/postgres \
+OPENAI_API_KEY=sk-proj-... \
+ANTHROPIC_API_KEY=sk-ant-... \
+termdeck init --mnestra --from-env
+```
+
+For Rumen, the most common blocker is a missing Supabase access token. v0.6.4 detects this and walks you through it automatically. If you want to set it up before running the wizard:
+
+```bash
+# Generate a Personal Access Token at:
+#   https://supabase.com/dashboard/account/tokens
+export SUPABASE_ACCESS_TOKEN=sbp_...
+termdeck init --rumen
+```
+
+That's the upgrade path. The rest of this post is the why.
+
+## What v0.6.0 added
+
+v0.6.0 was the **Supabase MCP wizard auto-fill** release. Instead of pasting four credentials, you paste a Supabase Personal Access Token, the wizard lists your projects, and you pick one. The existing migrate-and-configure flow takes it from there.
+
+Same release also added the `termdeck doctor` subcommand and a rate-limited startup update-check, so users running stale versions can see a `[hint]` line on startup pointing at the new release.
+
+This is the version where update-check signals start showing up in your terminal, and where the in-browser Tier 2 wizard becomes a viable alternative to the CLI wizard.
+
+## What v0.6.1 → v0.6.4 fixed
+
+The CLI wizard had a series of failure modes that surfaced in real-world testing on terminals that don't behave like macOS Terminal.app. Specifically: MobaXterm SSH, Windows shells that send CRLF for Enter, and any environment that emits ANSI escape sequences (focus changes, cursor reports, paste-bracketing) into stdin.
+
+**v0.6.1 — `askSecret` raw-mode hardening.** Three bugs in one prompt loop:
+- CRLF leak — `\r` resolved the prompt, `\n` polluted the next read.
+- ANSI escape sequences ending up in the password buffer.
+- Hard SIGINT on raw-mode Ctrl-C, which masked the CRLF leak.
+
+7 regression fixtures locked it down. CRLF, LF, mid-buffer ANSI cursor-position-reports, bracketed-paste markers, soft-cancel on Ctrl-C, DEL/backspace, type-ahead carry-over.
+
+**v0.6.2 — drop the post-key confirm gate.** The `confirm("Proceed with setup for project X?")` that ran immediately after the Anthropic key prompt used readline against the same stdin we'd just been carefully cleaning. Stray bytes carried into readline and resolved the confirm as a cancel before the user could answer. The user already opted in by typing `termdeck init --mnestra` and supplying every secret; Mnestra's migrations are `IF NOT EXISTS` so re-runs are idempotent. The confirm gate was friction without value.
+
+**v0.6.3 — persist-first ordering.** This is the load-bearing fix. The wizard previously ran `pgRunner.connect`, `checkExistingStore`, and `applyMigrations` *before* `writeLocalConfig`. Any pg-side failure exited the wizard before secrets ever hit disk, so the user had to retype every credential on the next attempt.
+
+The fix splits the writes:
+- `writeSecretsFile()` runs immediately after `collectInputs()`, **before** any pg work. Secrets land on disk regardless of what the database does.
+- `writeYamlConfig()` (which flips `rag.enabled: true`) runs only **after** migrations apply cleanly, so the server can never come up against a half-applied schema.
+
+v0.6.3 also added the resume path. On the next run, `collectInputs` reads `~/.termdeck/secrets.env`, sees it's complete, and offers *"Found saved secrets. Reuse?"* `--yes` skips the prompt and goes straight to pg. `--reset` ignores saved values and re-prompts.
+
+On any pg failure, the wizard now prints the resume hint pointing the user at `termdeck init --mnestra --yes`.
+
+**v0.6.4 — Rumen access-token hint + `--from-env` bypass.** Two unrelated improvements bundled because they shipped on the same day:
+
+1. `termdeck init --rumen` now detects when `supabase link` fails because of a missing access token, and emits a path-aware hint pointing at the Supabase PAT dashboard plus the exact `export SUPABASE_ACCESS_TOKEN=sbp_...` command. The Supabase CLI's stock error message suggests `supabase login` as one of two options, but `supabase login` opens a browser — broken for SSH or headless installs.
+
+2. `termdeck init --mnestra --from-env` skips every secret prompt and reads all five secrets from `process.env`. Useful for any terminal that fights with raw-mode prompts, and for CI / one-shot installers. Strict by design: missing or malformed env vars exit 2 with an actionable error.
+
+## What's still on the to-do list
+
+One thing the v0.6 series did NOT fix: **migration idempotency** for re-runs against an already-upgraded Mnestra store. Migration `001_mnestra_tables.sql` has a `CREATE OR REPLACE FUNCTION` whose return type was changed by migration 005. Postgres lets you `CREATE OR REPLACE` a function body, but not its return type — so re-running the full suite from migration 001 against a v0.2-upgraded store fails with *"cannot change return type of existing function"*.
+
+This doesn't affect fresh installs (the function doesn't exist yet, so `CREATE OR REPLACE` succeeds). It does affect anyone re-running `termdeck init --mnestra` against an existing populated store — which is the exact path the v0.6.3 `--yes` resume flow encourages. Two fix options on the table for the next sprint: explicit `DROP FUNCTION ... CASCADE` before recreating, or a `schema_migrations` tracking table that marks already-applied migrations and skips them.
+
+For now, if you're hitting this against an already-upgraded store, you don't need to re-run migrations — your schema is fine. The v0.6.4 wizard's pg failure path will print the resume hint pointing at `--yes`, but if migrations are the failure point on a populated store, you can safely skip the wizard entirely and just use TermDeck against your existing Mnestra.
+
+## Upgrade checklist
+
+If you're on **v0.5.x or v0.6.0** and have never successfully completed Tier 2 setup:
+
+```bash
+npm cache clean --force
+npm i -g @jhizzard/termdeck@latest
+termdeck init --mnestra
+```
+
+The wizard will guide you through the five prompts, persist your secrets immediately, run migrations, and verify. If anything fails between secrets-saved and verify, re-run with `--yes` to skip the prompts and retry just the database step.
+
+If you're on **v0.6.1 or v0.6.2** with a partial `~/.termdeck/secrets.env` (some keys present from a prior failed attempt):
+
+```bash
+npm cache clean --force
+npm i -g @jhizzard/termdeck@latest
+termdeck init --mnestra --yes
+```
+
+The `--yes` flag tells the wizard to use saved secrets without re-prompting. If your saved set is incomplete, the wizard will tell you which keys are missing and re-prompt for those. Add `--reset` if you want to ignore saved values entirely and start over.
+
+If you're on **v0.6.3** and stuck on `termdeck init --rumen` with the *"Access token not provided"* error:
+
+```bash
+npm i -g @jhizzard/termdeck@latest    # upgrade to 0.6.4
+# Then the wizard's new hint will walk you through the PAT export.
+```
+
+Or skip ahead manually:
+
+```bash
+# Generate a token at https://supabase.com/dashboard/account/tokens
+export SUPABASE_ACCESS_TOKEN=sbp_...
+termdeck init --rumen
+```
+
+## Why so many releases in 36 hours
+
+The v0.6.1 → v0.6.4 series was driven by a single tester's incident reports against `npx @jhizzard/termdeck-stack` from MobaXterm SSH. Each report surfaced a real failure mode, and each fix made the next failure mode visible. The structural fix that closed the loop — persist-first ordering — landed in v0.6.3 and was the right architectural shape from the start; v0.6.1 and v0.6.2 were patching symptoms above it.
+
+The longer write-up of what that taught me about wizard design is on my personal blog. The short version: when a user reports the same flow failing three times with different surface symptoms, stop fixing the symptom and ask what mental contract they think is broken. The user's contract was "I gave you my keys, why did you lose them?" — that contract lives at the data-lifecycle layer, not the prompt layer.
+
+## Versions live on npm
+
+- `@jhizzard/termdeck@0.6.4`
+- `@jhizzard/termdeck-stack@0.2.3`
+- `@jhizzard/mnestra@0.2.1` (unchanged through this series)
+- `@jhizzard/rumen@0.4.3` (unchanged through this series)
+
+Reach out if you hit something this post doesn't cover. The wizard tells you where your secrets are saved, what failed, and how to retry — paste the output verbatim and I'll route it back.

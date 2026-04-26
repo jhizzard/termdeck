@@ -5,6 +5,31 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.4] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.5` and
+  `@jhizzard/mnestra@0.2.2`, both shipped 2026-04-26 to fix a schema
+  drift between the published Mnestra migrations and Rumen's runtime
+  contract. The `memory_items.source_session_id` column existed in the
+  pre-rebrand `rag-system` schema but was dropped from the published
+  Mnestra migrations during the Engram → Mnestra rename. Rumen v0.4.x
+  still required it, so every fresh `termdeck init --mnestra` →
+  `termdeck init --rumen` install path failed Rumen's first cron tick
+  with `column m.source_session_id does not exist`. Both packages now
+  ship migration `007_add_source_session_id.sql` (idempotent, TEXT,
+  partial index). See the root `CHANGELOG.md` v0.6.5 entry and
+  `@jhizzard/mnestra` v0.2.2 entry for full context.
+
+### Notes
+- This is the first release where two underlying packages bumped
+  together as a coordinated set. The meta-installer behavior is
+  unchanged — `npx @jhizzard/termdeck-stack` always pulls each layer's
+  `@latest`, so a fresh run picks up both fixes automatically. Anyone
+  on a partially-installed v0.6.4 stack should run
+  `termdeck init --mnestra --yes` after upgrading; the new migration
+  applies idempotently without re-prompting for credentials.
+
 ## [0.2.3] — 2026-04-26
 
 ### Documentation

@@ -16,6 +16,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.5] - 2026-04-26
+
+### Fixed
+- **`termdeck init --rumen` deploying cleanly but the Edge Function failing on every cron tick with `column m.source_session_id does not exist` (Postgres SQLSTATE 42703).** Reported 2026-04-26 by Brad after v0.6.4 unblocked his Rumen install. The Rumen Edge Function deploys and runs, but the manual POST test returns 500 and every subsequent `pg_cron` tick fails inside `extract.ts` at `SELECT m.source_session_id ... FROM memory_items m GROUP BY m.source_session_id`.
+- Root cause: schema drift between the published Mnestra migration set and Rumen's runtime contract. The `source_session_id TEXT` column on `memory_items` existed in the original `rag-system` schema (and is still present on stores that were upgraded from rag-system → Engram → Mnestra), but was dropped from the published Mnestra migrations during the rebrand. Rumen v0.4.x's Extract phase depends on it. Fresh installs of TermDeck → Mnestra got a schema that worked for TermDeck/Flashback but couldn't host Rumen.
+- Fix: new bundled migration `007_add_source_session_id.sql` adds the column back as `TEXT`, idempotent (`ADD COLUMN IF NOT EXISTS`), with a partial index on `WHERE source_session_id IS NOT NULL`. Mirrored to the Mnestra source repo's `migrations/` directory so direct `@jhizzard/mnestra` installers also pick it up. NULL on every existing row is the correct default — old memories were never tagged with a session, and Rumen's `WHERE source_session_id IS NOT NULL` filter excludes them naturally.
+- The migration loader at `packages/server/src/setup/migrations.js` already globs `*.sql` from `mnestra-migrations/` and applies in lexical order, so the new file is picked up automatically — no code changes needed.
+
+### Notes
+- **Recovery path for anyone affected (e.g. Brad):** `npm cache clean --force && npm i -g @jhizzard/termdeck@latest && termdeck init --mnestra --yes`. The `--yes` flag reuses saved secrets, the wizard re-applies all 7 migrations idempotently, the new column lands, and the next pg_cron tick (within 15 min) will succeed against memory_items. No Edge Function redeploy required — the failure is at query time, not deploy time.
+- This is the **migration drift between layers** problem Codex flagged in the 2026-04-25 audit. Sprint-32's "schema_migrations tracking table" candidate (deferred from v0.6.3 live test) becomes more important after this incident — currently every fresh install re-runs all 7 migrations, which works because they're all idempotent, but a `schema_migrations` table would make this auditable.
+- Stack-installer audit-trail bumped 0.2.3 → 0.2.4. Mnestra source repo also bumped 0.2.1 → 0.2.2 to ship the migration in published `@jhizzard/mnestra` for direct installers.
+
 ## [0.6.4] - 2026-04-26
 
 ### Fixed
