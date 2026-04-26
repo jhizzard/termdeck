@@ -97,53 +97,80 @@ class RAGIntegration {
 
   // Canonical project tag for a session. Prefers the explicit config.yaml name
   // (set at session creation), falls back to cwd → config.projects resolution.
+  // Returns { tag, source } so callers can audit which resolution path fired —
+  // explicit (session.meta.project), cwd (cwd matched a config.projects entry),
+  // fallback (cwd basename), or null (no cwd, no config). Sprint 34: the
+  // chopin-nashville mis-tag came from an out-of-repo writer, but source
+  // attribution here makes any future TermDeck-side regression visible in logs.
+  _resolveProjectAttribution(session) {
+    if (session.meta.project) return { tag: session.meta.project, source: 'explicit' };
+    const tag = resolveProjectName(session.meta.cwd, this.config);
+    if (!tag) return { tag: null, source: 'none' };
+    const cwdResolved = session.meta.cwd && path.resolve(String(session.meta.cwd).replace(/^~/, os.homedir()));
+    const matchedConfig = !!cwdResolved && Object.values((this.config && this.config.projects) || {}).some((def) => {
+      if (!def || typeof def.path !== 'string') return false;
+      const p = path.resolve(def.path.replace(/^~/, os.homedir()));
+      return cwdResolved === p || cwdResolved.startsWith(p + path.sep);
+    });
+    return { tag, source: matchedConfig ? 'cwd' : 'fallback' };
+  }
+
   _projectFor(session) {
-    if (session.meta.project) return session.meta.project;
-    return resolveProjectName(session.meta.cwd, this.config);
+    return this._resolveProjectAttribution(session).tag;
+  }
+
+  // Single attribution + observability point for session events. Logs once per
+  // record() so future drift in the project-resolution chain (e.g. a writer
+  // that bypasses _projectFor and stamps a raw path segment) is visible in
+  // stdout. Cheap: ~one log line per RAG event, off the hot path.
+  _recordForSession(session, eventType, payload) {
+    const { tag, source } = this._resolveProjectAttribution(session);
+    console.log(`[rag] write project=${tag ?? 'null'} source=${source} session=${session.id} event=${eventType}`);
+    this.record(session.id, eventType, payload, tag);
   }
 
   // Event types to record
   onSessionCreated(session) {
-    this.record(session.id, 'session_created', {
+    this._recordForSession(session, 'session_created', {
       type: session.meta.type,
       command: session.meta.command,
       cwd: session.meta.cwd,
       reason: session.meta.reason
-    }, this._projectFor(session));
+    });
   }
 
   onCommandExecuted(session, command, outputSnippet) {
-    this.record(session.id, 'command_executed', {
+    this._recordForSession(session, 'command_executed', {
       command,
       output_snippet: outputSnippet?.slice(0, 500), // Truncate for storage
       type: session.meta.type
-    }, this._projectFor(session));
+    });
   }
 
   onStatusChanged(session, oldStatus, newStatus) {
-    this.record(session.id, 'status_changed', {
+    this._recordForSession(session, 'status_changed', {
       from: oldStatus,
       to: newStatus,
       detail: session.meta.statusDetail,
       type: session.meta.type
-    }, this._projectFor(session));
+    });
   }
 
   onSessionEnded(session) {
-    this.record(session.id, 'session_ended', {
+    this._recordForSession(session, 'session_ended', {
       type: session.meta.type,
       duration_ms: Date.now() - new Date(session.meta.createdAt).getTime(),
       command_count: session.meta.lastCommands.length,
       exit_code: session.meta.exitCode
-    }, this._projectFor(session));
+    });
   }
 
   onFileEdited(session, filepath, editType) {
-    this.record(session.id, 'file_edited', {
+    this._recordForSession(session, 'file_edited', {
       filepath,
       edit_type: editType,
       type: session.meta.type
-    }, this._projectFor(session));
+    });
   }
 
   // Circuit breaker check — returns true if pushes to this table are disabled.

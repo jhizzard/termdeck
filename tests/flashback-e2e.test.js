@@ -367,3 +367,192 @@ test('mnestra bridge returns well-shaped response when there are zero hits', asy
   assert.equal(typeof body.total, 'number', '`total` must be a number');
   assert.equal(body.total, 0, '`total` must be 0 when there are no hits');
 });
+
+// Sprint 34 T3 — project-bound Flashback content test.
+//
+// The first test in this file proves the trigger pipeline fires with
+// meta.project=null. v0.7.1 unblocked that path. This test covers the
+// project-bound path: a session created with project='termdeck' must, on
+// hitting the canonical shell error, surface a proactive_memory frame
+// whose memories array is non-empty AND whose memory.project values are
+// 'termdeck' or null (never 'chopin-nashville' for TermDeck content).
+//
+// Pre-flight: the test queries /api/ai/query with project='termdeck'. If
+// the corpus has zero matching memories (T2's backfill hasn't run yet, or
+// fresh install), the test reports "needs-backfill" via t.skip with a
+// specific message rather than a generic 8s timeout — a black-hole skip
+// would mask a real regression.
+
+const PROJECT_PROBE_QUESTION = 'shell error cat no such file or directory';
+
+test('project-bound flashback: termdeck session surfaces termdeck/null memories (not chopin-nashville)', async (t) => {
+  if (skipAll) return t.skip(skipReason);
+
+  // 0. Pre-flight: confirm the corpus has at least one memory tagged
+  //    'termdeck' so the trigger path has something to hit. If zero, this
+  //    is the v0.7.2-pre / pre-backfill state — skip with a directive
+  //    message so a reviewer reading test output sees what's needed.
+  let preflightMemories = null;
+  try {
+    const probe = await fetchWithTimeout(`${BASE_URL}/api/ai/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: PROJECT_PROBE_QUESTION, project: 'termdeck' }),
+    });
+    if (probe.ok) {
+      const body = await probe.json();
+      preflightMemories = Array.isArray(body.memories) ? body.memories : [];
+    }
+  } catch {
+    // ignore — we'll skip below
+  }
+  if (preflightMemories === null) {
+    return t.skip('mnestra bridge probe failed — cannot confirm corpus state');
+  }
+  if (preflightMemories.length === 0) {
+    return t.skip(
+      'corpus has zero memories tagged project="termdeck" — needs-backfill: ' +
+      'run scripts/migrate-chopin-nashville-tag.sql (Sprint 34 T2) to reclassify ' +
+      'mis-tagged chopin-nashville rows before this assertion can be exercised.'
+    );
+  }
+  t.diagnostic(`preflight: ${preflightMemories.length} termdeck-tagged memories matched probe question`);
+
+  // 1. Spawn a bash session bound to project='termdeck'. The server resolves
+  //    cwd from config.projects['termdeck'].path when present; if that path
+  //    is missing in config.yaml we fall back to the home dir, which is
+  //    fine for the writer test — the project tag itself is what matters.
+  const startTs = Date.now();
+  const ms = () => Date.now() - startTs;
+  const createRes = await fetchWithTimeout(`${BASE_URL}/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command: 'bash',
+      label: 'flashback-e2e-project-bound',
+      project: 'termdeck',
+    }),
+  });
+  assert.equal(createRes.status, 201, 'POST /api/sessions must return 201');
+  const session = await createRes.json();
+  assert.ok(session.id, 'session response must include an id');
+  const sessionId = session.id;
+  t.diagnostic(`[T3] project-bound session created at ${ms()}ms id=${sessionId} project=${session.project ?? session.meta?.project}`);
+
+  if (session.meta?.status === 'errored') {
+    try {
+      await fetchWithTimeout(`${BASE_URL}/api/sessions/${sessionId}`, { method: 'DELETE' });
+    } catch { /* best-effort cleanup */ }
+    return t.skip(`session failed to spawn: ${session.meta.statusDetail || 'unknown'}`);
+  }
+
+  // The server must echo back project='termdeck' on the created session.
+  // If it doesn't, the session-create handler is dropping the field and
+  // every subsequent assertion would be testing the wrong thing.
+  const echoedProject = session.project ?? session.meta?.project;
+  assert.equal(
+    echoedProject, 'termdeck',
+    `created session.project should echo 'termdeck'; got ${JSON.stringify(echoedProject)}. ` +
+    `If null, the API is dropping the project field on session-create.`
+  );
+
+  // 2. Watch the WS for proactive_memory frames bound to this session.
+  let proactiveMemoryFrame = null;
+  let wsOpen = false;
+  const ws = new WebSocket(`${WS_URL}?session=${sessionId}`);
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'proactive_memory') proactiveMemoryFrame = msg.hit;
+    } catch {
+      // ignore non-JSON frames
+    }
+  });
+  await new Promise((resolve) => {
+    const done = () => resolve();
+    ws.once('open', () => { wsOpen = true; done(); });
+    ws.once('error', done);
+    setTimeout(done, 2000).unref?.();
+  });
+  t.diagnostic(`[T3] ws ${wsOpen ? 'open' : 'failed-or-timed-out'} at ${ms()}ms`);
+
+  if (!wsOpen) {
+    try {
+      await fetchWithTimeout(`${BASE_URL}/api/sessions/${sessionId}`, { method: 'DELETE' });
+    } catch { /* best-effort */ }
+    return t.skip('websocket failed to open — cannot observe proactive_memory frame');
+  }
+
+  try {
+    // Let the shell prompt land before we write to it.
+    await sleep(500);
+
+    // 3. Trigger the canonical shell error. v0.7.1's PATTERNS.shellError
+    //    extension makes bash's "No such file or directory" a flashback
+    //    trigger; v0.7.2's writer fix is what makes the resulting bridge
+    //    query return termdeck-tagged content.
+    const inputRes = await fetchWithTimeout(`${BASE_URL}/api/sessions/${sessionId}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'cat /nonexistent/file/path\n' }),
+    });
+    assert.equal(inputRes.status, 200, 'POST /api/sessions/:id/input must return 200');
+
+    // 4. Wait for the proactive_memory WS frame. The bridge fires the
+    //    Mnestra query asynchronously after rag_events writes, so give
+    //    it a generous budget. EVENT_POLL_TIMEOUT_MS already accounts
+    //    for the analyzer + bridge + WS roundtrip.
+    await pollUntil(() => proactiveMemoryFrame || null, {
+      timeoutMs: EVENT_POLL_TIMEOUT_MS,
+      intervalMs: EVENT_POLL_INTERVAL_MS,
+    });
+
+    assert.ok(
+      proactiveMemoryFrame,
+      `no proactive_memory frame received within ${EVENT_POLL_TIMEOUT_MS}ms for project='termdeck' session — ` +
+      `either the bridge is not being queried with project='termdeck' or the corpus mis-tag is hiding all matches.`
+    );
+
+    // 5. The frame must carry a non-empty memories array. An empty array
+    //    means the bridge was queried but returned zero matches — which,
+    //    given the preflight confirmed termdeck-tagged memories exist, is
+    //    a writer-side regression where the session is being filtered with
+    //    a stale or wrong project tag.
+    const memories = Array.isArray(proactiveMemoryFrame.memories)
+      ? proactiveMemoryFrame.memories
+      : [];
+    t.diagnostic(`[T3] proactive_memory frame received with ${memories.length} memories`);
+
+    assert.ok(
+      memories.length > 0,
+      `proactive_memory frame.memories is empty even though ${preflightMemories.length} termdeck-tagged memories ` +
+      `match the probe — the bridge is filtering on a different project tag than the session was created with.`
+    );
+
+    // 6. Every memory must be tagged 'termdeck' or null. Anything tagged
+    //    'chopin-nashville' for a project='termdeck' session is the v0.7.1
+    //    regression we shipped v0.7.2 to fix; it must never come back
+    //    silently. (null is acceptable because some legitimate cross-
+    //    project memories — universal patterns, e.g. — are written without
+    //    a project tag.)
+    const offenders = memories.filter(
+      (m) => m && m.project != null && m.project !== 'termdeck'
+    );
+    if (offenders.length > 0) {
+      const sample = offenders.slice(0, 3).map(
+        (m) => `project=${JSON.stringify(m.project)} content=${JSON.stringify((m.content || '').slice(0, 80))}`
+      ).join('\n  ');
+      t.diagnostic(`[T3] offending memories:\n  ${sample}`);
+    }
+    assert.equal(
+      offenders.length, 0,
+      `${offenders.length} of ${memories.length} memories returned to a project='termdeck' session ` +
+      `carry a non-termdeck, non-null project tag — Sprint 34 regression. Expected only 'termdeck' or null.`
+    );
+  } finally {
+    try { ws.close(); } catch { /* already closed */ }
+    try {
+      await fetchWithTimeout(`${BASE_URL}/api/sessions/${sessionId}`, { method: 'DELETE' });
+    } catch { /* best-effort cleanup */ }
+  }
+});

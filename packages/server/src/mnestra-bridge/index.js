@@ -231,12 +231,20 @@ function createBridge(config) {
     // back to resolving the session's cwd against config.projects so queries
     // don't leak into unrelated repos via basename collisions.
     let effectiveProject = project;
+    let projectSource = project ? 'explicit' : 'none';
     if (!effectiveProject) {
       const ctxCwd = cwd || (sessionContext && sessionContext.cwd);
       if (ctxCwd) {
         effectiveProject = resolveProjectName(ctxCwd, config);
+        projectSource = effectiveProject ? 'cwd' : 'none';
       }
     }
+
+    // Sprint 34 observability: every Flashback query announces its project tag
+    // and how it was resolved. If the writer chain is ever mis-emitting a tag
+    // (as happened pre-v0.7.2 with the `chopin-nashville` regression from the
+    // out-of-repo session-end hook), the mismatch surfaces here at query time.
+    console.log(`[mnestra-bridge] query project=${effectiveProject ?? 'ALL'} source=${searchAll ? 'searchAll' : projectSource} mode=${mode}`);
 
     switch (mode) {
       case 'webhook':

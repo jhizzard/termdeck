@@ -5,6 +5,59 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.3.2] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.7.2`,
+  the patch release that closes the second of two converging bugs
+  diagnosed in Sprint 33's *"Flashbacks are vaporware"* investigation.
+  v0.7.1 fixed the analyzer regex; v0.7.2 repairs the mis-tagged
+  corpus and pins TermDeck-side resolver behavior against future
+  drift. Sprint 34's 4+1 audit (~15 minutes wall-clock) reset the
+  framing: **the chopin-nashville source is not in TermDeck.** The
+  resolver in `packages/server/src/rag.js` is correct (longest-prefix
+  wins with explicit `path.sep` boundary; verified against the live
+  15-project `~/.termdeck/config.yaml`); every TermDeck-side writer
+  routes through `_projectFor`; Sprint 21 T2's fix landed and is
+  intact. The 1,165 mis-tagged `memory_items` rows came from
+  `~/.claude/hooks/memory-session-end.js:17` — Josh's user-owned
+  global Claude Code harness hook, outside any package — which
+  pattern-matches `/ChopinNashville|ChopinInBohemia/i` first-match-wins
+  on cwd with no `termdeck` entry above it. Rumen `extract.ts:62`
+  (`(ARRAY_AGG(m.project))[1]`) then propagates the bad tag every
+  15 minutes via synthesis writeback.
+- **What ships in v0.7.2 (within-repo).** TermDeck-side writer-side
+  observability: `[rag] write project=<tag> source=<...>` and
+  `[mnestra-bridge] query project=<tag> source=<...> mode=<...>`
+  log lines on every event/query (~30 LOC across `rag.js` and
+  `mnestra-bridge/index.js`). NEW `tests/project-tag-resolution.test.js`
+  with 12 cases pinning the resolver contract — leaf wins over
+  ancestor, explicit `meta.project` beats cwd, `path.sep` boundary
+  guards against false-prefix matches, the regression pin
+  (`.../ChopinNashville/SideHustles/TermDeck/termdeck` resolves to
+  `termdeck`). One-time corpus repair shipped as
+  `scripts/migrate-chopin-nashville-tag.sql` (~210 LOC,
+  three-block dry-run / UPDATE / REVERT layout, conservative
+  multi-branch heuristic, reversible via a `metadata.rebrand_v0_7_2_from`
+  stash). Live-corpus regression catches in
+  `tests/project-tag-invariant.test.js` (6 tests) and a project-bound
+  extension to `tests/flashback-e2e.test.js` (now 3 tests).
+- **What v0.7.2 deliberately does NOT fix.** The harness hook
+  is Josh-owned and out of any package; v0.7.2 documents the
+  one-paste fix in the root `CHANGELOG.md` and POSTMORTEM. A
+  prospective `@jhizzard/rumen@0.4.4` would harden the
+  `(ARRAY_AGG)[1]` synthesis tag inheritance, but fixing the
+  hook first heals Rumen on next tick.
+
+### Notes
+- No installer behavior change. `npx @jhizzard/termdeck-stack` always
+  pulls `@jhizzard/termdeck@latest`. Mnestra (0.2.2) and Rumen (0.4.3)
+  unchanged through this bump.
+- Live-store backfill execution: deferred to orchestrator + Josh
+  decision after Block 1 sample inspection. Script ships in the
+  TermDeck package; runs via
+  `psql "$DATABASE_URL" -f scripts/migrate-chopin-nashville-tag.sql`.
+
 ## [0.3.1] — 2026-04-26
 
 ### Documentation

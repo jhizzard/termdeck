@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck-stack",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "One-command installer for the TermDeck developer memory stack: TermDeck + Mnestra + Rumen + Supabase MCP",
   "bin": {
     "termdeck-stack": "./src/index.js"
