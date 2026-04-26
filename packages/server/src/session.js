@@ -69,7 +69,15 @@ const PATTERNS = {
   // Stricter line-anchored variant for Claude Code, whose tool output (grep
   // results, test logs, file contents) routinely mentions "Error" mid-line
   // without representing an actual failure of the agent itself.
-  errorLineStart: /^\s*(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied)\b/m
+  errorLineStart: /^\s*(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied)\b/m,
+  // Sprint 33: PATTERNS.error misses the most common Unix shell errors —
+  // `cat: /foo: No such file or directory`, `bash: foo: command not found`,
+  // `rm: cannot remove ...: Permission denied`. These have a colon-prefix
+  // shape (`<cmd>: ...: <phrase>`) that distinguishes them from prose
+  // mentioning the same words. Each branch requires either the colon-prefix
+  // structure or a stand-alone anchored keyword. Validated against an
+  // adversarial prose suite (see tests/analyzer-error-fixtures.test.js).
+  shellError: /(?:^|\n)(?:[^\n]*:\s+(?:.*?:\s+)?(?:No such file or directory|Permission denied|Is a directory|Not a directory|command not found)\b|[^\n]*?\(\d+\)\s+Could not resolve host\b|\s*ModuleNotFoundError:\s+\S|\s*Segmentation fault\b|\s*fatal:\s+\S)/m
 };
 
 class Session {
@@ -345,7 +353,11 @@ class Session {
     const pattern = this.meta.type === 'claude-code'
       ? PATTERNS.errorLineStart
       : PATTERNS.error;
-    if (!pattern.test(clean)) return;
+    // Sprint 33 fix: the structured patterns above miss `cat: /foo: No such
+    // file or directory` and friends — the most common Unix shell error
+    // shapes Josh hits day-to-day. Fall through to PATTERNS.shellError so
+    // the analyzer flips status='errored' and Flashback can fire.
+    if (!pattern.test(clean) && !PATTERNS.shellError.test(clean)) return;
 
     const oldStatus = this.meta.status;
     this.meta.status = 'errored';

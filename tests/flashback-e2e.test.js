@@ -115,6 +115,40 @@ after(async () => {
 test('error in PTY → output analyzer → mnestra-bridge query pipeline fires', async (t) => {
   if (skipAll) return t.skip(skipReason);
 
+  // ---- Sprint 33 T4 Phase A instrumentation ----------------------------------
+  // When this test fails it has historically been a black hole — the only
+  // signal is "no status_changed→errored event in 8s." That doesn't tell us
+  // whether (a) bash never echoed the error, (b) the analyzer didn't match the
+  // error pattern, (c) the analyzer matched but onStatusChange didn't fire,
+  // or (d) onStatusChange fired but rag_events insert never happened. The
+  // instrumentation below captures all four signals and dumps them to test
+  // diagnostics on failure.
+  const startTs = Date.now();
+  const ms = () => Date.now() - startTs;
+  const wsFrames = [];               // every WS frame received: { ms, type, raw_preview }
+  const sessionMetaSamples = [];     // session.meta snapshots over time
+  const ragEventsForSession = [];    // rag_events with this session_id (any type)
+  const dumpDiagnostics = (label) => {
+    const wsTypeCounts = wsFrames.reduce((acc, f) => {
+      acc[f.type] = (acc[f.type] || 0) + 1; return acc;
+    }, {});
+    t.diagnostic(`---- T4 PHASE-A DIAGNOSTICS (${label}) ----`);
+    t.diagnostic(`elapsed_ms=${ms()} session=${createdSessionId}`);
+    t.diagnostic(`ws frames: total=${wsFrames.length} types=${JSON.stringify(wsTypeCounts)}`);
+    if (wsFrames.length > 0) {
+      const sample = wsFrames.slice(0, 12).map((f) => `  [${f.ms}ms] ${f.type}: ${f.raw_preview}`).join('\n');
+      t.diagnostic(`ws first 12 frames:\n${sample}`);
+    }
+    t.diagnostic(`session.meta samples (${sessionMetaSamples.length}):`);
+    for (const s of sessionMetaSamples) {
+      t.diagnostic(`  [${s.ms}ms] status=${s.status} statusDetail=${JSON.stringify(s.statusDetail || null)} lastCommand=${JSON.stringify(s.lastCommand || null)}`);
+    }
+    t.diagnostic(`rag_events for session (${ragEventsForSession.length}):`);
+    for (const e of ragEventsForSession.slice(0, 20)) {
+      t.diagnostic(`  [${e.observed_ms}ms] type=${e.event_type} payload=${JSON.stringify(e.payload).slice(0, 180)}`);
+    }
+  };
+
   // 1. Create a bash session. bash is picked so `cat /nonexistent` hits the
   //    real filesystem and produces a "No such file or directory" line that
   //    the error regex in session.js will match.
@@ -127,6 +161,7 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
   const session = await createRes.json();
   assert.ok(session.id, 'session response must include an id');
   createdSessionId = session.id;
+  t.diagnostic(`[T4] session created at ${ms()}ms id=${session.id} pid=${session.pid} initialStatus=${session.meta?.status}`);
 
   if (session.meta?.status === 'errored') {
     // PTY spawn itself failed — can't exercise the pipeline.
@@ -140,11 +175,18 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
   let wsOpen = false;
   const ws = new WebSocket(`${WS_URL}?session=${createdSessionId}`);
   ws.on('message', (raw) => {
+    const text = raw.toString();
     try {
-      const msg = JSON.parse(raw.toString());
+      const msg = JSON.parse(text);
+      // Capture every frame for diagnostic dump. Trim binary/output frames so
+      // the diagnostic log stays readable (output frames carry full PTY chunks).
+      const preview = msg.type === 'output'
+        ? `len=${(msg.data || '').length} sample=${JSON.stringify((msg.data || '').slice(0, 80))}`
+        : JSON.stringify(msg).slice(0, 200);
+      wsFrames.push({ ms: ms(), type: msg.type || '<unknown>', raw_preview: preview });
       if (msg.type === 'proactive_memory') proactiveMemoryFrame = msg.hit;
     } catch {
-      // non-JSON frames are not part of this contract
+      wsFrames.push({ ms: ms(), type: '<non-json>', raw_preview: text.slice(0, 80) });
     }
   });
   await new Promise((resolve) => {
@@ -153,6 +195,7 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
     ws.once('error', done);
     setTimeout(done, 2000).unref?.();
   });
+  t.diagnostic(`[T4] ws ${wsOpen ? 'open' : 'failed-or-timed-out'} at ${ms()}ms`);
 
   // 3. Let the PTY finish spawning the shell before we write to it. Bash
   //    prints its prompt within a few ms, but give it a bit of slack.
@@ -168,17 +211,52 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
     body: JSON.stringify({ text: 'cat /nonexistent/file/path\n' }),
   });
   assert.equal(inputRes.status, 200, 'POST /api/sessions/:id/input must return 200');
+  t.diagnostic(`[T4] input posted at ${ms()}ms`);
 
   // 5. Poll /api/rag/events for a status_changed row transitioning this
   //    session into 'errored'. We poll rag_events rather than session.meta
   //    because the analyzer can legitimately flip status back to 'idle' when
   //    the bash prompt lands in the next chunk; the rag_events row is
   //    write-once and durable proof the analyzer fired.
+  //
+  //    Phase A instrumentation: every poll iteration also samples
+  //    /api/sessions/:id (session.meta) and captures ALL rag_events for this
+  //    session_id, not just the matching status_changed→errored one. That way
+  //    a failure dump shows whether the analyzer fired with a different shape
+  //    (e.g. status flipped to 'idle' or 'thinking', or no rag_event at all).
   const erroredEvent = await pollUntil(async () => {
+    // Sample session.meta — non-blocking, failure-safe.
+    try {
+      const sRes = await fetchWithTimeout(`${BASE_URL}/api/sessions/${createdSessionId}`);
+      if (sRes.ok) {
+        const s = await sRes.json();
+        const last = sessionMetaSamples[sessionMetaSamples.length - 1];
+        // Only push if status changed to keep the log compact.
+        if (!last || last.status !== s.meta?.status || last.lastCommand !== s.meta?.lastCommand) {
+          sessionMetaSamples.push({
+            ms: ms(),
+            status: s.meta?.status,
+            statusDetail: s.meta?.statusDetail,
+            lastCommand: s.meta?.lastCommand,
+          });
+        }
+      }
+    } catch {
+      // ignore — diagnostic only
+    }
+
     try {
       const res = await fetchWithTimeout(`${BASE_URL}/api/rag/events?limit=200`);
       if (!res.ok) return null;
       const events = await res.json();
+      // Capture every rag_event for this session, not just the matching one.
+      // De-dup by id so repeated polls don't multiply the log.
+      const seenIds = new Set(ragEventsForSession.map((e) => e.id));
+      for (const e of events) {
+        if (e.session_id === createdSessionId && !seenIds.has(e.id)) {
+          ragEventsForSession.push({ ...e, observed_ms: ms() });
+        }
+      }
       return events.find((e) =>
         e.session_id === createdSessionId &&
         e.event_type === 'status_changed' &&
@@ -188,6 +266,34 @@ test('error in PTY → output analyzer → mnestra-bridge query pipeline fires',
       return null;
     }
   }, { timeoutMs: EVENT_POLL_TIMEOUT_MS, intervalMs: EVENT_POLL_INTERVAL_MS });
+
+  // Sample bash transcript so we know whether the "No such file or directory"
+  // line actually emerged. If bash never emitted that string, the analyzer
+  // had nothing to match — that points at PATTERNS.error or the input flow,
+  // not the rag_events insertion path.
+  try {
+    const tRes = await fetchWithTimeout(`${BASE_URL}/api/transcripts/${createdSessionId}`);
+    if (tRes.ok) {
+      const transcript = await tRes.json();
+      const text = (transcript?.chunks || []).map((c) => c.data || '').join('');
+      const matchesNoSuch = /No such file or directory/i.test(text);
+      const matchesError = /error/i.test(text);
+      t.diagnostic(`[T4] transcript bytes=${text.length} contains "No such file or directory"=${matchesNoSuch} contains /error/i=${matchesError}`);
+      if (text.length > 0) {
+        t.diagnostic(`[T4] transcript tail: ${JSON.stringify(text.slice(-400))}`);
+      }
+    } else {
+      t.diagnostic(`[T4] transcript fetch returned ${tRes.status}`);
+    }
+  } catch (err) {
+    t.diagnostic(`[T4] transcript fetch failed: ${err.message}`);
+  }
+
+  if (!erroredEvent) {
+    dumpDiagnostics('TIMEOUT — no status_changed→errored event');
+  } else {
+    dumpDiagnostics('SUCCESS — errored event seen');
+  }
 
   assert.ok(
     erroredEvent,

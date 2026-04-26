@@ -47,3 +47,51 @@ test('PATTERNS.error triggers on real error-line shapes', () => {
     );
   }
 });
+
+// Sprint 33: PATTERNS.shellError catches the common Unix shell error shapes
+// that PATTERNS.error misses (the `<cmd>: <path>: <phrase>` form). These
+// fixtures lock the pattern against both the real shell-error shapes AND
+// adversarial prose mentioning the same keywords without the colon-prefix
+// structure.
+const SHELL_ERROR_SHOULD_TRIGGER = [
+  ['cat ENOENT (e2e canonical)', 'cat: /nonexistent/file/path: No such file or directory'],
+  ['ls cannot access',           'ls: cannot access /nope: No such file or directory'],
+  ['bash command not found',     'bash: foo: command not found'],
+  ['zsh command not found',      'zsh: command not found: foo'],
+  ['rm permission denied',       'rm: cannot remove /etc/passwd: Permission denied'],
+  ['curl could not resolve',     'curl: (6) Could not resolve host: foo.invalid'],
+  ['python ModuleNotFoundError', 'ModuleNotFoundError: No module named foo'],
+  ['segfault',                   'Segmentation fault: 11'],
+  ['git fatal (lowercase)',      'fatal: not a git repository'],
+  ['error mid-stream w/ prompt', 'user@host:~$ cat /nope\ncat: /nope: No such file or directory\nuser@host:~$ '],
+];
+
+const SHELL_ERROR_SHOULD_NOT_TRIGGER = [
+  ['prose mentioning ENOENT',     'I checked, but no such file or directory exists at that path.'],
+  ['prose mentioning permission', 'The error happens because permission denied beforehand.'],
+  ['prose mentioning segfault',   'When the binary segfaults, segmentation fault is reported.'],
+  ['prose ModuleNotFoundError',   'A common Python issue: ModuleNotFoundError happens when imports fail.'],
+  ['prose command not found',     'This command not found case is rare.'],
+  ['cat help text',               '       cat: concatenate files and print on standard output'],
+  ['ls listing',                  'README.md  package.json  src/'],
+];
+
+test('PATTERNS.shellError triggers on common Unix shell error shapes', () => {
+  for (const [name, fixture] of SHELL_ERROR_SHOULD_TRIGGER) {
+    assert.equal(
+      PATTERNS.shellError.test(fixture),
+      true,
+      `expected shellError match for ${name}: ${JSON.stringify(fixture)}`,
+    );
+  }
+});
+
+test('PATTERNS.shellError does not trigger on prose mentioning error keywords', () => {
+  for (const [name, fixture] of SHELL_ERROR_SHOULD_NOT_TRIGGER) {
+    assert.equal(
+      PATTERNS.shellError.test(fixture),
+      false,
+      `expected no shellError match for ${name}: ${JSON.stringify(fixture)}`,
+    );
+  }
+});

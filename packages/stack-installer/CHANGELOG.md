@@ -5,6 +5,30 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.3.1] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.7.1`,
+  the patch release that closes one of two converging bugs that made
+  Flashback go silent for the most common Unix shell errors. Sprint 33
+  (4+1 forensic orchestration, ~24 minutes wall-clock) traced the
+  silence to a regex coverage gap in `PATTERNS.error` — the session.js
+  comment claimed Unix tool errors were covered, the code never
+  enforced it. Pure "documentation is not verification" miss. v0.7.1
+  ships the analyzer regex fix + 17 regression fixtures + e2e
+  instrumentation. The second root cause (a `chopin-nashville`
+  project-tag regression hiding TermDeck memories from the bridge's
+  project filter) is diagnosed in `docs/sprint-33-flashback-debug/POSTMORTEM.md`
+  and ships in v0.7.2 (Sprint 34) because it requires UPDATE
+  statements against the live Supabase store + writer-side source
+  review. See the root `CHANGELOG.md` v0.7.1 entry for the full
+  diagnosis.
+
+### Notes
+- No installer behavior change. `npx @jhizzard/termdeck-stack` always
+  pulls `@jhizzard/termdeck@latest`. Mnestra (0.2.2) and Rumen (0.4.3)
+  unchanged through this bump.
+
 ## [0.3.0] — 2026-04-26
 
 ### Documentation
