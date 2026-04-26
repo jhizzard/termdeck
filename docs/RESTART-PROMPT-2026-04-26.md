@@ -85,6 +85,22 @@ Short post pitching the unified four-layer stack as one-command-installable: `np
 
 Not blocking the harness-hook fix; pure content track that one terminal can take while the other three handle Lanes 1-4. Or write between sprints during a quieter moment.
 
+### Lane 6 — TMR 4+1 orchestrator discipline guardrail (Brad retro 2026-04-26 evening)
+
+Brad forwarded a self-retro from the ClaimGuard Sprint 4 run (via Josh, evening of 2026-04-26): orchestrator held twice for fresh authorization when prior authorization already explicitly covered the next step (Q1=ii merge, Q4=i T4 approval). Pattern-match was "destructive=ask" without recalling the path was already authorized. Standalone-Claude review on the same retro caught a second-order issue: orchestrator framed RLS options as "path A/B/C" without stating whether A was the same as the previously-chosen Q2.3=(i) column-REVOKE or a new option from new findings — silent relabel forces re-authorization of choices already made.
+
+**Fix:** add as guardrail #14 in `~/.claude/plans/skill-tmr-orchestrate/guardrails.md`. Three cases, plain English:
+
+1. **Obviously covers next step** (Q1=ii means merge; merge is next step) → proceed silent.
+2. **Arguably covers next step** (auth applied to artifact X, but X has been amended via a separate decision) → proceed with one-line extension sentence: *"Proceeding with [action] under prior authorization [Q-number]; this assumes [the extension being made]. Will hold if you object."*
+3. **Genuinely new info** (finding that didn't exist at time of prior decisions, e.g. fresh RLS leak) → hold for fresh auth.
+
+Plus the labeling rule: when surfacing path A/B/C options after prior decisions, the orchestrator MUST cross-reference the prior Q-number explicitly — state whether each label maps to a previously-chosen option or is a new option from new findings.
+
+**Why this matters:** wasteful holds cost minutes per hold across a 49-min sprint = meaningful drag. But the asymmetric risk is on the velocity-up side: silent scope drift is worse than a held merge. The "name the extension" rule is the cheap discipline that keeps both failure modes off the table.
+
+This is a TMR skill edit, not a TermDeck code change. Lives at `~/.claude/plans/skill-tmr-orchestrate/guardrails.md` (skill repo, separate from any npm-published artifact). Same "outside every npm repo" position as Lane 1 (the harness hook). One terminal can take this lane in parallel with Lanes 1-5; ~30 LOC of skill-doc text. Cross-project memory already stores the discipline (mcp `memory_recall(query="orchestrator over-cautiousness")`).
+
 ## Other pending work (not Sprint 35 unless scope allows)
 
 - **Migration-001 idempotency** (CREATE OR REPLACE FUNCTION return-type collision when re-running migrations against an upgraded store). Surfaced 2026-04-25 v0.6.3 live test. Doesn't affect fresh installs.
