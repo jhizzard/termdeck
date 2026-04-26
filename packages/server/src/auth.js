@@ -1,4 +1,4 @@
-// Optional token authentication for TermDeck (Sprint 9 T3).
+// Optional token authentication for TermDeck (Sprint 9 T3, extended Sprint 32).
 //
 // When no token is configured, auth is a no-op — `createAuthMiddleware()` returns
 // null and callers skip wiring. When a token is configured (config.auth.token
@@ -9,8 +9,19 @@
 //   - termdeck_token=<token> cookie
 //
 // Browser requests without a valid token receive a minimal HTML login page that
-// stores the token in a cookie client-side and retries. API requests get a
-// JSON 401.
+// POSTs to /api/auth/login. The login handler validates the token and issues a
+// Set-Cookie header with HttpOnly + SameSite=Lax + Max-Age=2592000 (30 days),
+// and Secure when the request was over HTTPS (direct or via X-Forwarded-Proto).
+// API requests get a JSON 401.
+//
+// 30-day cookie trade-off (v0.7.0):
+// TermDeck is intended as a local dev tool. Brad's 2026-04-26 feedback ("is
+// there a way not to have to enter the token at each termdeck session?")
+// showed the per-browser-session re-prompt was a real adoption tax. The
+// compromise risk of a longer cookie is bounded by the local-only attack
+// surface (HttpOnly blocks JS exfiltration, SameSite=Lax blocks CSRF on
+// cross-site POSTs, Secure-when-HTTPS prevents plaintext sniffing on the
+// reverse-proxy path documented in docs/DEPLOYMENT.md). UX wins.
 
 function getConfiguredToken(config) {
   const fromConfig = config && config.auth && config.auth.token;
@@ -63,6 +74,51 @@ function extractToken(req) {
   return null;
 }
 
+// 30 days in seconds — see head-of-file trade-off note.
+const COOKIE_MAX_AGE_SECONDS = 2592000;
+
+// HTTPS detection for the Secure cookie flag. Express sets req.protocol from
+// the socket; behind a reverse proxy with `app.set('trust proxy', ...)` it
+// reads X-Forwarded-Proto. We also fall back to reading the header directly
+// so the helper is correct even when trust-proxy isn't enabled.
+function isSecureRequest(req) {
+  if (!req) return false;
+  if (req.protocol === 'https') return true;
+  const xfp = req.headers && req.headers['x-forwarded-proto'];
+  if (typeof xfp === 'string') {
+    const first = xfp.split(',')[0].trim().toLowerCase();
+    if (first === 'https') return true;
+  }
+  return false;
+}
+
+function buildAuthCookie(token, secure) {
+  const parts = [
+    `termdeck_token=${encodeURIComponent(token)}`,
+    'Path=/',
+    `Max-Age=${COOKIE_MAX_AGE_SECONDS}`,
+    'HttpOnly',
+    'SameSite=Lax',
+  ];
+  if (secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+function writeAuthCookie(req, res, token) {
+  res.setHeader('Set-Cookie', buildAuthCookie(token, isSecureRequest(req)));
+}
+
+function handleLogin(req, res, configuredToken) {
+  const provided =
+    (req.body && typeof req.body.token === 'string' && req.body.token.trim()) ||
+    extractToken(req);
+  if (!provided || provided !== configuredToken) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  writeAuthCookie(req, res, configuredToken);
+  return res.status(200).json({ ok: true });
+}
+
 function loginPage() {
   return `<!doctype html>
 <html lang="en">
@@ -104,12 +160,14 @@ function submitToken(e) {
   err.textContent = '';
   var t = document.getElementById('t').value.trim();
   if (!t) return false;
-  document.cookie = 'termdeck_token=' + encodeURIComponent(t) +
-    '; path=/; SameSite=Strict; Max-Age=2592000';
   var next = new URLSearchParams(location.search).get('next') || '/';
-  fetch('/api/config', { credentials: 'same-origin' }).then(function(r) {
+  fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ token: t })
+  }).then(function(r) {
     if (r.ok) { location.href = next; return; }
-    document.cookie = 'termdeck_token=; path=/; Max-Age=0';
     err.textContent = 'Invalid token.';
   }).catch(function() {
     err.textContent = 'Network error.';
@@ -129,6 +187,13 @@ function createAuthMiddleware(config) {
     // Health check stays open so external monitors can verify liveness
     // without being handed a secret.
     if (req.path === '/api/health') return next();
+
+    // The login endpoint validates credentials and issues the cookie itself —
+    // it must run before the token-required check below or browsers could
+    // never reach it.
+    if (req.method === 'POST' && req.path === '/api/auth/login') {
+      return handleLogin(req, res, token);
+    }
 
     const provided = extractToken(req);
     if (provided && provided === token) return next();
@@ -168,5 +233,11 @@ module.exports = {
   verifyWebSocketUpgrade,
   getConfiguredToken,
   hasAuth,
-  loginPage
+  loginPage,
+  // Exposed for tests + future reuse by other server modules.
+  buildAuthCookie,
+  isSecureRequest,
+  writeAuthCookie,
+  handleLogin,
+  COOKIE_MAX_AGE_SECONDS,
 };

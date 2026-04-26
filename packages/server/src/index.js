@@ -59,6 +59,7 @@ const { createBridge } = require('./mnestra-bridge');
 const { writeSessionLog } = require('./session-logger');
 const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler, runPreflight } = require('./preflight');
+const { getFullHealth } = require('./health');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
@@ -145,6 +146,24 @@ function createServer(config) {
   // For any non-loopback deployment (Sprint 18+ remote story), gate this route behind auth
   // or scope the response to a minimal {status, version} payload.
   app.get('/api/health', createHealthHandler(config));
+
+  // GET /api/health/full - v0.7.0 runtime health snapshot (Sprint 32 T3)
+  // Mirrors the install-time auditPreconditions/verifyOutcomes pattern from
+  // v0.6.9 at runtime: re-runs the same SELECTs against pg_extension,
+  // vault.decrypted_secrets, cron.job, and information_schema.columns so a
+  // post-install drift (extension toggled off, schedule paused, stale loader
+  // shadow) is observable without a re-install. Cached 30s; pass ?refresh=1
+  // to bypass. Required checks drive the response status (200 ok / 503 fail);
+  // warn checks (mnestra-webhook, rumen-pool) never flip ok.
+  app.get('/api/health/full', async (req, res) => {
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    try {
+      const report = await getFullHealth(config, { refresh, db });
+      res.status(report.ok ? 200 : 503).json(report);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err && err.message ? err.message : String(err) });
+    }
+  });
 
   // GET /api/setup - setup wizard tier status (Sprint 19 T1)
   // Reuses preflight checks (mnestra_reachable, rumen_recent) and pairs them

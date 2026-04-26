@@ -159,6 +159,7 @@
                     `<option value="${tid}" ${tid === meta.theme ? 'selected' : ''}>${t.label}</option>`
                   ).join('')}
                 </select>
+                <a class="theme-reset" id="theme-reset-${id}" href="javascript:void(0)" onclick="resetTheme('${id}')" title="Revert to project / global default from config.yaml" style="font-size:11px;color:#7aa2f7;text-decoration:none;margin-left:4px;opacity:0.7;cursor:pointer">↺ default</a>
                 <button class="ctrl-btn" onclick="focusPanel('${id}')">focus</button>
                 <button class="ctrl-btn" onclick="halfPanel('${id}')">half</button>
                 <button class="ctrl-btn reply-toggle" id="reply-btn-${id}" onclick="toggleReplyForm('${id}')" title="Send text to another terminal">reply ▸</button>
@@ -1309,8 +1310,23 @@
       const themeObj = getThemeObject(themeId);
       entry.terminal.options.theme = themeObj;
 
-      // Persist to server
+      // Persist to server (writes to sessions.theme_override server-side)
       api('PATCH', `/api/sessions/${id}`, { theme: themeId });
+    }
+
+    // v0.7.0: clear sessions.theme_override server-side and snap the panel back
+    // to whatever the resolver currently picks (project default → global default
+    // → tokyo-night). Server returns the resolved value in the PATCH response so
+    // the dropdown + xterm theme update without waiting for the 2s broadcast.
+    async function resetTheme(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      const updated = await api('PATCH', '/api/sessions/' + id, { theme: null });
+      const resolved = updated && updated.meta && updated.meta.theme;
+      if (!resolved) return;
+      entry.terminal.options.theme = getThemeObject(resolved);
+      const sel = document.getElementById('theme-' + id);
+      if (sel && sel.value !== resolved) sel.value = resolved;
     }
 
     async function askAI(id, question) {

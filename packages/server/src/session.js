@@ -1,9 +1,19 @@
 // Session manager - PTY lifecycle, metadata tracking, output analysis
-// Each session wraps a node-pty instance with rich metadata
+// Each session wraps a node-pty instance with rich metadata.
+//
+// v0.7.0 theme model (see theme-resolver.js): meta.theme is a *getter* that
+// resolves at read time from { session.theme_override → project default →
+// global default → 'tokyo-night' }. The session no longer snapshots a theme
+// string into meta at construction. This is the getter form (vs. the
+// alternative of recomputing-and-writing on every metadata broadcast) because
+// it makes the resolution path explicit at every read site and keeps the
+// metadata broadcast in index.js untouched — `s.meta.theme` already returns
+// the right thing whenever index.js dereferences it.
 
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
 const path = require('path');
+const { resolveTheme } = require('./theme-resolver');
 
 // Strip ANSI escape codes for pattern matching
 function stripAnsi(str) {
@@ -69,6 +79,24 @@ class Session {
     this.pty = null;
     this.ws = null;
 
+    // v0.7.0: theme_override is the user's explicit dropdown choice (NULL = no
+    // override → resolveTheme falls through to project / global default at
+    // read time). The legacy `options.theme` argument is intentionally NOT
+    // stored as an override here — it arrives from index.js already
+    // pre-defaulted (`theme || project.defaultTheme || config.defaultTheme`),
+    // which means we can no longer distinguish a real user choice from the
+    // server-filled default at the create-call boundary. Real overrides come
+    // through PATCH /api/sessions/:id (see updateMeta below).
+    this.theme_override = options.themeOverride != null ? options.themeOverride : null;
+
+    // Project (mirrored from meta for theme-resolver convenience — resolveTheme
+    // reads `session.project`, not `session.meta.project`).
+    Object.defineProperty(this, 'project', {
+      get: () => this.meta.project,
+      enumerable: false,
+      configurable: true
+    });
+
     // Metadata
     this.meta = {
       type: options.type || 'shell',        // shell, claude-code, gemini, python-server, one-shot
@@ -89,13 +117,22 @@ class Session {
       exitCode: null,
       childProcesses: [],
 
-      // Theme
-      theme: options.theme || 'tokyo-night',
-
       // RAG
       ragEnabled: options.ragEnabled !== false,
       ragEvents: []                          // buffer before flush
     };
+
+    // theme is render-time resolved (see header comment + theme-resolver.js).
+    // Reads call resolveTheme(this, undefined) which falls back to the cached
+    // ~/.termdeck/config.yaml. Writes route to theme_override so PATCH/UPDATE
+    // through `session.meta.theme = 'dracula'` persists correctly. Setting
+    // null clears the override and reverts to the config-derived default.
+    Object.defineProperty(this.meta, 'theme', {
+      get: () => resolveTheme(this),
+      set: (val) => { this.theme_override = val == null ? null : val; },
+      enumerable: true,
+      configurable: true
+    });
 
     // Transcript chunk counter — monotonic per session for deterministic replay
     this.transcriptChunkIndex = 0;
@@ -383,11 +420,16 @@ class SessionManager {
     const session = new Session(options);
     this.sessions.set(session.id, session);
 
-    // Persist to SQLite
+    // Persist to SQLite. Both columns get written:
+    //   theme           — legacy; the resolved value at create time, kept for
+    //                     backward-compat with any consumer that still reads it.
+    //                     Not authoritative post-v0.7.0.
+    //   theme_override  — v0.7.0 authoritative column. NULL on create — only
+    //                     a PATCH from the dropdown sets it (see updateMeta).
     if (this.db) {
       this.db.prepare(`
-        INSERT INTO sessions (id, type, project, label, command, cwd, created_at, reason, theme)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (id, type, project, label, command, cwd, created_at, reason, theme, theme_override)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         session.id,
         session.meta.type,
@@ -397,7 +439,8 @@ class SessionManager {
         session.meta.cwd,
         session.meta.createdAt,
         session.meta.reason,
-        session.meta.theme
+        session.meta.theme,           // resolved snapshot, legacy column
+        session.theme_override        // NULL by default
       );
     }
 
@@ -435,14 +478,16 @@ class SessionManager {
     const applied = {};
     for (const [key, val] of Object.entries(updates)) {
       if (!SessionManager.PATCHABLE_META_FIELDS.has(key)) continue;
-      session.meta[key] = val;
+      session.meta[key] = val;          // theme assignment routes through the setter → theme_override
       applied[key] = val;
     }
 
-    // Persist theme changes to SQLite
-    if (applied.theme && this.db) {
-      this.db.prepare('UPDATE sessions SET theme = ? WHERE id = ?')
-        .run(applied.theme, id);
+    // Persist theme changes to SQLite. v0.7.0: writes go to theme_override
+    // (the authoritative column); a `theme: null` PATCH clears the override
+    // and reverts the session to the config-derived default at next read.
+    if ('theme' in applied && this.db) {
+      this.db.prepare('UPDATE sessions SET theme_override = ? WHERE id = ?')
+        .run(applied.theme == null ? null : applied.theme, id);
     }
 
     this._emit('session:updated', session);

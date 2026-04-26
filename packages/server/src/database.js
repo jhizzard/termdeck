@@ -27,7 +27,8 @@ function initDatabase(Database) {
       exited_at TEXT,
       exit_code INTEGER,
       reason TEXT,
-      theme TEXT DEFAULT 'tokyo-night'
+      theme TEXT DEFAULT 'tokyo-night',
+      theme_override TEXT
     );
 
     CREATE TABLE IF NOT EXISTS command_history (
@@ -54,7 +55,6 @@ function initDatabase(Database) {
     CREATE TABLE IF NOT EXISTS projects (
       name TEXT PRIMARY KEY,
       path TEXT NOT NULL,
-      default_theme TEXT DEFAULT 'tokyo-night',
       default_command TEXT DEFAULT 'bash',
       rag_namespace TEXT,
       created_at TEXT NOT NULL
@@ -77,6 +77,42 @@ function initDatabase(Database) {
     }
   } catch (err) {
     console.warn('[db] command_history.source migration failed:', err.message);
+  }
+
+  // Migration (v0.7.0): add sessions.theme_override and backfill from theme.
+  // The backfill runs exactly once — only when the column is being added — so
+  // post-migration sessions created with theme_override=NULL stay un-overridden
+  // and pick up config.yaml changes via the theme-resolver. Pre-v0.7.0 rows
+  // had `theme` written by the dropdown PATCH, so treating them as user-set is
+  // the correct preservation of customizations.
+  // (SQLite has no `ADD COLUMN IF NOT EXISTS`, so we PRAGMA-check first — same
+  // pattern as the command_history.source migration above.)
+  try {
+    const cols = db.prepare(`PRAGMA table_info(sessions)`).all();
+    const hasOverride = cols.some((c) => c.name === 'theme_override');
+    if (!hasOverride) {
+      db.exec(`ALTER TABLE sessions ADD COLUMN theme_override TEXT`);
+      const updated = db.prepare(`UPDATE sessions SET theme_override = theme WHERE theme IS NOT NULL`).run();
+      console.log(`[db] Migrated sessions: added 'theme_override' column, backfilled ${updated.changes} row(s) from theme`);
+    }
+  } catch (err) {
+    console.warn('[db] sessions.theme_override migration failed:', err.message);
+  }
+
+  // Migration (v0.7.0): drop the dead projects.default_theme column. It was
+  // CREATE'd in early v0.1 but was never read or written by any code path
+  // (see Sprint 32 T1 grep). Removing it eliminates a latent contract-drift
+  // trap. SQLite supports DROP COLUMN since 3.35 (well below better-sqlite3's
+  // bundled version). No `IF EXISTS` in SQLite, so PRAGMA-check first.
+  try {
+    const cols = db.prepare(`PRAGMA table_info(projects)`).all();
+    const hasDefaultTheme = cols.some((c) => c.name === 'default_theme');
+    if (hasDefaultTheme) {
+      db.exec(`ALTER TABLE projects DROP COLUMN default_theme`);
+      console.log("[db] Migrated projects: dropped dead 'default_theme' column");
+    }
+  } catch (err) {
+    console.warn('[db] projects.default_theme drop migration failed:', err.message);
   }
 
   return db;

@@ -5,6 +5,46 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.3.0] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.7.0`,
+  the runtime-correctness companion to the v0.6.9 install-time
+  audit/verify framework. v0.7.0 ships three runtime-side fixes:
+  (1) theme persistence — `session.meta.theme` becomes a render-time
+  getter that resolves against the live config instead of a SQLite
+  snapshot, so editing `~/.termdeck/config.yaml` actually changes
+  existing terminals' themes; (2) auth cookie persists 30 days
+  (HttpOnly, SameSite=Lax, conditional Secure) so users don't re-type
+  the token at every browser session; (3) new `GET /api/health/full`
+  endpoint that answers "is this install actually healthy right now?"
+  by reusing the v0.6.9 preconditions helpers at runtime — Postgres,
+  pg_cron, pg_net, Vault, cron.job activity, SQLite, Mnestra webhook,
+  Rumen pool. Cached 30s. See the root `CHANGELOG.md` v0.7.0 entry
+  for the full check list and test counts.
+
+### Why a minor bump (not patch)
+- v0.7.0 is a minor on the underlying TermDeck package — it adds two
+  new feature surfaces (`/api/health/full` and the cookie max-age
+  semantics) and changes a load-bearing internal contract (theme
+  resolution moves from snapshot to live). The meta-installer's
+  audit-trail bump matches that minor cadence so the published
+  versions read as a coordinated set: TermDeck 0.7.0 ↔
+  termdeck-stack 0.3.0, mirroring the 0.6.x ↔ 0.2.x correspondence.
+- Strict reading of `docs/SEMVER-POLICY.md` would treat a docs-only
+  audit-trail bump as patch. We're stretching to minor here on
+  purpose, same way 0.2.0 was — to keep the published version
+  surface legible alongside the underlying TermDeck minor.
+
+### Notes
+- No installer behavior change. `npx @jhizzard/termdeck-stack`
+  always pulls `@jhizzard/termdeck@latest`, so existing installs
+  pick up v0.7.0 automatically. Mnestra (0.2.2) and Rumen (0.4.3)
+  unchanged through this bump.
+- This closes the v0.6.x → v0.7.0 narrative cleanly: v0.6.x =
+  install-time correctness, v0.7.0 = runtime correctness. The same
+  audit/verify principle locked into both.
+
 ## [0.2.8] — 2026-04-26
 
 ### Documentation

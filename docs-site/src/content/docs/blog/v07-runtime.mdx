@@ -1,0 +1,105 @@
+---
+title: "v0.7 — trust the install at runtime"
+description: "v0.6 closed install-time correctness with auditPreconditions and verifyOutcomes. v0.7 extends that pattern into runtime: themes that follow your config edits, auth that doesn't ask twice, and a /api/health/full endpoint that answers 'is this install actually healthy right now?'"
+draft: true
+---
+
+The v0.6 series was about **install-time correctness** — eight patches in 48 hours that ended with `auditPreconditions()` and `verifyOutcomes()`: the front-loaded check that surfaces every gap before the wizard does any state-changing work, plus the closing check that confirms what just happened actually took. The principle that locked in: *documentation is not verification.*
+
+v0.7 extends that pattern from install-time into **runtime**. Once installed, the system stays observably healthy — and configuration changes propagate the way users expect.
+
+## TL;DR
+
+```bash
+npm cache clean --force
+npm i -g @jhizzard/termdeck@latest      # should resolve 0.7.0
+termdeck --version                       # confirm: 0.7.0
+```
+
+After upgrading and restarting termdeck:
+
+- Edit `~/.termdeck/config.yaml`, restart termdeck → existing terminals reflect the new default theme. No more `theme` column snapshots winning over your config edits.
+- Open termdeck in a new browser or incognito window → the auth cookie persists 30 days. No more re-typing the token at every session.
+- `curl http://localhost:3000/api/health/full | jq` → a JSON report of every runtime invariant the v0.6.9 audit covers, plus SQLite/Mnestra/Rumen reachability. Cached 30s so you can poll it from a status bar.
+
+## What v0.7 changes
+
+### Theme persistence (`session.meta.theme` becomes a getter)
+
+A tester reported on 2026-04-26: *"can't get theme changed. ignores changes to config.yaml and is stuck in tokyo night."* This was working as designed; the design was wrong.
+
+The old model: the chosen theme was snapshotted into the `sessions.theme` SQLite column at session creation. After that, the column was authoritative — config edits were invisible to existing sessions.
+
+The new model: `session.meta.theme` is computed at read time from `resolveTheme(session, config)`, which returns `session.theme_override || config.projects?.[session.project]?.defaultTheme || config.defaultTheme || 'tokyo-night'`. The user's per-session override (set via the theme dropdown) wins; otherwise the config does. The dropdown grows a "Reset to default" link that clears the override and returns control to config.yaml.
+
+Existing rows are backfilled on migration: any value already in `theme` is treated as user-set and copied into `theme_override`, so v0.6.x customizations survive untouched.
+
+### Auth cookie — 30 days, HttpOnly, SameSite=Lax
+
+Same tester report: *"is there a way not to have to enter the token at each termdeck session?"* TermDeck is a local dev tool; the threat model is dominated by the local-only attack surface, not cookie compromise. Re-typing the token at every browser session is friction with no security upside.
+
+`Set-Cookie: termdeck_token=...; Max-Age=2592000; HttpOnly; SameSite=Lax`. The `Secure` flag is set when the request was over HTTPS (detected via `req.protocol === 'https'` or `X-Forwarded-Proto`). For Brad-style local installs without TLS, `Secure` stays off so the cookie still attaches.
+
+No new flag, no new config. Same cookie name and value format as v0.6.x — just a longer max-age and the explicit `HttpOnly` / `SameSite=Lax` flags it should always have had.
+
+### `GET /api/health/full` — runtime audit endpoint
+
+The v0.6.9 `auditPreconditions()` answers "is this install correctly set up?" once, at the end of the wizard. `/api/health/full` answers "is this install actually healthy right now?" any time you ask it.
+
+Returns a JSON report:
+
+```json
+{
+  "ok": true,
+  "checks": [
+    { "name": "sqlite",            "status": "pass" },
+    { "name": "postgres",          "status": "pass" },
+    { "name": "memory_items.source_session_id", "status": "pass" },
+    { "name": "pg_cron",           "status": "pass" },
+    { "name": "pg_net",            "status": "pass" },
+    { "name": "vault_secret",      "status": "pass" },
+    { "name": "rumen_tick_active", "status": "pass" },
+    { "name": "mnestra_webhook",   "status": "pass" },
+    { "name": "rumen_pool",        "status": "warn", "detail": "..." }
+  ]
+}
+```
+
+Cached 30 seconds inside the handler so polling doesn't hammer Postgres. Pass `?refresh=1` to force a re-check. The Rumen pool reachability check is best-effort and surfaces as a warning rather than failing the report — the rest of the system stays healthy when Rumen is offline.
+
+The implementation reuses the `preconditions.js` helpers from v0.6.9 wherever possible. The runtime endpoint and the install-time wizard share one source of truth for what "healthy" means.
+
+## The arc from v0.6 to v0.7
+
+The v0.6.x lineage shipped nine patches. The arc closed with v0.6.9's `auditPreconditions()` + `verifyOutcomes()` — the architectural defense that should have been there from the start. Four of the eight prior patches (v0.6.4 token, v0.6.6 pgbouncer, v0.6.7 mcp.json, the v0.6.9-equivalent extensions/Vault gaps) were the same failure shape: *a precondition documented in a doc somewhere but not verified in code.* Each one surfaced individually as the next user hit it.
+
+v0.6.9 closed the install-time version of that failure mode by front-loading the audit and following migrations with a verify pass. v0.7.0 closes the runtime version: the system that was correct at install time can drift later — config edits get ignored, auth state gets dropped, a Postgres extension gets disabled by an admin upgrade, the Rumen pool quietly stops responding. Without a runtime equivalent of the audit, the user finds out via a missing Flashback toast or a silent cron failure two days later.
+
+`/api/health/full` is the runtime answer to the same "documentation is not verification" principle: the things v0.6.9 verifies once at the end of the wizard, v0.7.0 verifies on demand for the rest of the install's life.
+
+## Upgrade checklist
+
+```bash
+npm cache clean --force
+npm i -g @jhizzard/termdeck@latest
+termdeck --version    # 0.7.0
+```
+
+Restart termdeck. No wizard re-run is needed — the theme `theme_override` column is added in-place by the database init code, and existing rows are backfilled automatically. Your customizations from v0.6.x are preserved.
+
+To verify the runtime audit:
+
+```bash
+curl -s http://localhost:3000/api/health/full | jq
+```
+
+If you're using auth, you'll need the cookie or `?token=` for that request. The new cookie persists 30 days — if you previously had to re-enter the token after every browser restart, that stops with this release.
+
+## Versions live on npm
+
+- `@jhizzard/termdeck@0.7.0`
+- `@jhizzard/termdeck-stack@0.3.0`
+- `@jhizzard/mnestra@0.2.2` (unchanged since v0.6.5 — no Mnestra-side migration in v0.7.0)
+- `@jhizzard/rumen@0.4.3` (unchanged through the entire v0.6.x and v0.7.0 series)
+
+The v0.6 retrospective is on the [v0.6 — lineage](/blog/v06-lineage/) post. v0.7 is what comes next: the install you can trust, that stays trustworthy.
