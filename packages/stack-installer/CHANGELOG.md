@@ -5,6 +5,31 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.6] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.7`,
+  which closes the loop on a long-standing flaw in the meta-installer
+  itself. The stack-installer writes
+  `SUPABASE_ACCESS_TOKEN: 'SUPABASE_PAT_HERE'` as a literal placeholder
+  string when wiring the Supabase MCP server entry into
+  `~/.claude/mcp.json` — the user is expected to manually replace it
+  after install. v0.6.4 told users to `export SUPABASE_ACCESS_TOKEN=...`
+  for `supabase link`, but that export never propagated into the JSON.
+  v0.6.7 of `@jhizzard/termdeck` now backfills the token automatically
+  during `termdeck init --rumen` once `supabase link` confirms the token
+  is real. See the root `CHANGELOG.md` v0.6.7 entry for the full helper
+  contract and the 10 regression fixtures.
+
+### Notes
+- This is the third audit-trail bump in the v0.6.5–v0.6.7 arc. No
+  installer behavior change — `npx @jhizzard/termdeck-stack` always
+  pulls `@jhizzard/termdeck@latest`. Future improvement: stop writing
+  the literal placeholder in this installer and instead skip the env
+  block when no real token is available, prompting the user to set
+  `SUPABASE_ACCESS_TOKEN` before running `init --rumen`. Tracked as a
+  follow-up; not blocking this audit-trail bump.
+
 ## [0.2.5] — 2026-04-26
 
 ### Documentation

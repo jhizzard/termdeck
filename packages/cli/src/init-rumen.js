@@ -469,6 +469,78 @@ async function applySchedule(projectRef, secrets, dryRun) {
   }
 }
 
+// Backfill SUPABASE_ACCESS_TOKEN into ~/.claude/mcp.json's Supabase MCP
+// server entry. Background: the meta-installer (`@jhizzard/termdeck-stack`)
+// writes `SUPABASE_ACCESS_TOKEN: 'SUPABASE_PAT_HERE'` as a literal
+// placeholder when it wires the Supabase MCP entry. The user is expected
+// to replace it after install. v0.6.4 unblocked the Rumen install path by
+// telling users to `export SUPABASE_ACCESS_TOKEN=sbp_...` in their shell —
+// but that token only got used for `supabase link`, never propagated into
+// `~/.claude/mcp.json`. So Brad's Claude Code was talking to a Supabase
+// MCP server with a placeholder token. He had to update the JSON file
+// manually. Reported 2026-04-26 — Brad's quote: "the token hadn't been
+// written to the Json file which we updated manually, but you may want
+// to put that in the patch at some point."
+//
+// This helper closes the loop. Idempotent and conservative:
+//   - Only runs if process.env.SUPABASE_ACCESS_TOKEN is set
+//   - Only updates when the existing value is the literal placeholder
+//     'SUPABASE_PAT_HERE' — preserves any real token the user already set
+//   - No-op when ~/.claude/mcp.json doesn't exist (user never ran the
+//     meta-installer's Tier 4) or when there's no `supabase` MCP entry
+//   - No-op (with a soft warning) when the JSON is malformed
+//   - Atomic write via tmp-and-rename; mode 0600 to match the file's
+//     existing permissions (it already holds the placeholder)
+//   - All other mcpServers entries preserved verbatim
+//
+// Returns one of: { status: 'updated', path }, { status: 'already-set', path },
+//   { status: 'no-file' }, { status: 'no-supabase-entry', path },
+//   { status: 'no-token-in-env' }, { status: 'malformed', path, error }.
+function wireAccessTokenInMcpJson({ token, mcpJsonPath, _testFs } = {}) {
+  const fsImpl = _testFs || fs;
+  const tokenValue = token || process.env.SUPABASE_ACCESS_TOKEN;
+  if (!tokenValue) return { status: 'no-token-in-env' };
+
+  const targetPath = mcpJsonPath || path.join(os.homedir(), '.claude', 'mcp.json');
+  if (!fsImpl.existsSync(targetPath)) return { status: 'no-file' };
+
+  let raw;
+  try {
+    raw = fsImpl.readFileSync(targetPath, 'utf-8');
+  } catch (err) {
+    return { status: 'malformed', path: targetPath, error: err.message };
+  }
+
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (err) {
+    return { status: 'malformed', path: targetPath, error: err.message };
+  }
+
+  const supabaseEntry = cfg && cfg.mcpServers && cfg.mcpServers.supabase;
+  if (!supabaseEntry || typeof supabaseEntry !== 'object') {
+    return { status: 'no-supabase-entry', path: targetPath };
+  }
+
+  supabaseEntry.env = supabaseEntry.env || {};
+  const current = supabaseEntry.env.SUPABASE_ACCESS_TOKEN;
+  if (current === tokenValue) return { status: 'already-set', path: targetPath };
+  if (current && current !== 'SUPABASE_PAT_HERE') {
+    // User has set a real token already — don't touch it.
+    return { status: 'already-set', path: targetPath };
+  }
+
+  supabaseEntry.env.SUPABASE_ACCESS_TOKEN = tokenValue;
+
+  const tmpPath = `${targetPath}.tmp.${process.pid}`;
+  fsImpl.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+  fsImpl.renameSync(tmpPath, targetPath);
+  try { fsImpl.chmodSync(targetPath, 0o600); } catch (_e) { /* best-effort */ }
+
+  return { status: 'updated', path: targetPath };
+}
+
 function printNextSteps(projectRef) {
   const functionUrl = `https://${projectRef}.supabase.co/functions/v1/rumen-tick`;
   const now = new Date();
@@ -522,6 +594,26 @@ async function main(argv) {
   }
 
   if (!(await link(projectRef, flags.dryRun))) return 4;
+
+  // Backfill SUPABASE_ACCESS_TOKEN into ~/.claude/mcp.json now that
+  // `supabase link` succeeded (the token is verified-real). The
+  // meta-installer wrote a literal 'SUPABASE_PAT_HERE' placeholder
+  // there during Tier 4 install — this closes that loop.
+  if (!flags.dryRun) {
+    const r = wireAccessTokenInMcpJson();
+    if (r.status === 'updated') {
+      step('Backfilled SUPABASE_ACCESS_TOKEN into ~/.claude/mcp.json...');
+      ok();
+    } else if (r.status === 'malformed') {
+      process.stderr.write(
+        `\n  ! ${r.path} is not valid JSON — skipping token backfill (${r.error}).\n` +
+        `    Update the supabase mcpServers entry manually if Claude Code's Supabase MCP is misbehaving.\n\n`
+      );
+    }
+    // Other statuses (no-file, no-supabase-entry, no-token-in-env,
+    // already-set) are silent — they're all expected paths.
+  }
+
   if (!(await applyRumenTables(secrets, flags.dryRun))) return 5;
 
   step('Resolving @jhizzard/rumen version from npm registry...');
@@ -559,3 +651,4 @@ module.exports = main;
 // Test surface — kept on the same export object so the regression suite can
 // pin the access-token detection without spawning a real `supabase` binary.
 module.exports._looksLikeMissingAccessToken = looksLikeMissingAccessToken;
+module.exports._wireAccessTokenInMcpJson = wireAccessTokenInMcpJson;

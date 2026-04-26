@@ -16,6 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.7] - 2026-04-26
+
+### Fixed
+- **`SUPABASE_ACCESS_TOKEN` placeholder never being replaced in `~/.claude/mcp.json`.** Brad reported 2026-04-26: *"the token hadn't been written to the Json file which we updated manually, but you may want to put that in the patch at some point."* Root cause: the meta-installer (`@jhizzard/termdeck-stack`) wires the Supabase MCP server entry with `SUPABASE_ACCESS_TOKEN: 'SUPABASE_PAT_HERE'` as a literal placeholder. v0.6.4 told users to `export SUPABASE_ACCESS_TOKEN=...` for `supabase link` — but the export only affected their shell, never propagated into the JSON config. Claude Code's Supabase MCP server stayed broken with the placeholder until the user manually edited the file.
+- New helper `wireAccessTokenInMcpJson()` in `packages/cli/src/init-rumen.js`. Runs after `supabase link` succeeds (token verified-real at that point). Reads `~/.termdeck/.claude/mcp.json` (correctly: `~/.claude/mcp.json`), replaces the placeholder if it's the literal `SUPABASE_PAT_HERE`, leaves any real user-set token untouched, atomic write with mode 0600, preserves all other `mcpServers` entries verbatim. Idempotent. No-op when the file is missing, the supabase MCP entry is missing, or `process.env.SUPABASE_ACCESS_TOKEN` is unset. Malformed JSON surfaces a soft warning but doesn't throw.
+- New `tests/init-rumen-mcp-json.test.js` (10 cases): placeholder gets replaced, sibling entries preserved verbatim, mode 0600 enforced, real token never overwritten, same-token-already-set is a no-op, missing token / missing file / missing supabase entry all return clean status codes, malformed JSON returns `status=malformed`, supabase entry without an env block gets one created.
+
+### Notes
+- This closes the v0.6.4–v0.6.7 incident arc end-to-end. Brad's stack should now: (1) Mnestra schema correct (v0.6.5), (2) DATABASE_URL normalized (v0.6.6), (3) Supabase MCP token wired automatically (v0.6.7). Anyone re-running `termdeck init --rumen` after upgrading will get the JSON updated automatically — no manual edit needed.
+- Stack-installer audit-trail bumped 0.2.5 → 0.2.6. Mnestra (0.2.2) and Rumen (0.4.3) unchanged.
+- Full CLI suite: 58/58 green (was 48, +10 new in `init-rumen-mcp-json.test.js`).
+
 ## [0.6.6] - 2026-04-26
 
 ### Added
