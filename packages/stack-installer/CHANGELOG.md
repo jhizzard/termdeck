@@ -5,6 +5,31 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.7] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.8`.
+  v0.6.8 fixes a meta-installer-induced bug: the meta-installer
+  installs `@jhizzard/mnestra` globally as a peer, and TermDeck's
+  migration loader was preferring that peer over its own bundled
+  migrations. When a user upgraded TermDeck without also upgrading
+  the sibling Mnestra package, a stale Mnestra silently shadowed
+  newer bundled migrations. v0.6.5's source_session_id fix was
+  invisible to anyone with stale Mnestra-in-global-node_modules.
+  v0.6.8 flips the precedence — bundled first, peer node_modules as
+  a fallback only when bundled is missing. See the root
+  `CHANGELOG.md` v0.6.8 entry and the new
+  `tests/migration-loader-precedence.test.js` for the four
+  regression cases that pin this guarantee.
+
+### Notes
+- Fourth audit-trail bump in the v0.6.5–v0.6.8 arc. No installer
+  behavior change. The longer-term consideration: a future
+  meta-installer release should consider whether to keep installing
+  `@jhizzard/mnestra` as a global peer at all, given that TermDeck
+  now treats its bundled migrations as canonical. Tracked as a
+  follow-up; not blocking this audit-trail bump.
+
 ## [0.2.6] — 2026-04-26
 
 ### Documentation

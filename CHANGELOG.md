@@ -16,6 +16,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.8] - 2026-04-26
+
+### Fixed
+- **Migration loader silently shadowing newer bundled migrations with a stale `@jhizzard/mnestra` in global node_modules.** Brad reported 2026-04-26 12:47 PM after upgrading to v0.6.5 and re-running `termdeck init --mnestra --yes`: *"Still getting column m.source_session_id does not exist. The 6 migrations all applied cleanly but the column is still missing. Looks like the new migration wasn't included in the --yes run."* Root cause: `packages/server/src/setup/migrations.js`'s `listMnestraMigrations()` checked `node_modules/@jhizzard/mnestra/migrations/` BEFORE the bundled directory and used it whenever any `.sql` files were found there. The meta-installer (`@jhizzard/termdeck-stack`) installs `@jhizzard/mnestra` globally as a peer; `npm i -g @jhizzard/termdeck@latest` doesn't touch that sibling install. So Brad's stale `mnestra@0.2.1` (6 migrations) silently shadowed v0.6.5's bundled 7 migrations. The wizard reported "6 migrations applied" because it really was applying 6 — the wrong six.
+- v0.6.8 flips the precedence: bundled FIRST. `node_modules/@jhizzard/mnestra/migrations/` is now used only as a safety-valve fallback when the bundled directory is missing entirely (e.g. someone `rm -rf`'d it manually). Bundled is what TermDeck developed and tested against; that's the source of truth. Same change applied to `listRumenMigrations()` for symmetry.
+- New `tests/migration-loader-precedence.test.js` (4 cases) — the regression test that, if it had existed before v0.6.5, would have caught Brad's bug at test time. Pins (a) the bundled directory contains all 7 migrations, (b) `listMnestraMigrations()` returns 7 in lexical order, (c) returned paths are under the bundled directory not node_modules, (d) **a fake stale `@jhizzard/mnestra@0.2.1` with only 6 migrations does NOT shadow the bundled 7** (Brad's exact scenario).
+
+### Notes
+- **Recovery for anyone affected (Brad and any other v0.6.5/.6/.7 user with stale global Mnestra):** `npm cache clean --force && npm i -g @jhizzard/termdeck@latest`, then `termdeck init --mnestra --yes`. With v0.6.8 the wizard reads bundled migrations regardless of what's in node_modules — no separate Mnestra upgrade required. Anyone who already manually added the column or already upgraded their global Mnestra is fine; the new migration is `IF NOT EXISTS` idempotent.
+- This is the bug the v0.6.5 fix was meant to ship. The schema patch was correct; the loader hid it. The right defensive change earlier would have been a contract test that exercised the loader against a stale-shadow scenario — exactly what `tests/migration-loader-precedence.test.js` now does. (Mirror of universal lesson #5 from the v0.6.x post-mortem: cross-package contracts need contract tests, not goodwill.)
+- Stack-installer audit-trail bumped 0.2.6 → 0.2.7. Mnestra (0.2.2) and Rumen (0.4.3) unchanged.
+- Full CLI suite: 62/62 green (was 58, +4 new).
+
 ## [0.6.7] - 2026-04-26
 
 ### Fixed
