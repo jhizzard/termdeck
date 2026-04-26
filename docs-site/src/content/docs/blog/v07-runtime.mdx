@@ -1,7 +1,7 @@
 ---
 title: "v0.7 — trust the install at runtime"
 description: "v0.6 closed install-time correctness with auditPreconditions and verifyOutcomes. v0.7 extends that pattern into runtime: themes that follow your config edits, auth that doesn't ask twice, and a /api/health/full endpoint that answers 'is this install actually healthy right now?'"
-draft: true
+draft: false
 ---
 
 The v0.6 series was about **install-time correctness** — eight patches in 48 hours that ended with `auditPreconditions()` and `verifyOutcomes()`: the front-loaded check that surfaces every gap before the wizard does any state-changing work, plus the closing check that confirms what just happened actually took. The principle that locked in: *documentation is not verification.*
