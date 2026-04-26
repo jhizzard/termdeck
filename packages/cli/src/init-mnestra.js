@@ -185,6 +185,8 @@ This wizard configures TermDeck's Tier 2 memory layer (Mnestra) by:
 
 If you already have a complete ~/.termdeck/secrets.env, the wizard will
 offer to reuse it (or pass --yes to skip the prompt and resume directly).
+If your terminal fights with the secret prompt, set the five env vars and
+pass --from-env to skip every prompt entirely.
 
 Press Ctrl+C at any time to cancel.
 

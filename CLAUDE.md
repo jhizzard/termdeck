@@ -6,7 +6,7 @@ TermDeck is a web-based terminal multiplexer that embeds real PTY terminals in a
 
 Think: tmux in the browser, but with a control-room UI showing what every terminal is doing, plus Flashback — proactive recall of similar past errors the moment a panel hits a problem.
 
-**Current version:** v0.4.5 (published to npm as `@jhizzard/termdeck`). All v0.1 milestones shipped on 2026-03-19. Sprints 4–10 added onboarding, UI polish, preflight, transcripts, contract tests, a two-row toolbar, optional auth, a non-loopback bind guardrail, and release-verification tooling on top.
+**Current version:** v0.6.4 (published to npm as `@jhizzard/termdeck`). All v0.1 milestones shipped on 2026-03-19. Sprints 4–31 layered on onboarding, UI polish, preflight, transcripts, contract tests, a two-row toolbar, optional auth, a non-loopback bind guardrail, release-verification tooling, the meta-installer (`@jhizzard/termdeck-stack`), the Supabase MCP wizard integration, the auto-orchestrator, the persist-first init wizard (v0.6.3), and the Rumen access-token hint (v0.6.4).
 
 ## Where code lives
 
@@ -30,8 +30,8 @@ Think: tmux in the browser, but with a control-room UI showing what every termin
 
 ### CLI (`packages/cli/src/`)
 - **index.js** — `termdeck` command. Parses `--port`, `--no-open`, `--session-logs`, `--help`. Boots server, opens browser. Graceful shutdown on SIGINT.
-- **init-mnestra.js** — `termdeck init --mnestra` wizard. Persists `~/.termdeck/secrets.env` first (so a pg failure can't lose typed-in keys), then applies Mnestra migrations, writes `config.yaml`, verifies connection. Supports `--yes` (reuse saved secrets, skip prompts) and `--reset` (re-prompt from scratch).
-- **init-rumen.js** — `termdeck init --rumen` wizard. Deploys the Rumen Supabase Edge Function, applies migration, sets secrets, installs the `pg_cron` schedule.
+- **init-mnestra.js** — `termdeck init --mnestra` wizard. Persists `~/.termdeck/secrets.env` first (so a pg failure can't lose typed-in keys), then applies Mnestra migrations, writes `config.yaml`, verifies connection. Supports `--yes` (reuse saved secrets, skip prompts), `--reset` (re-prompt from scratch), and `--from-env` (skip every prompt, read all five secrets from env vars — bypass for terminals that fight with raw-mode secret prompts and for CI installs).
+- **init-rumen.js** — `termdeck init --rumen` wizard. Deploys the Rumen Supabase Edge Function, applies migration, sets secrets, installs the `pg_cron` schedule. On `supabase link` failure, detects the "Access token not provided" stderr signature and prints a path-aware hint pointing at the Supabase PAT dashboard plus the exact `export SUPABASE_ACCESS_TOKEN=sbp_...` command.
 
 ### Config (`config/`)
 - **config.example.yaml** — Template with project definitions, RAG settings, theme defaults.
