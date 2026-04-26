@@ -6,7 +6,7 @@ TermDeck is a web-based terminal multiplexer that embeds real PTY terminals in a
 
 Think: tmux in the browser, but with a control-room UI showing what every terminal is doing, plus Flashback — proactive recall of similar past errors the moment a panel hits a problem.
 
-**Current version:** v0.6.4 (published to npm as `@jhizzard/termdeck`). All v0.1 milestones shipped on 2026-03-19. Sprints 4–31 layered on onboarding, UI polish, preflight, transcripts, contract tests, a two-row toolbar, optional auth, a non-loopback bind guardrail, release-verification tooling, the meta-installer (`@jhizzard/termdeck-stack`), the Supabase MCP wizard integration, the auto-orchestrator, the persist-first init wizard (v0.6.3), and the Rumen access-token hint (v0.6.4).
+**Current version:** v0.7.2 (published to npm as `@jhizzard/termdeck`). All v0.1 milestones shipped on 2026-03-19. Sprints 4–34 layered on onboarding, UI polish, preflight, transcripts, contract tests, a two-row toolbar, optional auth, a non-loopback bind guardrail, release-verification tooling, the meta-installer (`@jhizzard/termdeck-stack`), the Supabase MCP wizard integration, the auto-orchestrator, the persist-first init wizard (v0.6.3), the Rumen access-token hint (v0.6.4), the install-time `auditPreconditions` framework (v0.6.9), runtime correctness (v0.7.0 — render-time theme resolution, 30-day auth cookie, `/api/health/full`), the analyzer regex fix that makes Flashback fire on Unix shell errors (v0.7.1), and the chopin-nashville project-tag corpus repair + writer-side regression lock (v0.7.2). Sprint 35 leads with the upstream root cause: `~/.claude/hooks/memory-session-end.js:17` PROJECT_MAP iteration order.
 
 ## Where code lives
 
