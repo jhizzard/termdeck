@@ -16,6 +16,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.9] - 2026-04-26
+
+### Added — the deliberate close to the v0.6.x incident saga
+- **`auditPreconditions()` and `verifyOutcomes()` for both wizards.** New module `packages/server/src/setup/preconditions.js`. Closes the failure class that produced four of the eight v0.6.x patches (v0.6.4 token, v0.6.6 pgbouncer, v0.6.7 mcp.json, "v0.6.9-equivalent" extensions): a documented manual step that wasn't verified in code.
+- **`auditRumenPreconditions(secrets, env)`** runs FIRST in `init-rumen.js`, before any state-changing operation. Surfaces every gap in one pass with actionable hints: Supabase CLI auth (token in env OR `supabase login` worked), `pg_cron` extension enabled, `pg_net` extension enabled, Vault secret `rumen_service_role_key` present. Distinguishes Vault-permission-denied from Vault-secret-missing — different hints. Refuses to proceed on any gap; no partial work.
+- **`verifyRumenOutcomes(secrets)`** runs after the schedule SQL applies. Confirms `cron.job` has an active rumen-tick row. Doesn't poll for the first 15-min tick (too long for an interactive wizard) but tells the user exactly what query to run after waiting.
+- **`verifyMnestraOutcomes(secrets)`** runs after migrations apply. Confirms `memory_items` exists, `memory_items.source_session_id` exists (the v0.6.5 column whose absence cascaded into Brad's Rumen failures), and `memory_status_aggregation()` exists. **This is the test that, if it had existed before v0.6.5, would have caught the silent-shadow saga at install time instead of cron-tick time.**
+- **10 regression tests** in `tests/preconditions.test.js` using a fake pg client. Covers all-gaps-surface, all-clean-passes, vault-permission-vs-missing-distinction, cron-active vs cron-inactive vs cron-missing, the source_session_id gap with the npm-cache-clean recovery hint, the missing-table gap, and smoke tests for the report renderers.
+
+### Notes
+- **The principle this locks in:** *"Documentation is not verification. Anything documented as a manual step must also be runtime-checked, or the first unsupervised user pays."* Saved as a global universal memory before this release shipped.
+- **Behavior change for users with incomplete preconditions:** wizards that previously half-succeeded now fail-fast with a consolidated gap report. The exit code from a missing precondition is 10 (audit) or 11 (verify). Old behavior — proceeding into a half-applied state — is gone. This is a deliberate UX shift, in service of "first unsupervised user shouldn't pay."
+- **Stack-installer audit-trail bumped 0.2.7 → 0.2.8.** Mnestra (0.2.2) and Rumen (0.4.3) unchanged.
+- **Full CLI suite: 72/72 green** (was 62, +10 new).
+- **What v0.6.9 deliberately does NOT include** (deferred to v0.7.0): theme persistence fix (Brad's "stuck in tokyo night" report), auth-cookie 30-day persistence (Brad's "have to enter token at each browser session"), `/api/health/full` runtime health endpoint. v0.7.0 is "the install you can trust to stay healthy" — extends the audit/verify pattern from install-time into runtime.
+- **End of the v0.6.x arc.** Eight patches in 48 hours started with a CRLF leak and ended with a precondition-audit framework. The longitudinal failure-class analysis is in the global memory `UNIVERSAL DEBUGGING PATTERN — When a project's release stream becomes "one patch per user report"...`
+
 ## [0.6.8] - 2026-04-26
 
 ### Fixed

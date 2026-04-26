@@ -43,7 +43,8 @@ const {
   yaml,
   supabaseUrl: urlHelper,
   migrations,
-  pgRunner
+  pgRunner,
+  preconditions
 } = require(SETUP_DIR);
 
 const HELP = [
@@ -514,7 +515,19 @@ async function main(argv) {
     await checkExistingStore(client);
     await applyMigrations(client, false);
     writeYamlConfig(false);
+    // v0.6.9: post-write outcome verification. Confirms each migration's
+    // expected schema bits actually landed — including memory_items.
+    // source_session_id (the v0.6.5 column whose absence cascaded into
+    // Brad's Rumen failures). This is the test that, if it had existed
+    // before v0.6.5, would have caught the silent-shadow saga at install
+    // time instead of cron-tick time.
     if (!flags.skipVerify) {
+      const verify = await preconditions.verifyMnestraOutcomes({ secrets: { DATABASE_URL: inputs.databaseUrl }, _pgClient: client });
+      preconditions.printVerifyReport(verify, 'mnestra');
+      if (!verify.ok) {
+        printResumeHint();
+        return 8;
+      }
       const verified = await verifyStatus(client);
       if (!verified) {
         process.stdout.write(

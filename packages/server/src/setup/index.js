@@ -11,5 +11,6 @@ module.exports = {
   supabaseUrl: require('./supabase-url'),
   migrations: require('./migrations'),
   pgRunner: require('./pg-runner'),
-  migrationRunner: require('./migration-runner')
+  migrationRunner: require('./migration-runner'),
+  preconditions: require('./preconditions')
 };

@@ -5,6 +5,32 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.8] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.9`,
+  the deliberate close to the v0.6.x incident saga. v0.6.9 introduces
+  `auditPreconditions()` and `verifyOutcomes()` — a front-loaded check
+  before any state-changing operation, plus a closing check that
+  confirms what was just done actually took. Closes the failure class
+  that produced four of the eight v0.6.x patches: a documented manual
+  step that wasn't verified in code. The wizard now refuses to proceed
+  on missing extensions, missing access tokens, missing Vault secrets,
+  or any other unmet external precondition. See the root
+  `CHANGELOG.md` v0.6.9 entry for the full list of checks and the
+  10 regression fixtures.
+
+### Notes
+- Fifth and final audit-trail bump in the v0.6.5–v0.6.9 arc. Eight
+  underlying patches in 48 hours, three meta-installer audit-trail
+  bumps tracking them. The principle that emerged and is now locked
+  into the codebase: *"Documentation is not verification."*
+- v0.7.0 is the next minor release, planned to extend the audit/verify
+  pattern from install-time into runtime via `/api/health/full` plus
+  fixes for theme persistence and auth-cookie UX. Not bundled into
+  v0.6.9 to keep the narrative clean: v0.6.x = install-time correctness,
+  v0.7.x = runtime correctness.
+
 ## [0.2.7] — 2026-04-26
 
 ### Documentation

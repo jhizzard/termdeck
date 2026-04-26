@@ -34,7 +34,8 @@ const {
   dotenv,
   supabaseUrl: urlHelper,
   migrations,
-  pgRunner
+  pgRunner,
+  preconditions
 } = require(SETUP_DIR);
 
 // Pinned fallback used only when the npm registry is unreachable. Bump this
@@ -593,6 +594,18 @@ async function main(argv) {
     }
   }
 
+  // v0.6.9: front-loaded precondition audit. Runs BEFORE link so we don't
+  // create state (function deploy, function secrets, schedule SQL) that the
+  // user would have to manually clean up if a precondition is missing. Every
+  // gap is reported in one pass with actionable hints. The audit class — env
+  // tokens, pg extensions, Vault secret — covers the v0.6.4 / v0.6.6 / v0.6.7
+  // / v0.6.9-equivalent failure modes that previously surfaced one-per-patch.
+  if (!flags.dryRun) {
+    const audit = await preconditions.auditRumenPreconditions({ secrets, env: process.env });
+    preconditions.printAuditReport(audit, 'rumen');
+    if (!audit.ok) return 10;
+  }
+
   if (!(await link(projectRef, flags.dryRun))) return 4;
 
   // Backfill SUPABASE_ACCESS_TOKEN into ~/.claude/mcp.json now that
@@ -630,6 +643,15 @@ async function main(argv) {
   if (!(await testFunction(projectRef, secrets, flags.dryRun))) return 8;
   if (!flags.skipSchedule) {
     if (!(await applySchedule(projectRef, secrets, flags.dryRun))) return 9;
+    // v0.6.9: post-write outcome verification. Confirms cron.job has the
+    // active rumen-tick row. Doesn't poll for the first 15-min tick — that's
+    // too long for an interactive wizard — but tells the user the exact
+    // query to run after waiting if they want firing-confirmation.
+    if (!flags.dryRun) {
+      const verify = await preconditions.verifyRumenOutcomes({ secrets });
+      preconditions.printVerifyReport(verify, 'rumen');
+      if (!verify.ok) return 11;
+    }
   } else {
     process.stdout.write('→ Skipping pg_cron schedule (per --skip-schedule) ✓\n');
   }
