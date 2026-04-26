@@ -385,12 +385,24 @@ async function verifyStatus(client) {
 // on disk first; config.yaml only flips to rag.enabled=true once the
 // schema is actually in place.
 function writeSecretsFile(inputs, dryRun) {
+  // Normalize transaction-pooler URLs by appending pgbouncer=true&
+  // connection_limit=1 when missing. Brad's Rumen logs (2026-04-26)
+  // surfaced the warning Supabase recommends: transaction-mode pooling
+  // (port 6543) needs those params or PgBouncer can return prepared-
+  // statement errors under load. Direct connections and session-mode
+  // pooler URLs are returned unchanged. See setup/supabase-url.js.
+  const normalized = urlHelper.normalizeDatabaseUrl(inputs.databaseUrl);
+  if (normalized.modified) {
+    step('Detected transaction pooler URL — appending ?pgbouncer=true&connection_limit=1...');
+    ok();
+  }
+
   step('Writing ~/.termdeck/secrets.env...');
   if (dryRun) { ok('(dry-run)'); return; }
   dotenv.writeSecrets({
     SUPABASE_URL: inputs.projectUrl.url,
     SUPABASE_SERVICE_ROLE_KEY: inputs.serviceRoleKey,
-    DATABASE_URL: inputs.databaseUrl,
+    DATABASE_URL: normalized.url,
     OPENAI_API_KEY: inputs.openaiKey,
     ...(inputs.anthropicKey ? { ANTHROPIC_API_KEY: inputs.anthropicKey } : {})
   });

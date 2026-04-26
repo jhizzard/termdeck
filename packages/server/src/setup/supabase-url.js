@@ -97,6 +97,65 @@ function looksLikePostgresUrl(url) {
   return null;
 }
 
+// Detect a Supabase Shared Pooler URL in TRANSACTION mode. Pattern:
+//   postgres://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres
+// Session mode (port 5432 on the pooler) and direct connections
+// (db.<ref>.supabase.co:5432) do NOT need pgbouncer params and must be
+// left alone. Returns true only for the transaction-pooler shape.
+function isTransactionPoolerUrl(parsedUrl) {
+  if (!parsedUrl) return false;
+  const host = (parsedUrl.hostname || '').toLowerCase();
+  // pooler hosts end in `.pooler.supabase.com`. Be lenient on the regional
+  // prefix — Supabase has used `aws-0-` historically and may add others.
+  if (!host.endsWith('.pooler.supabase.com')) return false;
+  // Transaction mode is port 6543. Session mode on the same host is 5432
+  // and doesn't want pgbouncer flags.
+  return parsedUrl.port === '6543';
+}
+
+// Normalize a DATABASE_URL by appending the pgbouncer transaction-mode
+// params Supabase requires when connecting through a transaction pooler.
+//
+// Brad's Rumen logs (2026-04-26) warned:
+//   "DATABASE_URL is a Shared Pooler URL but does not have ?pgbouncer=true.
+//    Append ?pgbouncer=true&connection_limit=1 for transaction-mode
+//    compatibility."
+//
+// The warning is harmless on its own — Rumen's runtime didn't fail because
+// of it — but missing the params can manifest as prepared-statement errors
+// or stuck connections under load with PgBouncer in transaction mode. The
+// safest path is for the wizard to add them on the user's behalf when the
+// URL shape clearly indicates they're needed.
+//
+// Returns `{ url, modified }`. `modified` is true when params were added.
+// Idempotent: a URL that already has pgbouncer=true is returned unchanged.
+// Only touches transaction-pooler URLs (port 6543 on *.pooler.supabase.com).
+// Direct connections (port 5432, db.* hostname) and session-pooler URLs
+// (port 5432 on pooler hostname) are returned unchanged.
+//
+// Errors are swallowed — a malformed URL returns `{ url: original, modified: false }`
+// because validation is the caller's job (looksLikePostgresUrl handles that).
+function normalizeDatabaseUrl(url) {
+  if (!url || typeof url !== 'string') return { url, modified: false };
+  let u;
+  try {
+    u = new URL(url);
+  } catch (_err) {
+    return { url, modified: false };
+  }
+  if (!isTransactionPoolerUrl(u)) return { url, modified: false };
+
+  // Already has pgbouncer set? Don't touch.
+  if (u.searchParams.has('pgbouncer')) return { url, modified: false };
+
+  u.searchParams.set('pgbouncer', 'true');
+  // Set connection_limit only if not already set — preserve user intent.
+  if (!u.searchParams.has('connection_limit')) {
+    u.searchParams.set('connection_limit', '1');
+  }
+  return { url: u.toString(), modified: true };
+}
+
 // Mask all but the last 4 chars of a secret for logging.
 function maskSecret(value) {
   if (!value || typeof value !== 'string') return '';
@@ -110,5 +169,7 @@ module.exports = {
   looksLikeOpenAiKey,
   looksLikeAnthropicKey,
   looksLikePostgresUrl,
+  isTransactionPoolerUrl,
+  normalizeDatabaseUrl,
   maskSecret
 };

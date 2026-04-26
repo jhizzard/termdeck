@@ -166,6 +166,20 @@ function preflight() {
   }
   ok();
 
+  // Normalize DATABASE_URL for transaction-pooler usage (v0.6.6+). Users
+  // whose ~/.termdeck/secrets.env was written by an earlier wizard version
+  // may have a Shared Pooler URL without ?pgbouncer=true. The Edge Function
+  // logs a warning when that's the case (Brad's 2026-04-26 report). Fix it
+  // here in-memory before forwarding to `supabase secrets set` so the
+  // Function gets a clean URL even on partial-upgrade installs. Direct
+  // connections and session-mode pooler URLs are returned unchanged.
+  const normalized = urlHelper.normalizeDatabaseUrl(secrets.DATABASE_URL);
+  if (normalized.modified) {
+    step('Detected transaction pooler URL — appending ?pgbouncer=true&connection_limit=1 for the Edge Function...');
+    secrets.DATABASE_URL = normalized.url;
+    ok();
+  }
+
   // OPENAI_API_KEY is optional: when present, Rumen's Relate phase generates
   // real embeddings for semantic+keyword hybrid search. When absent, Rumen
   // falls back to keyword-only matching (still works, but loses cross-project

@@ -5,6 +5,25 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.2.5] — 2026-04-26
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.6.6`.
+  v0.6.6 auto-appends `?pgbouncer=true&connection_limit=1` on Supabase
+  transaction-pooler URLs (port 6543 on `*.pooler.supabase.com`),
+  closing the secondary warning Brad's Rumen logs showed alongside
+  the v0.6.5 schema error. Direct connections and session-mode pooler
+  URLs are unchanged. Detection lives in `setup/supabase-url.js`
+  (`isTransactionPoolerUrl`, `normalizeDatabaseUrl`) and is wired into
+  both `init-mnestra` (write time) and `init-rumen` (Edge Function
+  secret-set time, for partial-upgrade installs). 15 regression
+  fixtures pin the detection rules.
+
+### Notes
+- No installer behavior change. `npx @jhizzard/termdeck-stack` always
+  pulls `@jhizzard/termdeck@latest`. Mnestra and Rumen versions are
+  unchanged through this bump (0.2.2 and 0.4.3 respectively).
+
 ## [0.2.4] — 2026-04-26
 
 ### Documentation

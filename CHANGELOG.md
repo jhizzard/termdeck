@@ -16,6 +16,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 25: Supabase MCP in the setup wizard — collapse the 4-credential paste step to a one-click project picker. Plan at `docs/sprint-25-supabase-mcp/`.
 - Sprint 25 T5: Flashback regression audit — verify Flashback fires end-to-end again after Sprint-21 fix (Josh reports silence on 2026-04-25).
 
+## [0.6.6] - 2026-04-26
+
+### Added
+- **Auto-append `?pgbouncer=true&connection_limit=1` on Supabase transaction-pooler URLs.** Brad's 2026-04-26 Rumen logs surfaced the warning Supabase recommends but our wizard had been ignoring: a Shared Pooler URL on port 6543 (transaction mode) needs those query params or PgBouncer can return prepared-statement errors under load. The wizard now detects the URL shape — host ends in `.pooler.supabase.com` AND port is `6543` — and appends the params on the user's behalf. Direct connections (port 5432, `db.<ref>.supabase.co`) and session-mode pooler URLs (port 5432 on pooler hostname) are unchanged. Idempotent: a URL that already has `pgbouncer=true` is returned untouched. Wiring lives in two places: (a) `init-mnestra.js writeSecretsFile()` normalizes at write time so the URL hits disk clean; (b) `init-rumen.js preflight()` normalizes again when reading from `secrets.env` to forward to the Edge Function as a function secret, so partial-upgrade installs (users who ran v0.6.5 wizards previously) still get a clean URL handed to Rumen on a v0.6.6 re-run.
+- New `tests/supabase-url-normalize.test.js` (15 cases): transaction-pooler detection (incl. future regional prefixes like `gcp-1-*`), session-mode pooler not detected, direct connection not detected, non-Supabase host not detected, append-when-missing, idempotent on already-set, preserve user-set `connection_limit`, preserve unrelated query params, defensive on null/empty/malformed input.
+
+### Notes
+- This is a UX polish release — the v0.6.5 schema fix already unblocked Rumen end-to-end. v0.6.6 closes the secondary warning Brad's logs showed alongside the schema error. Anyone whose `~/.termdeck/secrets.env` already has a transaction-pooler URL without the params can simply re-run `termdeck init --mnestra --yes` after upgrading; the normalizer rewrites the line in place via the merge-aware writer in `dotenv-io.js`.
+- Stack-installer audit-trail bumped 0.2.4 → 0.2.5. Mnestra and Rumen unchanged.
+- Full CLI suite: 48/48 green (was 33, +15 new in `supabase-url-normalize.test.js`).
+
 ## [0.6.5] - 2026-04-26
 
 ### Fixed

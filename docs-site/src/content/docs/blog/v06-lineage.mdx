@@ -1,17 +1,17 @@
 ---
 title: "v0.6 — what changed in the setup wizard, and why"
-description: "The v0.6.0 → v0.6.4 release arc rebuilt the init wizards around persist-first ordering, idempotent re-runs, and access-token guidance. Here's what to know if you're upgrading or installing fresh."
+description: "The v0.6.0 → v0.6.5 release arc rebuilt the init wizards around persist-first ordering, idempotent re-runs, access-token guidance, and a Mnestra×Rumen schema-drift fix. Here's what to know if you're upgrading or installing fresh."
 draft: true
 ---
 
-The v0.6 series shipped fast — five point releases between 2026-04-25 and 2026-04-26 — and most of the changes are in the setup wizards. If you ran `termdeck init --mnestra` or `termdeck init --rumen` on v0.5.x or v0.6.0 and bounced off, the rest of this post explains what was broken, what's fixed, and what your upgrade path looks like.
+The v0.6 series shipped fast — six point releases between 2026-04-25 and 2026-04-26 — and most of the changes are in the setup wizards. If you ran `termdeck init --mnestra` or `termdeck init --rumen` on v0.5.x or v0.6.0 and bounced off, the rest of this post explains what was broken, what's fixed, and what your upgrade path looks like.
 
 ## TL;DR
 
 ```bash
 npm cache clean --force
-npm i -g @jhizzard/termdeck@latest      # should resolve 0.6.4
-termdeck --version                       # confirm: 0.6.4
+npm i -g @jhizzard/termdeck@latest      # should resolve 0.6.5
+termdeck --version                       # confirm: 0.6.5
 ```
 
 If you have an existing partial setup from v0.6.0–v0.6.2, your `~/.termdeck/secrets.env` may have only some keys — that's expected, and v0.6.3+ recovers cleanly:
@@ -73,6 +73,8 @@ v0.6.3 also added the resume path. On the next run, `collectInputs` reads `~/.te
 
 On any pg failure, the wizard now prints the resume hint pointing the user at `termdeck init --mnestra --yes`.
 
+**v0.6.5 — Mnestra×Rumen schema drift fix.** After v0.6.4 unblocked Rumen install, the Edge Function deployed cleanly but the manual POST test returned 500, and every subsequent `pg_cron` tick failed with `column m.source_session_id does not exist` (Postgres SQLSTATE 42703). Root cause: schema drift between the published Mnestra migration set and Rumen's runtime contract. The `source_session_id TEXT` column on `memory_items` existed in the pre-rebrand `rag-system` schema (and is still present on stores upgraded from rag-system → Engram → Mnestra), but was dropped from the published Mnestra migrations during the rebrand. Rumen v0.4.x's Extract phase still depends on it. So fresh `termdeck init --mnestra` flows produced a schema that worked for TermDeck/Flashback but couldn't host Rumen. Fix: new bundled migration `007_add_source_session_id.sql` adds the column back as `TEXT`, idempotent, with a partial index. Mirrored to `@jhizzard/mnestra@0.2.2` for direct installers. **The Codex critique about cross-package version drift was directionally right** — this is exactly the failure mode it predicted, and the v0.6.5 release coordinates a TermDeck and Mnestra bump together with audit-trail entries on both sides plus the meta-installer.
+
 **v0.6.4 — Rumen access-token hint + `--from-env` bypass.** Two unrelated improvements bundled because they shipped on the same day:
 
 1. `termdeck init --rumen` now detects when `supabase link` fails because of a missing access token, and emits a path-aware hint pointing at the Supabase PAT dashboard plus the exact `export SUPABASE_ACCESS_TOKEN=sbp_...` command. The Supabase CLI's stock error message suggests `supabase login` as one of two options, but `supabase login` opens a browser — broken for SSH or headless installs.
@@ -132,9 +134,9 @@ The longer write-up of what that taught me about wizard design is on my personal
 
 ## Versions live on npm
 
-- `@jhizzard/termdeck@0.6.4`
-- `@jhizzard/termdeck-stack@0.2.3`
-- `@jhizzard/mnestra@0.2.1` (unchanged through this series)
-- `@jhizzard/rumen@0.4.3` (unchanged through this series)
+- `@jhizzard/termdeck@0.6.5`
+- `@jhizzard/termdeck-stack@0.2.4`
+- `@jhizzard/mnestra@0.2.2` (bumped in v0.6.5 to ship the new migration to direct installers)
+- `@jhizzard/rumen@0.4.3` (unchanged through this series — the schema fix was on Mnestra's side)
 
 Reach out if you hit something this post doesn't cover. The wizard tells you where your secrets are saved, what failed, and how to retry — paste the output verbatim and I'll route it back.
