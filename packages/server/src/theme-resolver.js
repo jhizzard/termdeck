@@ -40,7 +40,7 @@ function getCurrentConfig() {
     const { loadConfig } = require('./config');
     _configCache = { mtimeMs: stat.mtimeMs, value: loadConfig(), frozen: false };
     return _configCache.value;
-  } catch {
+  } catch (_err) {
     return _configCache.value || {};
   }
 }

@@ -38,7 +38,7 @@ function defaultPackageVersion() {
   try {
     const pkg = require(path.join(__dirname, '..', '..', '..', 'package.json'));
     return pkg && pkg.version ? String(pkg.version) : null;
-  } catch {
+  } catch (_err) {
     return null;
   }
 }
@@ -68,7 +68,7 @@ function readCache(cachePath) {
     if (!parsed || typeof parsed !== 'object') return null;
     if (parsed.version !== CACHE_VERSION) return null;
     return parsed;
-  } catch {
+  } catch (_err) {
     return null;
   }
 }
@@ -77,7 +77,7 @@ function writeCache(cachePath, data) {
   try {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
     fs.writeFileSync(cachePath, JSON.stringify(data, null, 2), 'utf8');
-  } catch {
+  } catch (_err) {
     // Read-only home, ENOSPC, race with another process — all benign here.
   }
 }
@@ -91,7 +91,7 @@ async function fetchLatest(registryUrl) {
     const json = await res.json();
     const latest = json && json.latest;
     return isValidSemver(latest) ? latest : null;
-  } catch {
+  } catch (_err) {
     return null;
   } finally {
     clearTimeout(timeout);
@@ -144,7 +144,7 @@ async function checkAndPrintHint(_config, opts) {
       '       Or run `termdeck doctor` for the whole stack. ' +
         'Suppress with TERMDECK_NO_UPDATE_CHECK=1.'
     );
-  } catch {
+  } catch (_err) {
     // Never throw from a fire-and-forget hook.
   }
 }

@@ -58,7 +58,7 @@ async function _detectInstalled(pkg) {
       child = spawn('npm', ['ls', '-g', pkg, '--depth=0', '--json'], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-    } catch {
+    } catch (_err) {
       return resolve(null);
     }
 
@@ -80,7 +80,7 @@ async function _detectInstalled(pkg) {
         const dep = parsed && parsed.dependencies && parsed.dependencies[pkg];
         if (dep && typeof dep.version === 'string') return resolve(dep.version);
         return resolve(null);
-      } catch {
+      } catch (_err) {
         return resolve(null);
       }
     });
@@ -118,13 +118,13 @@ async function _fetchLatest(pkg) {
             const parsed = JSON.parse(body);
             if (parsed && typeof parsed.latest === 'string') return done(parsed.latest);
             return done(null);
-          } catch {
+          } catch (_err) {
             return done(null);
           }
         });
         res.on('error', () => done(null));
       });
-    } catch {
+    } catch (_err) {
       return done(null);
     }
     req.on('timeout', () => {
