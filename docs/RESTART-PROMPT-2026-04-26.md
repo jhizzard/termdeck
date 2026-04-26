@@ -79,6 +79,12 @@ A few words at the top of each TermDeck terminal panel describing what it's abou
 
 Marking insights as seen via the modal doesn't decrement the panel header's "N new" badge until full panel refresh. Fix: optimistic-update the client state on click (option C from the memory). ~30 LOC client + 5 LOC server. Pattern is the same as the existing status-dot WS sync.
 
+### Lane 5 (parallel content track) — joshuaizzard.com stack-installer blog post (Josh requested 2026-04-26 evening)
+
+Short post pitching the unified four-layer stack as one-command-installable: `npx @jhizzard/termdeck-stack` → TermDeck display + Mnestra memory + Rumen learning + Supabase MCP, all wired in ~90 seconds. Match the existing portfolio post tone (narrative, ~400–600 words). Filename: `src/content/blog/the-stack-in-one-command.mdx` (or similar). Reference the v0.7.x install-time-correctness arc as proof the friction has been hardened. Optional sibling: a unified tagline-card near the top of `page.tsx` that ties the three flagship cards together with a "one command, the whole stack" hook.
+
+Not blocking the harness-hook fix; pure content track that one terminal can take while the other three handle Lanes 1-4. Or write between sprints during a quieter moment.
+
 ## Other pending work (not Sprint 35 unless scope allows)
 
 - **Migration-001 idempotency** (CREATE OR REPLACE FUNCTION return-type collision when re-running migrations against an upgraded store). Surfaced 2026-04-25 v0.6.3 live test. Doesn't affect fresh installs.
