@@ -915,6 +915,120 @@ function createServer(config) {
     res.json({ ok: true, bytes: normalized.length, replyCount: session.meta.replyCount });
   });
 
+  // POST /api/sessions/:id/poke - PTY-flush recovery endpoint
+  // Body: { methods?: ('sigcont' | 'bracketed-paste' | 'cr-flood' | 'all')[] }  default ['all']
+  // Used to recover from the post-stop PTY delivery gap where injected input via /input
+  // returns 200 OK but never reaches the running TUI process. Tries multiple flush
+  // mechanisms in sequence and reports per-attempt status plus session state before/after.
+  // Discovered 2026-04-26 / 2026-04-27 during ClaimGuard Sprints 4-6 (TMR 4+1 orchestration);
+  // see ~/.claude/plans/skill-tmr-orchestrate/known-issues/2026-04-27-pty-delivery-gap.md
+  app.post('/api/sessions/:id/poke', async (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.meta.status === 'exited' || !session.pty) {
+      return res.status(404).json({ error: 'Session is exited' });
+    }
+
+    const { methods } = req.body || {};
+    const requested = Array.isArray(methods) && methods.length > 0
+      ? methods
+      : ['all'];
+    const runAll = requested.includes('all');
+    const wants = (m) => runAll || requested.includes(m);
+
+    const before = {
+      status: session.meta.status,
+      statusDetail: session.meta.statusDetail || '',
+      lastActivity: session.meta.lastActivity,
+      pid: session.pty.pid,
+    };
+
+    const attempts = [];
+
+    // Attempt 1: SIGCONT — wakes the child process if it's somehow stopped (job-control state).
+    // Harmless when the process is already running.
+    if (wants('sigcont')) {
+      try {
+        process.kill(session.pty.pid, 'SIGCONT');
+        attempts.push({ method: 'sigcont', ok: true });
+      } catch (err) {
+        attempts.push({ method: 'sigcont', ok: false, error: err.message });
+      }
+    }
+
+    // Attempt 2: bracketed-paste sequence wrapping a single CR.
+    // Some TUIs treat bracketed-paste differently from raw input; this is a documented
+    // (and previously untested) workaround mentioned in the TermDeck API reference.
+    if (wants('bracketed-paste')) {
+      try {
+        session.pty.write('\x1b[200~\r\x1b[201~');
+        attempts.push({ method: 'bracketed-paste', ok: true });
+      } catch (err) {
+        attempts.push({ method: 'bracketed-paste', ok: false, error: err.message });
+      }
+    }
+
+    // Wait briefly between attempts so each one has a chance to take effect
+    // before the next floods the buffer.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Attempt 3: triple CR — multiple Enter keypresses in case the TUI needs more
+    // than one to register. Each \r is a literal Enter (zsh/readline submit).
+    if (wants('cr-flood')) {
+      try {
+        session.pty.write('\r\r\r');
+        attempts.push({ method: 'cr-flood', ok: true });
+      } catch (err) {
+        attempts.push({ method: 'cr-flood', ok: false, error: err.message });
+      }
+    }
+
+    // Final settle delay so `after` reflects the result of all attempts.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const after = {
+      status: session.meta.status,
+      statusDetail: session.meta.statusDetail || '',
+      lastActivity: session.meta.lastActivity,
+    };
+
+    // Heuristic recovery signal: if lastActivity advanced between before and after,
+    // at least one attempt got the TUI to consume input. Not definitive (the TUI
+    // might have advanced for other reasons) but a useful hint to the caller.
+    const advanced = before.lastActivity !== after.lastActivity;
+
+    res.json({
+      ok: true,
+      pid: session.pty.pid,
+      before,
+      after,
+      advanced,
+      attempts,
+    });
+  });
+
+  // GET /api/sessions/:id/buffer - lightweight introspection of recent input writes
+  // Returns the session's recent _inputBuffer state (what the orchestrator has
+  // written via /input that may or may not have been consumed by the TUI yet).
+  // Useful for diagnosing whether bytes are queued vs consumed.
+  app.get('/api/sessions/:id/buffer', (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.meta.status === 'exited' || !session.pty) {
+      return res.status(404).json({ error: 'Session is exited' });
+    }
+    res.json({
+      ok: true,
+      pid: session.pty.pid,
+      inputBufferLength: (session._inputBuffer || '').length,
+      inputBufferPreview: (session._inputBuffer || '').slice(-200),
+      lastActivity: session.meta.lastActivity,
+      status: session.meta.status,
+      statusDetail: session.meta.statusDetail || '',
+      replyCount: session.meta.replyCount || 0,
+    });
+  });
+
   // POST /api/sessions/:id/resize - resize terminal
   app.post('/api/sessions/:id/resize', (req, res) => {
     const session = sessions.get(req.params.id);
