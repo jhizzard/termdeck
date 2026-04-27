@@ -17,6 +17,28 @@ Constraints (from Joshua, 2026-04-27):
 
 After Sprints 35–37, TermDeck has plumbing parity, hooks bundled, and orchestration patterns shipped. The next-level value is helping users *see* their accumulated context — not just recall by query, but explore by relationship. The `memory_relationships` table has been shipped since v0.1 (`packages/server/src/setup/mnestra-migrations/001_mnestra_tables.sql`) and is doing nothing. Time to bring it to life.
 
+## Orchestrator pre-sprint task — Brad's bundled-hook Mnestra-direct rewrite (P0)
+
+**Folded in 2026-04-27 16:55 ET per Joshua's call.** This is a release-quality deliverable that ships as part of v0.10.0/v1.0.0 alongside the graph work, but it is NOT one of the 4+1 lanes — orchestrator applies it directly before kickoff (single-track, ~120 LOC), so the lane structure stays 4+1 and the lanes ship in parallel as designed.
+
+**Why P0:** Brad is the only outside TermDeck user besides Joshua. v0.8.0 ships a bundled `~/.claude/hooks/memory-session-end.js` that delegates to `~/Documents/Graciella/rag-system/src/scripts/process-session.ts` — Joshua's private repo. Fresh users (i.e., Brad) get a hook that runs but silent-fails because `rag-system` doesn't exist on their box. Net effect: Brad's `pgvector` stays at 0 memories despite MCP wired and webhook bridge alive. See `docs/BACKLOG.md` § P0 for full context.
+
+**Scope:** rewrite `packages/stack-installer/assets/hooks/memory-session-end.js` to call OpenAI embeddings + Supabase REST `/rest/v1/memory_items` directly — no `rag-system` dependency. Brad's working workaround at `/tmp/brad-mnestra-hook.js` (~120 LOC, sent via WhatsApp 2026-04-27 15:30 ET) is the canonical reference; bring it home with three adjustments:
+
+1. Generalize the project-detection map (Brad's workaround has only `structural360`; the bundled version should ship with a sensible default + extension instructions in the README).
+2. Fail-soft logging (already present in the workaround) — preserve.
+3. Env-var validation (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `OPENAI_API_KEY`) at hook entry; clear log message if missing.
+
+**Test additions:** extend `tests/stack-installer-hook-merge.test.js` to verify the new hook's structure (env-var read, transcript-summary extraction, OpenAI call signature, Supabase POST shape). Mock `fetch` at module boundary; no live network calls in tests.
+
+**Validation gate:** Brad re-runs `npx @jhizzard/termdeck-stack` against his structural-mvp box; confirms a row lands in `memory_items` after the next Claude Code session close. Joshua confirms his daily-driver flow still works (his existing `~/.claude/hooks/memory-session-end.js` writes to `rag-system` and shouldn't be replaced — the bundled version is what new installs get; Joshua's existing personal hook is independent).
+
+**Release timing:** orchestrator applies this before kicking off the 4+1 graph lanes, OR concurrent with T1's first phase. The 4+1 lanes don't depend on it — independent deliverable. At sprint close, both the hook rewrite and the graph work ship as v0.10.0 (or v1.0.0) in a single coordinated release.
+
+**Acceptance criterion (added):** A fresh user running `npx @jhizzard/termdeck-stack` without `rag-system` on their box gets a working session-end ingestion path that fills `memory_items`. Verified end-to-end against Brad's box.
+
+---
+
 ## Lanes
 
 | Lane | Goal | Primary files |
