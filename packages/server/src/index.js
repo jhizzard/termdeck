@@ -63,6 +63,53 @@ const { getFullHealth } = require('./health');
 const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject, updateConfig } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
+const { createSprintRoutes } = require('./sprint-routes');
+const orchestrationPreview = require('./orchestration-preview');
+
+// Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
+// helper is decoupled from T2's templates.js / init-project.js; we resolve
+// them here and pass them into the helper. If a module is missing (e.g.
+// install hasn't been completed yet), the route surfaces a 503 with a clear
+// error rather than crashing the server.
+let _t2Templates = null;
+let _t2TemplatesResolved = false;
+function _getT2Templates() {
+  if (_t2TemplatesResolved) return _t2Templates;
+  _t2TemplatesResolved = true;
+  try { _t2Templates = require('../../cli/src/templates'); }
+  catch (_e) { _t2Templates = null; }
+  return _t2Templates;
+}
+
+let _t2InitProject = null;
+let _t2InitProjectResolved = false;
+function _getT2InitProject() {
+  if (_t2InitProjectResolved) return _t2InitProject;
+  _t2InitProjectResolved = true;
+  try {
+    const mod = require('../../cli/src/init-project');
+    _t2InitProject = (mod && typeof mod.initProject === 'function')
+      ? mod.initProject
+      : (typeof mod === 'function' ? mod : null);
+  } catch (_e) {
+    _t2InitProject = null;
+  }
+  return _t2InitProject;
+}
+
+function _getT2DestFor() {
+  try {
+    const mod = require('../../cli/src/init-project');
+    return (mod && typeof mod._destFor === 'function') ? mod._destFor : undefined;
+  } catch (_e) {
+    return undefined;
+  }
+}
+
+function _termdeckVersion() {
+  try { return require('../../../package.json').version; }
+  catch { return '0.0.0'; }
+}
 
 function createServer(config) {
   const app = express();
@@ -88,6 +135,14 @@ function createServer(config) {
   // Serve client files
   const clientDir = path.join(__dirname, '..', '..', 'client', 'public');
   app.use(express.static(clientDir));
+
+  // Serve repo-rooted /docs as static markdown so the dashboard right-rail Guide
+  // panel can fetch docs/orchestrator-guide.md and render it client-side.
+  // Sprint 37 T1.
+  const docsDir = path.join(__dirname, '..', '..', '..', 'docs');
+  if (fs.existsSync(docsDir)) {
+    app.use('/docs', express.static(docsDir));
+  }
 
   // Initialize database
   let db = null;
@@ -662,10 +717,12 @@ function createServer(config) {
     res.json(sessions.getAll());
   });
 
-  // POST /api/sessions - create a new terminal session
-  app.post('/api/sessions', (req, res) => {
-    const { command, cwd, project, label, type, theme, reason } = req.body;
-
+  // Reusable PTY spawn + wire helper. Used by POST /api/sessions and the
+  // in-dashboard 4+1 sprint runner (Sprint 37 T4) so multi-panel spawns reuse
+  // the same wiring (transcripts, RAG, Mnestra flashback) without copy-paste.
+  // Returns the Session object regardless of PTY success — status will be
+  // 'errored' if pty.spawn threw.
+  function spawnTerminalSession({ command, cwd, project, label, type, theme, reason }) {
     const rawCwd = cwd || config.projects?.[project]?.path || os.homedir();
     const resolvedCwd = path.resolve(rawCwd.replace(/^~/, os.homedir()));
 
@@ -679,7 +736,6 @@ function createServer(config) {
       reason: reason || 'launched via API'
     });
 
-    // Spawn PTY
     if (pty) {
       // Three launch shapes:
       //   (1) no command            → spawn the default shell interactively
@@ -827,7 +883,23 @@ function createServer(config) {
       session.meta.statusDetail = 'node-pty not available';
     }
 
+    return session;
+  }
+
+  // POST /api/sessions - create a new terminal session
+  app.post('/api/sessions', (req, res) => {
+    const { command, cwd, project, label, type, theme, reason } = req.body || {};
+    const session = spawnTerminalSession({ command, cwd, project, label, type, theme, reason });
     res.status(201).json(session.toJSON());
+  });
+
+  // Sprint runner endpoints (Sprint 37 T4) — in-dashboard 4+1 sprint runner.
+  // Wraps spawnTerminalSession with two-stage submit + verify-and-poke.
+  createSprintRoutes({
+    app,
+    config,
+    spawnTerminalSession,
+    getSession: (id) => sessions.get(id),
   });
 
   // GET /api/sessions/:id - get session details
@@ -1142,6 +1214,66 @@ function createServer(config) {
     } catch (err) {
       console.error('[config] addProject failed:', err.message);
       res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /api/projects/:name/orchestration-preview — Sprint 37 T3.
+  // Renders T2's scaffolding templates without writing to disk so the
+  // dashboard can show "if you ran `termdeck init --project <name>`, this
+  // is what would be created." Read-only.
+  app.get('/api/projects/:name/orchestration-preview', (req, res) => {
+    const templates = _getT2Templates();
+    if (!templates) {
+      return res.status(503).json({
+        error: 'Orchestration scaffolding unavailable: packages/cli/src/templates.js not loaded'
+      });
+    }
+    try {
+      const preview = orchestrationPreview.buildPreview({
+        name: req.params.name,
+        projects: config.projects || {},
+        cwd: process.cwd(),
+        templates,
+        destFor: _getT2DestFor(),
+        version: _termdeckVersion()
+      });
+      res.json(preview);
+    } catch (err) {
+      const status = err.statusCode || 500;
+      if (status >= 500) console.error('[orchestration-preview] GET failed:', err.message);
+      res.status(status).json({ error: err.message });
+    }
+  });
+
+  // POST /api/projects/:name/orchestration-preview/generate — Sprint 37 T3.
+  // Calls T2's initProject() to actually write the scaffolding. Body:
+  // { force?: boolean }. Returns the same envelope as the GET preview but
+  // with `created` instead of `wouldCreate`.
+  app.post('/api/projects/:name/orchestration-preview/generate', async (req, res) => {
+    const templates = _getT2Templates();
+    const initProject = _getT2InitProject();
+    if (!templates || !initProject) {
+      return res.status(503).json({
+        error: 'Orchestration scaffolding unavailable: T2 CLI modules not loaded'
+      });
+    }
+    const force = !!(req.body && req.body.force);
+    try {
+      const result = await orchestrationPreview.generateScaffolding({
+        name: req.params.name,
+        projects: config.projects || {},
+        cwd: process.cwd(),
+        force,
+        initProject,
+        templates,
+        destFor: _getT2DestFor(),
+        version: _termdeckVersion()
+      });
+      res.json(result);
+    } catch (err) {
+      const status = err.statusCode || 500;
+      if (status >= 500) console.error('[orchestration-preview] generate failed:', err.message);
+      res.status(status).json({ error: err.message });
     }
   });
 

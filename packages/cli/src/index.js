@@ -111,6 +111,18 @@ const args = process.argv.slice(2);
 if (args[0] === 'init') {
   const mode = args[1];
   const rest = args.slice(2);
+
+  // Sprint 37 T2: refuse mode-mixing. The dispatch picks args[1] as the
+  // single mode flag, but a user who writes `init --project foo --mnestra`
+  // probably intended only one of those. Surface the conflict instead of
+  // silently picking the first.
+  const MODES = ['--project', '--mnestra', '--rumen'];
+  const presentModes = MODES.filter((m) => args.slice(1).includes(m));
+  if (presentModes.length > 1) {
+    console.error(`[cli] init: pass only one of ${MODES.join(' | ')}; got ${presentModes.join(' + ')}`);
+    process.exit(1);
+  }
+
   const run = (modPath) => {
     const fn = require(modPath);
     return fn(rest).then((code) => process.exit(code || 0));
@@ -129,9 +141,19 @@ if (args[0] === 'init') {
     });
     return;
   }
-  console.error('Usage: termdeck init --mnestra | --rumen');
-  console.error('  termdeck init --mnestra   Configure Tier 2 memory (Supabase + Mnestra)');
-  console.error('  termdeck init --rumen    Deploy Tier 3 async learning (Rumen)');
+  if (mode === '--project') {
+    // init-project takes the project name as its first positional arg, plus
+    // optional --dry-run / --force flags. Pass `rest` straight through.
+    run(path.join(__dirname, 'init-project.js')).catch((err) => {
+      console.error('[cli] init --project failed:', err && err.stack || err);
+      process.exit(1);
+    });
+    return;
+  }
+  console.error('Usage: termdeck init --mnestra | --rumen | --project <name>');
+  console.error('  termdeck init --mnestra            Configure Tier 2 memory (Supabase + Mnestra)');
+  console.error('  termdeck init --rumen              Deploy Tier 3 async learning (Rumen)');
+  console.error('  termdeck init --project <name>     Scaffold a new project with CLAUDE.md + orchestration docs');
   process.exit(1);
 }
 
@@ -214,6 +236,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
     termdeck init --mnestra     Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
+    termdeck init --project NAME  Scaffold a new project with CLAUDE.md + orchestration docs (--dry-run, --force)
     termdeck forge              Generate Claude skills from memories (experimental)
     termdeck doctor             Diagnose stack — npm versions + Supabase schema (use --no-schema to skip the DB probe)
 

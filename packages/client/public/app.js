@@ -85,6 +85,10 @@
       // Sprint 19 T2: auto-open setup wizard if /api/setup reports firstRun.
       // Silent-fail if the endpoint isn't available yet (T1 not merged).
       maybeAutoOpenSetupWizard();
+
+      // Sprint 37 T1: orchestrator Guide right-rail. Lazy — fetches the doc
+      // on first expand to keep page load light.
+      setupGuideRail();
     }
 
     // ===== Create Terminal Panel =====
@@ -1448,6 +1452,7 @@
       if (prev && state.config.projects && state.config.projects[prev]) {
         sel.value = prev;
       }
+      syncPreviewButton();
     }
 
     function openAddProjectModal() {
@@ -1517,6 +1522,411 @@
         setApmStatus(`Failed: ${err.message || err}`, 'error');
         saveBtn.disabled = false;
       }
+    }
+
+    // ===== Orchestration preview modal (Sprint 37 T3) =====
+    // The preview button next to the project select shows what
+    // `termdeck init --project <name>` would create for the currently
+    // selected project. Disabled when no project is selected.
+    function previewState() {
+      if (!state.preview) state.preview = { current: null, busy: false };
+      return state.preview;
+    }
+
+    function syncPreviewButton() {
+      const btn = document.getElementById('btnPreviewProject');
+      if (!btn) return;
+      const name = (document.getElementById('promptProject') || {}).value || '';
+      btn.disabled = !name;
+      btn.title = name
+        ? `Preview orchestration scaffolding for "${name}"`
+        : 'Select a project to preview its orchestration scaffolding';
+    }
+
+    function setPpmStatus(msg, kind) {
+      const el = document.getElementById('ppmStatus');
+      if (!el) return;
+      el.textContent = msg || '';
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+    }
+
+    function escHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderPreviewMeta(payload) {
+      const el = document.getElementById('ppmMeta');
+      if (!el) return;
+      const tag = payload.exists
+        ? '<span class="ppm-meta-tag exists">exists</span>'
+        : '<span class="ppm-meta-tag fresh">fresh</span>';
+      el.innerHTML =
+        `<b>${escHtml(payload.projectName)}</b>${tag}<br>` +
+        `→ ${escHtml(payload.targetPath)}`;
+    }
+
+    function renderPreviewTree(payload) {
+      const tree = document.getElementById('ppmTree');
+      if (!tree) return;
+      const total = (payload.wouldCreate || []).length + (payload.wouldSkip || []).length;
+      if (total === 0) {
+        tree.innerHTML = '<div class="ppm-empty">No templates returned. Check that the orchestration scaffolding is available on this server.</div>';
+        return;
+      }
+
+      const sections = [];
+      if (payload.wouldCreate && payload.wouldCreate.length > 0) {
+        sections.push(buildSection('Would create', 'create', payload.wouldCreate));
+      }
+      if (payload.created && payload.created.length > 0) {
+        sections.push(buildSection('Created', 'create', payload.created));
+      }
+      if (payload.wouldSkip && payload.wouldSkip.length > 0) {
+        sections.push(buildSection('Would skip', 'skip', payload.wouldSkip));
+      }
+      tree.innerHTML = sections.join('');
+
+      // Wire expand/collapse on row headers (event delegation).
+      tree.querySelectorAll('.ppm-row-header').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const row = btn.closest('.ppm-row');
+          if (row) row.classList.toggle('expanded');
+        });
+      });
+    }
+
+    function buildSection(label, kind, entries) {
+      const rows = entries.map((e) => buildRow(kind, e)).join('');
+      return `<div class="ppm-section">
+        <div class="ppm-section-label">${escHtml(label)} (${entries.length})</div>
+        ${rows}
+      </div>`;
+    }
+
+    function buildRow(kind, entry) {
+      const truncated = entry.totalLines > (entry.contentPreview || '').split('\n').length;
+      const moreLines = truncated
+        ? entry.totalLines - entry.contentPreview.split('\n').length
+        : 0;
+      const reason = entry.reason
+        ? `<div class="ppm-row-skip-reason">${escHtml(entry.reason)}</div>`
+        : '';
+      const truncatedNote = moreLines > 0
+        ? `<div class="ppm-row-truncated">… ${moreLines} more line${moreLines === 1 ? '' : 's'} (preview truncated)</div>`
+        : '';
+      return `<div class="ppm-row ${escHtml(kind)}">
+        <button type="button" class="ppm-row-header" aria-label="Toggle preview">
+          <span class="ppm-row-icon">▸</span>
+          <span class="ppm-row-path">${escHtml(entry.path)}</span>
+          <span class="ppm-row-meta">${entry.totalLines} ${entry.totalLines === 1 ? 'line' : 'lines'}</span>
+          <span class="ppm-row-tag ${escHtml(kind)}">${escHtml(kind === 'skip' ? 'skip' : 'new')}</span>
+        </button>
+        <div class="ppm-row-body">
+          ${reason}
+          <pre>${escHtml(entry.contentPreview || '')}</pre>
+          ${truncatedNote}
+        </div>
+      </div>`;
+    }
+
+    async function loadPreview(name) {
+      const ps = previewState();
+      ps.current = name;
+      setPpmStatus('Loading…', null);
+      const tree = document.getElementById('ppmTree');
+      if (tree) tree.innerHTML = '<div class="ppm-empty">Loading…</div>';
+      const meta = document.getElementById('ppmMeta');
+      if (meta) meta.textContent = '';
+      const genBtn = document.getElementById('ppmGenerate');
+      const forceCb = document.getElementById('ppmForce');
+      if (genBtn) genBtn.disabled = true;
+      if (forceCb) forceCb.checked = false;
+
+      try {
+        const payload = await api('GET', `/api/projects/${encodeURIComponent(name)}/orchestration-preview`);
+        if (!payload || payload.error) {
+          setPpmStatus(payload && payload.error ? payload.error : 'Failed to load preview', 'error');
+          return;
+        }
+        if (ps.current !== name) return; // user closed/changed before fetch returned
+        renderPreviewMeta(payload);
+        renderPreviewTree(payload);
+        setPpmStatus('', null);
+        if (genBtn) {
+          // Enable Generate when there is at least one wouldCreate entry, OR
+          // when the target dir exists (force overwrites preserved by checkbox).
+          const hasNew = (payload.wouldCreate || []).length > 0;
+          genBtn.disabled = !hasNew && !payload.exists;
+        }
+      } catch (err) {
+        setPpmStatus(`Failed: ${(err && err.message) || err}`, 'error');
+      }
+    }
+
+    function openPreviewModal() {
+      const sel = document.getElementById('promptProject');
+      const name = sel && sel.value;
+      if (!name) return;
+      const modal = document.getElementById('previewProjectModal');
+      if (!modal) return;
+      modal.classList.add('open');
+      loadPreview(name);
+    }
+
+    function closePreviewModal() {
+      const modal = document.getElementById('previewProjectModal');
+      if (modal) modal.classList.remove('open');
+      previewState().current = null;
+    }
+
+    async function submitGenerate() {
+      const ps = previewState();
+      if (ps.busy || !ps.current) return;
+      const force = !!document.getElementById('ppmForce').checked;
+      const confirmMsg = force
+        ? `Overwrite scaffolding files in "${ps.current}"? Existing files will be replaced.`
+        : `Generate orchestration scaffolding for "${ps.current}"?`;
+      if (!window.confirm(confirmMsg)) return;
+
+      const genBtn = document.getElementById('ppmGenerate');
+      ps.busy = true;
+      if (genBtn) genBtn.disabled = true;
+      setPpmStatus('Generating…', null);
+      try {
+        const result = await api('POST',
+          `/api/projects/${encodeURIComponent(ps.current)}/orchestration-preview/generate`,
+          { force });
+        if (!result || result.error) {
+          setPpmStatus(result && result.error ? result.error : 'Generate failed', 'error');
+          ps.busy = false;
+          if (genBtn) genBtn.disabled = false;
+          return;
+        }
+        renderPreviewMeta(result);
+        renderPreviewTree(result);
+        const count = (result.created || []).length;
+        setPpmStatus(`Generated ${count} file${count === 1 ? '' : 's'} ✓`, 'ok');
+        // Refresh the preview so the user sees the post-write state (every
+        // file is now wouldSkip). Small delay so the success message reads.
+        setTimeout(() => { if (ps.current) loadPreview(ps.current); }, 800);
+      } catch (err) {
+        setPpmStatus(`Failed: ${(err && err.message) || err}`, 'error');
+      } finally {
+        ps.busy = false;
+        if (genBtn) genBtn.disabled = false;
+      }
+    }
+
+    // ===== Sprint runner modal (Sprint 37 T4) =====
+    // Lets the user define a 4+1 sprint (name, version, goal, T1-T4 lanes,
+    // worktree opt-in), POST /api/sprints to scaffold + spawn + inject, then
+    // tail STATUS.md while lanes work.
+    function sprintState() {
+      if (!state.sprint) {
+        state.sprint = { pollTimer: null, currentSprintName: null, currentProject: null };
+      }
+      return state.sprint;
+    }
+
+    function setSprintStatus(msg, kind) {
+      const el = document.getElementById('sprintStatusMsg');
+      if (!el) return;
+      el.textContent = msg || '';
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+    }
+
+    function openSprintModal() {
+      const modal = document.getElementById('sprintModal');
+      // Populate project dropdown from loaded config.
+      const sel = document.getElementById('sprintProject');
+      sel.innerHTML = '';
+      const projects = Object.keys(state.config.projects || {});
+      if (projects.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '— add a project first —';
+        sel.appendChild(opt);
+        sel.disabled = true;
+      } else {
+        sel.disabled = false;
+        for (const name of projects) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        }
+      }
+      // Reset form.
+      document.getElementById('sprintName').value = '';
+      document.getElementById('sprintTargetVersion').value = '';
+      document.getElementById('sprintGoal').value = '';
+      document.querySelectorAll('#sprintModal .sprint-lane-name').forEach((el) => { el.value = ''; });
+      document.querySelectorAll('#sprintModal .sprint-lane-goal').forEach((el) => { el.value = ''; });
+      document.getElementById('sprintWorktree').checked = true;
+      document.getElementById('sprintAutoInject').checked = true;
+      document.getElementById('sprintFormBody').style.display = '';
+      document.getElementById('sprintResultPanel').style.display = 'none';
+      setSprintStatus('', null);
+      modal.classList.add('open');
+      setTimeout(() => document.getElementById('sprintName').focus(), 50);
+    }
+
+    function closeSprintModal() {
+      const s = sprintState();
+      if (s.pollTimer) {
+        clearInterval(s.pollTimer);
+        s.pollTimer = null;
+      }
+      document.getElementById('sprintModal').classList.remove('open');
+    }
+
+    function readSprintLanes() {
+      const lanes = [];
+      const nameInputs = document.querySelectorAll('#sprintModal .sprint-lane-name');
+      const goalInputs = document.querySelectorAll('#sprintModal .sprint-lane-goal');
+      for (let i = 0; i < 4; i++) {
+        lanes.push({
+          name: (nameInputs[i] && nameInputs[i].value || '').trim(),
+          goal: (goalInputs[i] && goalInputs[i].value || '').trim(),
+        });
+      }
+      return lanes;
+    }
+
+    async function submitSprint() {
+      const project = document.getElementById('sprintProject').value;
+      const name = document.getElementById('sprintName').value.trim();
+      const targetVersion = document.getElementById('sprintTargetVersion').value.trim();
+      const goal = document.getElementById('sprintGoal').value.trim();
+      const worktree = document.getElementById('sprintWorktree').checked;
+      const autoInject = document.getElementById('sprintAutoInject').checked;
+      const lanes = readSprintLanes();
+
+      if (!project) { setSprintStatus('Pick a project.', 'error'); return; }
+      if (!name) { setSprintStatus('Sprint name is required.', 'error'); return; }
+      if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(name)) {
+        setSprintStatus('Name must be a slug (lowercase a-z0-9 + hyphens, ≤40 chars).', 'error');
+        return;
+      }
+      for (let i = 0; i < 4; i++) {
+        if (!lanes[i].name) {
+          setSprintStatus(`T${i + 1} lane name is required.`, 'error');
+          return;
+        }
+      }
+
+      const btn = document.getElementById('sprintKickoff');
+      btn.disabled = true;
+      setSprintStatus('Scaffolding sprint, spawning panels, injecting boot prompts…', null);
+
+      try {
+        const result = await api('POST', '/api/sprints', {
+          project, name, targetVersion, goal, lanes, worktree, autoInject,
+        });
+        if (result && result.error) {
+          setSprintStatus(result.error, 'error');
+          btn.disabled = false;
+          return;
+        }
+        renderSprintResult(result, project);
+        // Reload sessions in the dashboard so the four new panels appear.
+        try {
+          const liveSessions = await api('GET', '/api/sessions');
+          for (const s of liveSessions) {
+            if (s.meta.status !== 'exited' && !state.sessions.has(s.id)) {
+              createTerminalPanel(s);
+            }
+          }
+        } catch {
+          // Non-fatal — user can refresh.
+        }
+        startSprintStatusPoll(project, name);
+      } catch (err) {
+        setSprintStatus(`Failed: ${err && err.message || err}`, 'error');
+        btn.disabled = false;
+      }
+    }
+
+    function renderSprintResult(result, project) {
+      document.getElementById('sprintFormBody').style.display = 'none';
+      const panel = document.getElementById('sprintResultPanel');
+      panel.style.display = '';
+      const meta = document.getElementById('sprintResultMeta');
+      const sids = result.sessionIds || {};
+      const wt = result.worktree ? 'on' : 'off';
+      const inject = result.inject || {};
+      const verifiedCount = Array.isArray(inject.lanes) ? inject.lanes.filter((l) => l.verified).length : 0;
+      const pokedCount = Array.isArray(inject.lanes) ? inject.lanes.filter((l) => l.poked).length : 0;
+      meta.innerHTML = [
+        `<div>sprint dir: <code>${result.sprintDir}</code></div>`,
+        `<div>worktree isolation: ${wt}</div>`,
+        `<div>panels spawned: T1=${sids.T1 || '—'} · T2=${sids.T2 || '—'} · T3=${sids.T3 || '—'} · T4=${sids.T4 || '—'}</div>`,
+        `<div>boot inject: verified ${verifiedCount}/4 · auto-poked ${pokedCount}</div>`,
+      ].join('');
+      // Reset lane status tiles to a "polling…" state.
+      ['T1', 'T2', 'T3', 'T4'].forEach((laneId) => {
+        const tile = panel.querySelector(`.sprint-lane-status[data-lane="${laneId}"]`);
+        if (!tile) return;
+        tile.querySelector('.counts').textContent = '—';
+        tile.querySelector('.last-entry').textContent = 'polling…';
+      });
+      document.getElementById('sprintTail').textContent = '(tail loads after first STATUS.md write)';
+    }
+
+    async function pollSprintStatus(project, sprintName) {
+      try {
+        const [statusRes, tailRes] = await Promise.all([
+          fetch(`${API}/api/sprints/${encodeURIComponent(sprintName)}/status?project=${encodeURIComponent(project)}`),
+          fetch(`${API}/api/sprints/${encodeURIComponent(sprintName)}/tail?project=${encodeURIComponent(project)}&lines=80`),
+        ]);
+        if (statusRes.ok) {
+          const status = await statusRes.json();
+          renderSprintLaneCounts(status);
+        }
+        if (tailRes.ok) {
+          const tail = await tailRes.json();
+          if (tail && typeof tail.tail === 'string') {
+            document.getElementById('sprintTail').textContent = tail.tail;
+          }
+        }
+      } catch {
+        // Silently ignore poll errors; next tick retries.
+      }
+    }
+
+    function renderSprintLaneCounts(status) {
+      const panel = document.getElementById('sprintResultPanel');
+      if (!panel) return;
+      ['T1', 'T2', 'T3', 'T4'].forEach((laneId) => {
+        const tile = panel.querySelector(`.sprint-lane-status[data-lane="${laneId}"]`);
+        if (!tile) return;
+        const lane = status && status.lanes && status.lanes[laneId];
+        if (!lane) {
+          tile.querySelector('.counts').textContent = '—';
+          tile.querySelector('.last-entry').textContent = 'awaiting first entry';
+          return;
+        }
+        tile.querySelector('.counts').textContent =
+          `${lane.finding} finding · ${lane.fixProposed} fix · ${lane.done} done`;
+        tile.querySelector('.last-entry').textContent =
+          lane.lastEntryAt ? `last: ${lane.lastEntryAt}` : 'awaiting first entry';
+      });
+    }
+
+    function startSprintStatusPoll(project, sprintName) {
+      const s = sprintState();
+      if (s.pollTimer) clearInterval(s.pollTimer);
+      s.currentProject = project;
+      s.currentSprintName = sprintName;
+      pollSprintStatus(project, sprintName);
+      s.pollTimer = setInterval(() => pollSprintStatus(project, sprintName), 3000);
     }
 
     // ===== Rumen insights badge + briefing modal =====
@@ -3254,6 +3664,18 @@
       if (e.key === 'Escape') { e.preventDefault(); closeAddProjectModal(); }
     });
 
+    // Orchestration preview modal wiring (Sprint 37 T3)
+    document.getElementById('btnPreviewProject').addEventListener('click', openPreviewModal);
+    document.getElementById('promptProject').addEventListener('change', syncPreviewButton);
+    document.getElementById('ppmClose').addEventListener('click', closePreviewModal);
+    document.getElementById('ppmCancel').addEventListener('click', closePreviewModal);
+    document.querySelector('#previewProjectModal .preview-project-backdrop').addEventListener('click', closePreviewModal);
+    document.getElementById('ppmGenerate').addEventListener('click', submitGenerate);
+    document.getElementById('previewProjectModal').addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closePreviewModal(); }
+    });
+    syncPreviewButton();
+
     // Status + config dropdowns (Sprint 9 T2): btn-status/btn-config were
     // stubs with no listeners. Each now opens a dropdown with live data
     // fetched from /api/status and /api/config. Reuses .health-dropdown
@@ -3267,6 +3689,16 @@
     // Sprint 19 T2: config button now opens the setup wizard instead of the
     // legacy config dropdown (renderConfigDropdown is kept as dead code).
     document.getElementById('btn-config').addEventListener('click', openSetupModal);
+
+    // Sprint runner modal wiring (Sprint 37 T4)
+    document.getElementById('btn-sprint').addEventListener('click', openSprintModal);
+    document.getElementById('sprintCancel').addEventListener('click', closeSprintModal);
+    document.getElementById('sprintResultClose').addEventListener('click', closeSprintModal);
+    document.getElementById('sprintBackdrop').addEventListener('click', closeSprintModal);
+    document.getElementById('sprintKickoff').addEventListener('click', submitSprint);
+    document.getElementById('sprintModal').addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeSprintModal(); }
+    });
 
     // Onboarding tour wiring
     document.getElementById('btn-how').addEventListener('click', startTour);
@@ -3875,6 +4307,355 @@
           }, 2000);
         }).catch(() => {});
       });
+    }
+
+    // ===== Orchestrator Guide right-rail (Sprint 37 T1) =====
+    // Lazy-load docs/orchestrator-guide.md on first expand, render with a
+    // small purpose-built markdown converter, build TOC from H2 headings,
+    // wire search + contextual auto-expand. No external markdown library —
+    // the no-build-step ethos rules out webpack/parcel pulls.
+    const guideRailState = {
+      loaded: false,
+      loading: false,
+      sections: [],     // [{id, title, el, text}]
+      activeSection: null,
+    };
+
+    function setupGuideRail() {
+      const rail = document.getElementById('guideRail');
+      const toggle = document.getElementById('guideRailToggle');
+      const closeBtn = document.getElementById('guideRailClose');
+      const search = document.getElementById('guideSearch');
+      if (!rail || !toggle) return;
+
+      toggle.addEventListener('click', () => toggleGuideRail());
+      if (closeBtn) closeBtn.addEventListener('click', () => setGuideRailCollapsed(true));
+      if (search) search.addEventListener('input', () => filterGuideSections(search.value));
+
+      // Keyboard: 'g' opens/closes the Guide when not in an input. Skip when
+      // a modifier is held to avoid stomping browser shortcuts.
+      document.addEventListener('keydown', (e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key !== 'g' && e.key !== 'G') return;
+        const tgt = e.target;
+        const tag = (tgt && tgt.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || (tgt && tgt.isContentEditable)) return;
+        // xterm.js attaches a hidden textarea inside .term-panel; skip when
+        // the focus is inside a terminal panel.
+        if (tgt && typeof tgt.closest === 'function' && tgt.closest('.term-panel')) return;
+        e.preventDefault();
+        toggleGuideRail();
+      });
+
+      // Contextual auto-expand on terminal focus. Reuses the existing
+      // focusSessionById path: when a panel is focused, scroll the right-rail
+      // to the "4+1 pattern" section so its content is one glance away.
+      document.addEventListener('click', (e) => {
+        if (rail.dataset.collapsed === 'true') return;
+        const panel = e.target && typeof e.target.closest === 'function' && e.target.closest('.term-panel');
+        if (panel) scrollGuideToSection('the-4-1-pattern');
+      }, true);
+    }
+
+    function toggleGuideRail() {
+      const rail = document.getElementById('guideRail');
+      if (!rail) return;
+      const collapsed = rail.dataset.collapsed !== 'false';
+      setGuideRailCollapsed(!collapsed);
+    }
+
+    function setGuideRailCollapsed(collapsed) {
+      const rail = document.getElementById('guideRail');
+      const toggle = document.getElementById('guideRailToggle');
+      if (!rail) return;
+      rail.dataset.collapsed = collapsed ? 'true' : 'false';
+      if (toggle) toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      if (!collapsed && !guideRailState.loaded && !guideRailState.loading) {
+        loadGuideDoc();
+      }
+    }
+
+    async function loadGuideDoc() {
+      const content = document.getElementById('guideContent');
+      const toc = document.getElementById('guideToc');
+      if (!content) return;
+      guideRailState.loading = true;
+      try {
+        const res = await fetch('/docs/orchestrator-guide.md');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const md = await res.text();
+        const html = renderGuideMarkdown(md);
+        content.innerHTML = html;
+        wrapGuideSections(content);
+        if (toc) toc.innerHTML = buildGuideToc(content);
+        bindGuideTocClicks(toc);
+        observeGuideScroll(content);
+        guideRailState.loaded = true;
+      } catch (err) {
+        content.innerHTML = '<div class="guide-loading">Couldn\'t load Guide: ' + escapeHtml(String(err && err.message || err)) + '</div>';
+      } finally {
+        guideRailState.loading = false;
+      }
+    }
+
+    // Wrap each H2 + its trailing siblings (until next H2) in a <section>
+    // element, so search/filtering can hide/show whole sections at once.
+    function wrapGuideSections(root) {
+      const nodes = Array.from(root.children);
+      const sections = [];
+      let current = null;
+      for (const node of nodes) {
+        if (node.tagName === 'H2') {
+          if (current) sections.push(current);
+          current = { heading: node, els: [node] };
+        } else if (current) {
+          current.els.push(node);
+        }
+      }
+      if (current) sections.push(current);
+
+      // Replace flat children with <section> wrappers
+      guideRailState.sections = [];
+      for (const sec of sections) {
+        const wrapper = document.createElement('section');
+        wrapper.className = 'guide-section';
+        const slug = (sec.heading.id) || slugify(sec.heading.textContent);
+        wrapper.id = 'guide-sec-' + slug;
+        sec.heading.id = slug; // anchor for TOC links
+        sec.heading.parentNode.insertBefore(wrapper, sec.heading);
+        for (const el of sec.els) wrapper.appendChild(el);
+        guideRailState.sections.push({
+          id: slug,
+          title: sec.heading.textContent,
+          el: wrapper,
+          text: wrapper.textContent.toLowerCase(),
+        });
+      }
+    }
+
+    function buildGuideToc(root) {
+      const headings = root.querySelectorAll('section.guide-section > h2');
+      const links = [];
+      headings.forEach(h => {
+        links.push('<a href="#' + escapeAttr(h.id) + '" data-section="' + escapeAttr(h.id) + '">' + escapeHtml(h.textContent) + '</a>');
+      });
+      return links.join('');
+    }
+
+    function bindGuideTocClicks(toc) {
+      if (!toc) return;
+      toc.addEventListener('click', (e) => {
+        const a = e.target && e.target.closest && e.target.closest('a[data-section]');
+        if (!a) return;
+        e.preventDefault();
+        scrollGuideToSection(a.dataset.section);
+      });
+    }
+
+    function scrollGuideToSection(sectionId) {
+      const content = document.getElementById('guideContent');
+      if (!content) return;
+      const target = document.getElementById(sectionId);
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      const containerRect = content.getBoundingClientRect();
+      content.scrollTop += (rect.top - containerRect.top) - 8;
+      markActiveSection(sectionId);
+    }
+
+    function markActiveSection(sectionId) {
+      const toc = document.getElementById('guideToc');
+      if (!toc) return;
+      toc.querySelectorAll('a[data-section]').forEach(a => {
+        a.classList.toggle('active', a.dataset.section === sectionId);
+      });
+      guideRailState.activeSection = sectionId;
+    }
+
+    function observeGuideScroll(content) {
+      // Lightweight scroll-spy — on every scroll, find the topmost visible
+      // H2 and mark its TOC entry active.
+      let raf = 0;
+      content.addEventListener('scroll', () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          const rect = content.getBoundingClientRect();
+          const headings = content.querySelectorAll('section.guide-section > h2');
+          let topId = null;
+          for (const h of headings) {
+            const hRect = h.getBoundingClientRect();
+            if (hRect.top - rect.top <= 24) topId = h.id;
+            else break;
+          }
+          if (topId) markActiveSection(topId);
+        });
+      });
+    }
+
+    function filterGuideSections(query) {
+      const content = document.getElementById('guideContent');
+      const toc = document.getElementById('guideToc');
+      if (!content) return;
+      const q = (query || '').trim().toLowerCase();
+      content.classList.toggle('has-filter', !!q);
+      let anyMatch = false;
+      const matchedIds = new Set();
+      for (const sec of guideRailState.sections) {
+        const match = !q || sec.text.includes(q) || sec.title.toLowerCase().includes(q);
+        sec.el.classList.toggle('hidden', !match);
+        if (match) { anyMatch = true; matchedIds.add(sec.id); }
+      }
+      // Sync TOC visibility with section matches
+      if (toc) {
+        toc.querySelectorAll('a[data-section]').forEach(a => {
+          const id = a.dataset.section;
+          a.classList.toggle('hidden', !!q && !matchedIds.has(id));
+        });
+      }
+      // Show "no matches" hint if needed
+      let hint = content.querySelector('em.no-match');
+      if (q && !anyMatch) {
+        if (!hint) {
+          hint = document.createElement('em');
+          hint.className = 'no-match';
+          content.appendChild(hint);
+        }
+        hint.textContent = 'No Guide section matches "' + query + '".';
+      } else if (hint) {
+        hint.remove();
+      }
+    }
+
+    function slugify(text) {
+      return String(text || '')
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-');
+    }
+
+    // Tiny markdown converter — handles only what orchestrator-guide.md uses:
+    // ATX headings, paragraphs, blockquotes, fenced code, bullet/numbered
+    // lists, hr, tables (header + separator), bold, italic, inline code,
+    // links. Resilient enough for our authored Guide; not a general renderer.
+    function renderGuideMarkdown(md) {
+      const lines = md.replace(/\r\n/g, '\n').split('\n');
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        // Fenced code block
+        if (/^```/.test(line)) {
+          const lang = line.replace(/^```/, '').trim();
+          const buf = [];
+          i++;
+          while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+          i++; // skip closing fence
+          out.push('<pre><code' + (lang ? ' class="lang-' + escapeAttr(lang) + '"' : '') + '>' + escapeHtml(buf.join('\n')) + '</code></pre>');
+          continue;
+        }
+        // Horizontal rule
+        if (/^---\s*$/.test(line)) { out.push('<hr/>'); i++; continue; }
+        // ATX headings
+        const h = line.match(/^(#{1,6})\s+(.+)$/);
+        if (h) {
+          const level = h[1].length;
+          out.push('<h' + level + '>' + renderInline(h[2]) + '</h' + level + '>');
+          i++;
+          continue;
+        }
+        // Blockquote (collect consecutive > lines)
+        if (/^>\s?/.test(line)) {
+          const buf = [];
+          while (i < lines.length && /^>\s?/.test(lines[i])) {
+            buf.push(lines[i].replace(/^>\s?/, ''));
+            i++;
+          }
+          out.push('<blockquote>' + renderInline(buf.join(' ')) + '</blockquote>');
+          continue;
+        }
+        // Table: header line then separator line then body until blank
+        if (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-+:?(\s*\|\s*:?-+:?)+\s*\|?\s*$/.test(lines[i + 1])) {
+          const header = splitTableRow(line);
+          i += 2;
+          const rows = [];
+          while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== '') {
+            rows.push(splitTableRow(lines[i]));
+            i++;
+          }
+          let html = '<table><thead><tr>';
+          for (const cell of header) html += '<th>' + renderInline(cell) + '</th>';
+          html += '</tr></thead><tbody>';
+          for (const row of rows) {
+            html += '<tr>';
+            for (const cell of row) html += '<td>' + renderInline(cell) + '</td>';
+            html += '</tr>';
+          }
+          html += '</tbody></table>';
+          out.push(html);
+          continue;
+        }
+        // Bullet list
+        if (/^\s*[-*]\s+/.test(line)) {
+          const buf = [];
+          while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+            buf.push(lines[i].replace(/^\s*[-*]\s+/, ''));
+            i++;
+          }
+          out.push('<ul>' + buf.map(x => '<li>' + renderInline(x) + '</li>').join('') + '</ul>');
+          continue;
+        }
+        // Numbered list
+        if (/^\s*\d+\.\s+/.test(line)) {
+          const buf = [];
+          while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+            buf.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+            i++;
+          }
+          out.push('<ol>' + buf.map(x => '<li>' + renderInline(x) + '</li>').join('') + '</ol>');
+          continue;
+        }
+        // Blank line
+        if (line.trim() === '') { i++; continue; }
+        // Paragraph (collect consecutive non-special lines)
+        const buf = [line];
+        i++;
+        while (i < lines.length && lines[i].trim() !== '' &&
+               !/^(#{1,6}\s|>\s?|```|---\s*$|\s*[-*]\s+|\s*\d+\.\s+)/.test(lines[i]) &&
+               !(/\|/.test(lines[i]) && i + 1 < lines.length && /^\s*\|?\s*:?-+:?/.test(lines[i + 1]))) {
+          buf.push(lines[i]);
+          i++;
+        }
+        out.push('<p>' + renderInline(buf.join(' ')) + '</p>');
+      }
+      return out.join('\n');
+    }
+
+    function splitTableRow(line) {
+      let s = line.trim();
+      if (s.startsWith('|')) s = s.slice(1);
+      if (s.endsWith('|')) s = s.slice(0, -1);
+      return s.split('|').map(c => c.trim());
+    }
+
+    // Inline markdown: code, bold, italic, links. Run on already-escaped HTML
+    // so we don't expose injection paths via the source markdown — the Guide
+    // is repo-controlled, but defense-in-depth is cheap.
+    function renderInline(text) {
+      let s = escapeHtml(text);
+      // Inline code first (so its contents aren't re-processed for bold/italic)
+      s = s.replace(/`([^`]+)`/g, (_, code) => '<code>' + code + '</code>');
+      // Links [text](url)
+      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+        return '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener">' + label + '</a>';
+      });
+      // Bold **text**
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      // Italic *text* (avoid matching bold leftovers)
+      s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+      return s;
     }
 
     // Boot

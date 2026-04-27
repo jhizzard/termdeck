@@ -60,6 +60,7 @@
       <div class="topbar-row-2-spacer"></div>
       <button id="btn-status">status</button>
       <button id="btn-config">config</button>
+      <button id="btn-sprint" title="Define and kick off a 4+1 sprint">sprint</button>
       <button id="btn-how" title="Walkthrough of every TermDeck feature">how this works</button>
       <button id="btn-help" title="Open the TermDeck documentation" onclick="window.open('https://termdeck-docs.vercel.app','_blank','noopener')">help</button>
     </div>
@@ -133,6 +134,7 @@
       <option value="">no project</option>
     </select>
     <button class="prompt-add-project" id="btnAddProject" title="Add a new project">+</button>
+    <button class="prompt-preview-project" id="btnPreviewProject" title="Preview orchestration scaffolding for the selected project" disabled>preview</button>
     <button class="prompt-launch" id="promptLaunch">launch</button>
   </div>
 
@@ -166,6 +168,55 @@
     </div>
   </div>
 
+  <!-- Orchestration-preview modal (Sprint 37 T3). Hidden by default. -->
+  <div class="preview-project-modal" id="previewProjectModal" role="dialog" aria-modal="true" aria-labelledby="ppmTitle">
+    <div class="preview-project-backdrop"></div>
+    <div class="preview-project-card">
+      <header class="ppm-header">
+        <div>
+          <h3 id="ppmTitle">Orchestration preview</h3>
+          <p class="ppm-help" id="ppmSubtitle">Files that <code>termdeck init --project &lt;name&gt;</code> would create.</p>
+        </div>
+        <button class="ppm-close" id="ppmClose" aria-label="Close (Esc)" title="Close (Esc)">×</button>
+      </header>
+      <div class="ppm-meta" id="ppmMeta"></div>
+      <div class="ppm-status" id="ppmStatus"></div>
+      <div class="ppm-tree" id="ppmTree" role="list">
+        <div class="ppm-empty">Loading…</div>
+      </div>
+      <footer class="ppm-actions">
+        <label class="ppm-force"><input type="checkbox" id="ppmForce"> overwrite existing files</label>
+        <div class="ppm-action-buttons">
+          <button class="ppm-cancel" id="ppmCancel">close</button>
+          <button class="ppm-generate" id="ppmGenerate" disabled>generate scaffolding</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Orchestrator Guide right-rail (Sprint 37 T1). Default collapsed. -->
+  <aside class="guide-rail" id="guideRail" data-collapsed="true" aria-label="Orchestrator Guide">
+    <button class="guide-rail-toggle" id="guideRailToggle" type="button"
+            aria-expanded="false" aria-controls="guideRailBody"
+            title="Orchestrator Guide — sprint patterns and inject mandate">
+      <span class="grt-icon" aria-hidden="true">📖</span>
+      <span class="grt-label">Guide</span>
+    </button>
+    <div class="guide-rail-body" id="guideRailBody" role="region" aria-labelledby="guideRailHeading">
+      <header class="guide-rail-header">
+        <h3 id="guideRailHeading">Orchestrator Guide</h3>
+        <button class="guide-rail-close" id="guideRailClose" type="button" title="Collapse" aria-label="Collapse Guide">✕</button>
+      </header>
+      <div class="guide-rail-search">
+        <input type="search" id="guideSearch" placeholder="Search the Guide…" autocomplete="off" spellcheck="false" aria-label="Search Guide sections">
+      </div>
+      <nav class="guide-rail-toc" id="guideToc" aria-label="Guide sections"></nav>
+      <div class="guide-rail-content" id="guideContent" tabindex="0">
+        <div class="guide-loading">Loading Guide…</div>
+      </div>
+    </div>
+  </aside>
+
   <!-- Rumen morning-briefing modal (hidden by default) -->
   <div class="rumen-modal" id="rumenModal" role="dialog" aria-modal="true" aria-labelledby="rumenTitle" aria-describedby="rumenSummary">
     <div class="rumen-backdrop" id="rumenBackdrop"></div>
@@ -196,6 +247,99 @@
       <footer>
         <button type="button" class="rm-close" id="rumenClose">close (Esc)</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- Sprint runner modal (Sprint 37 T4): in-dashboard 4+1 sprint definition + kick-off -->
+  <div class="sprint-modal" id="sprintModal" role="dialog" aria-modal="true" aria-labelledby="sprintTitle">
+    <div class="sprint-backdrop" id="sprintBackdrop"></div>
+    <div class="sprint-card">
+      <header>
+        <h3 id="sprintTitle">Run a 4+1 sprint</h3>
+        <p class="sprint-help">
+          TermDeck scaffolds <code>docs/sprint-N-&lt;name&gt;/</code> with PLANNING.md, T1–T4 lane briefs,
+          and STATUS.md, spawns four Claude Code panels, and injects boot prompts via the
+          two-stage submit pattern. Worktree isolation is recommended — each lane gets its own
+          git worktree so concurrent edits don't collide.
+        </p>
+      </header>
+
+      <div class="sprint-body" id="sprintFormBody">
+        <div class="sprint-row">
+          <label><span>Project</span>
+            <select id="sprintProject"></select>
+          </label>
+          <label><span>Sprint name <em>(slug)</em></span>
+            <input type="text" id="sprintName" placeholder="orchestrator-product" autocomplete="off" spellcheck="false">
+          </label>
+          <label><span>Target version</span>
+            <input type="text" id="sprintTargetVersion" placeholder="0.9.0" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <label class="sprint-full">
+          <span>Goal <em>(one line)</em></span>
+          <input type="text" id="sprintGoal" placeholder="Ship the in-dashboard 4+1 sprint runner" autocomplete="off">
+        </label>
+
+        <div class="sprint-lanes">
+          <div class="sprint-lane" data-lane="1">
+            <h4>T1</h4>
+            <input type="text" class="sprint-lane-name" placeholder="Lane name (e.g. orchestrator-guide)" autocomplete="off">
+            <input type="text" class="sprint-lane-goal" placeholder="Lane goal" autocomplete="off">
+          </div>
+          <div class="sprint-lane" data-lane="2">
+            <h4>T2</h4>
+            <input type="text" class="sprint-lane-name" placeholder="Lane name" autocomplete="off">
+            <input type="text" class="sprint-lane-goal" placeholder="Lane goal" autocomplete="off">
+          </div>
+          <div class="sprint-lane" data-lane="3">
+            <h4>T3</h4>
+            <input type="text" class="sprint-lane-name" placeholder="Lane name" autocomplete="off">
+            <input type="text" class="sprint-lane-goal" placeholder="Lane goal" autocomplete="off">
+          </div>
+          <div class="sprint-lane" data-lane="4">
+            <h4>T4</h4>
+            <input type="text" class="sprint-lane-name" placeholder="Lane name" autocomplete="off">
+            <input type="text" class="sprint-lane-goal" placeholder="Lane goal" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="sprint-options">
+          <label class="sprint-check">
+            <input type="checkbox" id="sprintWorktree" checked>
+            <span>Use git worktrees for lane isolation <em>(recommended — prevents cross-lane file collisions)</em></span>
+          </label>
+          <label class="sprint-check">
+            <input type="checkbox" id="sprintAutoInject" checked>
+            <span>Auto-inject boot prompts on lane spawn</span>
+          </label>
+        </div>
+
+        <div class="sprint-status" id="sprintStatusMsg"></div>
+
+        <div class="sprint-actions">
+          <button class="sprint-cancel" id="sprintCancel">cancel</button>
+          <button class="sprint-kickoff" id="sprintKickoff">kick off sprint</button>
+        </div>
+      </div>
+
+      <div class="sprint-result" id="sprintResultPanel" style="display:none">
+        <h4 id="sprintResultTitle">Sprint launched</h4>
+        <div class="sprint-result-meta" id="sprintResultMeta"></div>
+        <div class="sprint-lanes-status" id="sprintLanesStatus">
+          <div class="sprint-lane-status" data-lane="T1"><h4>T1</h4><div class="counts">—</div><div class="last-entry">—</div></div>
+          <div class="sprint-lane-status" data-lane="T2"><h4>T2</h4><div class="counts">—</div><div class="last-entry">—</div></div>
+          <div class="sprint-lane-status" data-lane="T3"><h4>T3</h4><div class="counts">—</div><div class="last-entry">—</div></div>
+          <div class="sprint-lane-status" data-lane="T4"><h4>T4</h4><div class="counts">—</div><div class="last-entry">—</div></div>
+        </div>
+        <div class="sprint-tail-wrap">
+          <h5>STATUS.md tail</h5>
+          <pre class="sprint-tail" id="sprintTail">—</pre>
+        </div>
+        <div class="sprint-actions">
+          <button class="sprint-cancel" id="sprintResultClose">close</button>
+        </div>
+      </div>
     </div>
   </div>
 

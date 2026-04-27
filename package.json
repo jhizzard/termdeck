@@ -8,11 +8,13 @@
   "main": "packages/cli/src/index.js",
   "files": [
     "packages/cli/src/**",
+    "packages/cli/templates/**",
     "packages/server/src/**",
     "packages/client/public/**",
     "config/config.example.yaml",
     "config/secrets.env.example",
     "config/transcript-migration.sql",
+    "docs/orchestrator-guide.md",
     "LICENSE",
     "README.md"
   ],
