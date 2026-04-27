@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TermDeck · Knowledge Graph</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="graph-page">
+
+  <header class="graph-topbar" id="graphTopbar">
+    <div class="graph-tb-left">
+      <a class="graph-tb-back" href="/" title="Back to dashboard" aria-label="Back to dashboard">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        TermDeck
+      </a>
+      <span class="graph-tb-divider">/</span>
+      <span class="graph-tb-title">Knowledge Graph</span>
+    </div>
+
+    <div class="graph-tb-controls">
+      <label class="graph-tb-control">
+        <span>Project</span>
+        <select id="graphProject"></select>
+      </label>
+      <label class="graph-tb-control graph-tb-search-wrap">
+        <span>Search</span>
+        <input type="search" id="graphSearch" placeholder="content, category…" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="button" class="graph-tb-btn" id="graphReheat" title="Re-heat the simulation">re-heat</button>
+      <button type="button" class="graph-tb-btn" id="graphFit" title="Frame the full graph">fit</button>
+    </div>
+
+    <div class="graph-tb-right">
+      <span class="graph-tb-stat" id="graphStatNodes">— nodes</span>
+      <span class="graph-tb-stat" id="graphStatEdges">— edges</span>
+      <span class="graph-tb-stat" id="graphStatProject">project</span>
+    </div>
+  </header>
+
+  <div class="graph-filters" id="graphFilters" role="toolbar" aria-label="Edge type filters"></div>
+
+  <main class="graph-stage" id="graphStage">
+    <div class="graph-loading" id="graphLoading">
+      <div class="graph-loading-spinner" aria-hidden="true"></div>
+      <p id="graphLoadingMsg">Loading graph…</p>
+    </div>
+
+    <div class="graph-empty" id="graphEmpty" hidden>
+      <h3 id="graphEmptyTitle">No memories yet</h3>
+      <p id="graphEmptyBody">This project has no <code>memory_items</code> rows. Run a Claude Code session in this project; the session-end hook will populate Mnestra and edges will be inferred on the next nightly cron.</p>
+    </div>
+
+    <svg class="graph-svg" id="graphSvg" role="img" aria-label="Force-directed knowledge graph">
+      <defs>
+        <radialGradient id="graphBgGrad" cx="50%" cy="50%" r="75%">
+          <stop offset="0%" stop-color="#1a1f2e" />
+          <stop offset="100%" stop-color="#0a0c12" />
+        </radialGradient>
+        <filter id="nodeGlow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="2.5" result="blur"/>
+          <feMerge>
+            <feMergeNode in="blur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+      </defs>
+      <rect class="graph-bg" width="100%" height="100%" fill="url(#graphBgGrad)" />
+      <g class="graph-zoom-root" id="graphZoomRoot">
+        <g class="graph-edges" id="graphEdgesLayer"></g>
+        <g class="graph-nodes" id="graphNodesLayer"></g>
+        <g class="graph-labels" id="graphLabelsLayer"></g>
+      </g>
+    </svg>
+
+    <aside class="graph-drawer" id="graphDrawer" hidden aria-label="Memory detail">
+      <header class="graph-drawer-header">
+        <div class="gd-h-meta">
+          <span class="gd-project" id="gdProject">project</span>
+          <span class="gd-source-type" id="gdSourceType">fact</span>
+          <span class="gd-created" id="gdCreated">—</span>
+        </div>
+        <button type="button" class="graph-drawer-close" id="gdClose" aria-label="Close">×</button>
+      </header>
+      <div class="graph-drawer-body">
+        <pre class="gd-content" id="gdContent">—</pre>
+        <h4 class="gd-section">Neighbors</h4>
+        <div class="gd-neighbors" id="gdNeighbors">—</div>
+      </div>
+      <footer class="graph-drawer-footer">
+        <button type="button" class="graph-drawer-action" id="gdExpand" title="Center the graph on this memory">focus</button>
+        <button type="button" class="graph-drawer-action" id="gdCopyId" title="Copy the memory id">copy id</button>
+      </footer>
+    </aside>
+
+    <div class="graph-tooltip" id="graphTooltip" hidden></div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="graph.js" defer></script>
+</body>
+</html>

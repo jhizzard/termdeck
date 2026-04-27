@@ -136,6 +136,82 @@ async function checkDatabase() {
   }
 }
 
+// Sprint 38 / T3 — graph-health check. Returns:
+//   pass : memory_relationships has rows AND last inferred_at < 48h ago
+//   warn : has rows but last inference > 48h ago (T2 cron may have drifted)
+//   fail : pg unreachable, table missing, or zero edges
+//
+// Reads `inferred_at` (T1's migration 009 column). Falls back to `created_at`
+// for the 749 pre-T2 edges that have no inferred_at value yet, so the check
+// doesn't perma-warn on the substrate that already exists.
+async function checkGraphHealth(config) {
+  // Only meaningful when graph features are enabled. Treat as pass with a
+  // descriptive detail so the banner doesn't FAIL on installs that haven't
+  // opted into graph recall yet.
+  const graphEnabled = config.rag?.graphRecall === true;
+  if (!graphEnabled) {
+    return { name: 'graph_health', passed: true, detail: 'graph recall disabled' };
+  }
+
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) {
+    return { name: 'graph_health', passed: false, detail: 'DATABASE_URL not set — cannot check graph' };
+  }
+
+  let pg;
+  try { pg = require('pg'); } catch (err) { pg = null; }
+  if (!pg) {
+    return { name: 'graph_health', passed: false, detail: 'pg module not installed' };
+  }
+
+  const pool = new pg.Pool({
+    connectionString: dbUrl,
+    max: 1,
+    connectionTimeoutMillis: 5000,
+  });
+
+  try {
+    // Single round-trip: edge count + last inference timestamp. coalesce on
+    // inferred_at so the substrate's pre-T2 edges register their created_at
+    // (otherwise max() returns NULL and the staleness check trips).
+    const res = await pool.query(
+      `SELECT
+         count(*)::int AS edges,
+         max(coalesce(inferred_at, created_at)) AS last_inferred_at
+       FROM memory_relationships`
+    );
+    const row = res.rows[0] || {};
+    const edges = Number(row.edges || 0);
+    if (edges === 0) {
+      return {
+        name: 'graph_health', passed: false,
+        detail: 'memory_relationships is empty — run T2 inference cron or seed edges manually',
+      };
+    }
+
+    const last = row.last_inferred_at ? new Date(row.last_inferred_at) : null;
+    if (!last) {
+      return {
+        name: 'graph_health', passed: true,
+        detail: `${edges.toLocaleString()} edges, last inference timestamp unknown`,
+      };
+    }
+
+    const agoMs = Date.now() - last.getTime();
+    const agoH = (agoMs / 3_600_000).toFixed(1);
+    const stale = agoMs > 48 * 3_600_000; // 48h cron drift threshold
+    return {
+      name: 'graph_health',
+      passed: !stale,
+      detail: stale
+        ? `${edges.toLocaleString()} edges, last inference ${agoH}h ago (stale — expected within 48h)`
+        : `${edges.toLocaleString()} edges, last inference ${agoH}h ago`,
+    };
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 async function checkProjectPaths(config) {
   const projects = config.projects || {};
   const names = Object.keys(projects);
@@ -282,6 +358,10 @@ async function runPreflight(config) {
       name: 'shell_sanity', passed: false,
       detail: `check failed — ${err.message}`,
     })),
+    checkGraphHealth(config).catch((err) => ({
+      name: 'graph_health', passed: false,
+      detail: `check failed — ${err.message}`,
+    })),
   ]);
 
   const result = {
@@ -330,6 +410,7 @@ const REMEDIATION = {
   database_url: 'Set DATABASE_URL in ~/.termdeck/secrets.env',
   project_paths: 'Fix paths in ~/.termdeck/config.yaml → projects',
   shell_sanity: 'Check $SHELL and your login profile (~/.zshrc or ~/.bashrc)',
+  graph_health: 'Run T2 inference cron or apply migrations 009/010 to populate edges',
 };
 
 const CHECK_LABELS = {
@@ -339,6 +420,7 @@ const CHECK_LABELS = {
   database_url: 'Database',
   project_paths: 'Project paths',
   shell_sanity: 'Shell',
+  graph_health: 'Graph',
 };
 
 function printHealthBanner(result) {

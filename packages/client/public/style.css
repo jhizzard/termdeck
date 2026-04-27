@@ -3223,3 +3223,430 @@
       white-space: pre-wrap;
       margin: 0 0 12px;
     }
+
+    /* ===== Knowledge graph view (Sprint 38 T4) ===== */
+    /* Standalone /graph.html. The body opts in via .graph-page so dashboard
+       styles aren't inadvertently applied (no terminal grid, no panel chrome). */
+
+    body.graph-page {
+      margin: 0;
+      padding: 0;
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      font-family: var(--tg-sans);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    .graph-topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 16px;
+      background: var(--tg-surface);
+      border-bottom: 1px solid var(--tg-border);
+      flex-shrink: 0;
+      min-height: 44px;
+    }
+    .graph-tb-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .graph-tb-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--tg-text-bright);
+      text-decoration: none;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: var(--tg-radius-sm);
+      transition: background 120ms;
+    }
+    .graph-tb-back:hover { background: var(--tg-surface-hover); }
+    .graph-tb-divider {
+      color: var(--tg-text-dim);
+    }
+    .graph-tb-title {
+      color: var(--tg-text);
+      font-weight: 500;
+    }
+    .graph-tb-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      justify-content: center;
+    }
+    .graph-tb-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--tg-text-dim);
+    }
+    .graph-tb-control select,
+    .graph-tb-control input {
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 5px 8px;
+      font-family: var(--tg-mono);
+      font-size: 12px;
+      min-width: 140px;
+    }
+    .graph-tb-control select:focus,
+    .graph-tb-control input:focus {
+      outline: none;
+      border-color: var(--tg-accent);
+    }
+    .graph-tb-search-wrap input {
+      min-width: 220px;
+    }
+    .graph-tb-btn {
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 5px 10px;
+      font-size: 12px;
+      font-family: var(--tg-mono);
+      cursor: pointer;
+      transition: all 120ms;
+    }
+    .graph-tb-btn:hover {
+      background: var(--tg-surface-hover);
+      border-color: var(--tg-border-active);
+    }
+    .graph-tb-right {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .graph-tb-stat {
+      font-size: 11px;
+      font-family: var(--tg-mono);
+      color: var(--tg-text-dim);
+      padding: 3px 8px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: 999px;
+    }
+
+    .graph-filters {
+      display: flex;
+      gap: 6px;
+      padding: 8px 16px;
+      background: var(--tg-surface);
+      border-bottom: 1px solid var(--tg-border);
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      align-items: center;
+    }
+    .gf-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 9px 3px 7px;
+      font-size: 11px;
+      font-family: var(--tg-mono);
+      color: var(--tg-text-dim);
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 150ms;
+      opacity: 0.55;
+    }
+    .gf-chip:hover { opacity: 1; }
+    .gf-chip.active {
+      opacity: 1;
+      color: var(--tg-text-bright);
+      background: var(--tg-surface-hover);
+    }
+    .gf-chip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .gf-chip-count {
+      color: var(--tg-text-dim);
+      font-size: 10px;
+      padding: 0 4px;
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 999px;
+    }
+    .gf-chip.active .gf-chip-count {
+      color: var(--tg-text);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .graph-stage {
+      position: relative;
+      flex: 1;
+      overflow: hidden;
+      background: var(--tg-bg);
+    }
+    .graph-svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    .graph-svg:active {
+      cursor: grabbing;
+    }
+    .graph-zoom-root {
+      will-change: transform;
+    }
+    .graph-nodes circle {
+      transition: stroke 200ms, opacity 200ms;
+    }
+    .graph-nodes circle:hover {
+      stroke: #eef1ff;
+      stroke-width: 2;
+    }
+    .graph-edges line {
+      transition: stroke-opacity 200ms;
+    }
+
+    @keyframes graph-node-pulse {
+      0%   { stroke-width: 1.2; }
+      50%  { stroke-width: 4; stroke: #eef1ff; }
+      100% { stroke-width: 1.2; }
+    }
+    .graph-node-pulse {
+      animation: graph-node-pulse 1.4s ease-in-out infinite;
+    }
+
+    .graph-loading,
+    .graph-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+      pointer-events: none;
+      padding: 24px;
+      text-align: center;
+    }
+    .graph-loading-spinner {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 2px solid var(--tg-border);
+      border-top-color: var(--tg-accent);
+      animation: graph-spin 720ms linear infinite;
+    }
+    @keyframes graph-spin {
+      to { transform: rotate(360deg); }
+    }
+    .graph-empty h3 {
+      color: var(--tg-text);
+      margin: 0;
+      font-size: 16px;
+      font-family: var(--tg-sans);
+    }
+    .graph-empty p {
+      max-width: 540px;
+      line-height: 1.55;
+      color: var(--tg-text-dim);
+      margin: 0;
+    }
+    .graph-empty code {
+      background: var(--tg-surface);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 11px;
+    }
+
+    .graph-tooltip {
+      position: fixed;
+      pointer-events: none;
+      background: rgba(15, 17, 23, 0.95);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border-active);
+      border-radius: var(--tg-radius-sm);
+      padding: 6px 10px;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      z-index: 50;
+      max-width: 320px;
+    }
+
+    /* Drawer — right-side overlay shown when a node is clicked. */
+    .graph-drawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 420px;
+      max-width: 90vw;
+      height: 100%;
+      background: var(--tg-surface);
+      border-left: 1px solid var(--tg-border);
+      box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 220ms ease-out;
+      z-index: 30;
+    }
+    .graph-drawer.open {
+      transform: translateX(0);
+    }
+    .graph-drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--tg-border);
+      flex-shrink: 0;
+    }
+    .gd-h-meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text-dim);
+    }
+    .gd-project {
+      font-weight: 600;
+      color: var(--tg-text-bright);
+    }
+    .gd-source-type {
+      padding: 1px 6px;
+      background: var(--tg-bg);
+      border-radius: 3px;
+      border: 1px solid var(--tg-border);
+    }
+    .gd-created::before {
+      content: '·';
+      margin-right: 6px;
+      color: var(--tg-border-active);
+    }
+    .graph-drawer-close {
+      background: transparent;
+      border: 0;
+      color: var(--tg-text-dim);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: var(--tg-radius-sm);
+    }
+    .graph-drawer-close:hover {
+      color: var(--tg-text-bright);
+      background: var(--tg-surface-hover);
+    }
+    .graph-drawer-body {
+      flex: 1;
+      overflow: auto;
+      padding: 14px;
+    }
+    .gd-content {
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 12px;
+      font-family: var(--tg-mono);
+      font-size: 12px;
+      color: var(--tg-text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 40vh;
+      overflow: auto;
+      margin: 0 0 16px;
+    }
+    .gd-section {
+      margin: 0 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+    }
+    .gd-neighbors {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .gd-neighbor {
+      display: grid;
+      grid-template-columns: 10px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 8px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 120ms, background 120ms;
+      font-family: var(--tg-sans);
+      color: var(--tg-text);
+    }
+    .gd-neighbor:hover {
+      border-color: var(--tg-border-active);
+      background: var(--tg-surface-hover);
+    }
+    .gd-neighbor-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .gd-neighbor-label {
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .gd-neighbor-meta {
+      font-size: 10px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+    }
+    .gd-empty {
+      padding: 20px 12px;
+      text-align: center;
+      color: var(--tg-text-dim);
+      font-size: 12px;
+      background: var(--tg-bg);
+      border: 1px dashed var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+    }
+    .graph-drawer-footer {
+      display: flex;
+      gap: 8px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--tg-border);
+      flex-shrink: 0;
+    }
+    .graph-drawer-action {
+      flex: 1;
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: var(--tg-mono);
+      cursor: pointer;
+      transition: all 120ms;
+    }
+    .graph-drawer-action:hover {
+      background: var(--tg-surface-hover);
+      border-color: var(--tg-border-active);
+      color: var(--tg-text-bright);
+    }

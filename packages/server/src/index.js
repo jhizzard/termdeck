@@ -64,6 +64,7 @@ const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject, updateConfig } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
 const { createSprintRoutes } = require('./sprint-routes');
+const { createGraphRoutes } = require('./graph-routes');
 const orchestrationPreview = require('./orchestration-preview');
 
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
@@ -169,6 +170,17 @@ function createServer(config) {
   const rag = new RAGIntegration(config, db);
   const mnestraBridge = createBridge(config);
   console.log(`[mnestra-bridge] mode=${mnestraBridge.mode}`);
+
+  // Sprint 38 / T3 — let RAGIntegration delegate vector recall to the
+  // bridge so we don't duplicate the embed pipeline. Graph recall stays
+  // in rag.js because it's a different RPC and doesn't share the
+  // direct/webhook/mcp mode shape.
+  rag.setBridge(mnestraBridge);
+  if (rag.graphRecall) {
+    console.log(
+      `[rag] graph-aware recall ENABLED (depth=${rag.graphRecallDepth}, k=${rag.graphRecallK}, half-life=${rag.graphRecallRecencyHalflifeDays}d)`
+    );
+  }
 
   // Initialize transcript writer (Session Transcripts — Sprint 6)
   const transcriptConfig = config.transcripts || {};
@@ -900,6 +912,15 @@ function createServer(config) {
     config,
     spawnTerminalSession,
     getSession: (id) => sessions.get(id),
+  });
+
+  // Graph endpoints (Sprint 38 T4) — knowledge-graph view backing graph.html.
+  // Reuses the petvetbid pg pool (same DATABASE_URL serves memory_items +
+  // memory_relationships alongside rumen_*). Graceful-degrades when the pool
+  // is absent.
+  createGraphRoutes({
+    app,
+    getPool: getRumenPool,
   });
 
   // GET /api/sessions/:id - get session details

@@ -46,9 +46,27 @@ class RAGIntegration {
     this.db = db;
     this.supabaseUrl = config.rag?.supabaseUrl || null;
     this.supabaseKey = config.rag?.supabaseKey || null;
+    this.openaiApiKey = config.rag?.openaiApiKey || process.env.OPENAI_API_KEY || null;
     this.enabled = !!(config.rag?.enabled && this.supabaseUrl && this.supabaseKey);
     this.syncInterval = config.rag?.syncIntervalMs || 10000;
     this._syncTimer = null;
+
+    // Sprint 38 / T3 — graph-aware recall toggle. When true, the recall()
+    // method routes through the new memory_recall_graph RPC (vector seed +
+    // graph expansion + combined re-rank). When false (default), it
+    // delegates to the existing mnestra-bridge vector path. The half-life
+    // mirrors the SQL function default (30 days) but is exposed here so
+    // callers can override it without re-deploying the migration.
+    this.graphRecall = config.rag?.graphRecall === true;
+    this.graphRecallDepth = Math.max(1, Math.min(5, config.rag?.graphRecallDepth ?? 2));
+    this.graphRecallK = Math.max(1, Math.min(50, config.rag?.graphRecallK ?? 10));
+    this.graphRecallRecencyHalflifeDays = config.rag?.graphRecallRecencyHalflifeDays ?? 30;
+
+    // Bridge reference for the vector-only recall path. Wired in by index.js
+    // after the bridge is created so we avoid duplicating the embed → RPC
+    // plumbing here. Optional: if absent, recall() with graphRecall=false
+    // throws a helpful error instead of silently returning empty.
+    this._bridge = null;
 
     // Table configuration matching Josh's multi-layer schema
     this.tables = {
@@ -372,6 +390,126 @@ class RAGIntegration {
       this._syncTimer = null;
     }
     this._statusWriteAt.clear();
+  }
+
+  // Sprint 38 / T3 — wire the mnestra-bridge so vector-only recall delegates
+  // to the existing direct/webhook/mcp path instead of duplicating the embed
+  // pipeline here.
+  setBridge(bridge) {
+    this._bridge = bridge || null;
+  }
+
+  // Sprint 38 / T3 — graph-aware recall entry point. Returns the same shape
+  // as bridge.queryMnestra: { memories: [...], total }. Routes through the
+  // memory_recall_graph RPC when graphRecall is enabled, otherwise falls
+  // back to the bridge's vector path.
+  //
+  // options: { project?, searchAll?, sessionContext?, cwd?, depth?, k? }
+  async recall(query, options = {}) {
+    if (this.graphRecall) {
+      return this._recallViaGraph(query, options);
+    }
+    return this._recallViaVectorOnly(query, options);
+  }
+
+  async _recallViaVectorOnly(query, options) {
+    if (!this._bridge) {
+      throw new Error('RAGIntegration.recall: no bridge wired (call setBridge first)');
+    }
+    return this._bridge.queryMnestra({
+      question: query,
+      project: options.project,
+      searchAll: !!options.searchAll,
+      sessionContext: options.sessionContext,
+      cwd: options.cwd
+    });
+  }
+
+  // Direct REST call to memory_recall_graph (migration 010). Mirrors the
+  // bridge.queryDirect pattern: OpenAI embedding → Supabase RPC. Stays in
+  // rag.js so callers don't need to know which mnestra mode the bridge is
+  // using; graph recall is always direct-against-Postgres because the RPC
+  // doesn't ship as a Mnestra MCP tool yet (Sprint 38 / T1 wires the
+  // related MCP tools — graph recall lives here for now).
+  async _recallViaGraph(query, options) {
+    if (!this.supabaseUrl || !this.supabaseKey) {
+      throw new Error('graphRecall: supabaseUrl/supabaseKey not configured');
+    }
+    if (!this.openaiApiKey) {
+      throw new Error('graphRecall: OPENAI_API_KEY not configured');
+    }
+
+    const project = options.searchAll ? null : (options.project || null);
+    const depth = options.depth ?? this.graphRecallDepth;
+    const k = options.k ?? this.graphRecallK;
+
+    const embeddingRes = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-large',
+        input: query,
+        dimensions: 1536
+      })
+    });
+    if (!embeddingRes.ok) {
+      const err = await embeddingRes.text();
+      console.error('[rag:graph] embedding failed:', err);
+      throw new Error('graphRecall: embedding generation failed');
+    }
+    const embeddingData = await embeddingRes.json();
+    const embedding = embeddingData.data[0].embedding;
+
+    console.log(`[rag] using graph recall path project=${project ?? 'ALL'} depth=${depth} k=${k}`);
+
+    const rpcBody = {
+      query_embedding: `[${embedding.join(',')}]`,
+      project_filter: project,
+      max_depth: depth,
+      k
+    };
+    const rpcRes = await fetch(`${this.supabaseUrl}/rest/v1/rpc/memory_recall_graph`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': this.supabaseKey,
+        'Authorization': `Bearer ${this.supabaseKey}`
+      },
+      body: JSON.stringify(rpcBody)
+    });
+    if (!rpcRes.ok) {
+      const err = await rpcRes.text();
+      console.error(`[rag:graph] RPC failed ${rpcRes.status}:`, err);
+      throw new Error(`graphRecall: memory_recall_graph RPC failed (${rpcRes.status})`);
+    }
+    const rows = await rpcRes.json();
+    return {
+      memories: rows.map((m) => ({
+        content: m.content,
+        // graph recall doesn't return source_type; preserve the bridge's
+        // shape by returning null so consumers don't crash on chip render.
+        source_type: m.source_type ?? null,
+        project: m.project,
+        // The bridge consumers read `similarity`; pass final_score so they
+        // see the combined (vector × edge × recency) signal as the badge.
+        // Also expose the underlying scores for callers that want to split
+        // them out (graph viz, debugging).
+        similarity: m.final_score,
+        depth: m.depth,
+        vector_score: m.vector_score,
+        edge_weight: m.edge_weight,
+        recency_score: m.recency_score,
+        path: m.path,
+        // memory_recall_graph doesn't return created_at — depth-N neighbors
+        // come from the graph walk, not a direct timestamp pull. Caller can
+        // re-fetch via memory_get if they need it.
+        created_at: m.created_at ?? null
+      })),
+      total: rows.length
+    };
   }
 
   // Live-toggle for the dashboard RAG settings panel (Sprint 36 T3 Deliverable A).
