@@ -16,6 +16,7 @@ TermDeck is a browser-based terminal multiplexer with metadata overlays, RAG-awa
 | Diagnose an install or runtime issue | `docs/ARCHITECTURE.md` § Known issues |
 | Run or coordinate a 4+1 sprint | `~/.claude/CLAUDE.md` § 4+1 mandate + active `docs/sprint-N-<name>/PLANNING.md` |
 | Onboard a new TermDeck user | `docs/GETTING-STARTED.md` |
+| Pick the next sprint after the active plan ships | `docs/BACKLOG.md` (P0 section + categorized backlog) |
 
 5. **Then begin.**
 
