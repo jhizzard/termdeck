@@ -85,6 +85,27 @@ Short post pitching the unified four-layer stack as one-command-installable: `np
 
 Not blocking the harness-hook fix; pure content track that one terminal can take while the other three handle Lanes 1-4. Or write between sprints during a quieter moment.
 
+### Lane 6 — TMR 4+1 orchestrator discipline guardrail (Brad retro 2026-04-26 evening)
+
+Brad forwarded a self-retro from the ClaimGuard Sprint 4 run (via Josh, evening of 2026-04-26): orchestrator held twice for fresh authorization when prior authorization already explicitly covered the next step (Q1=ii merge, Q4=i T4 approval). Pattern-match was "destructive=ask" without recalling the path was already authorized. Standalone-Claude review on the same retro caught a second-order issue: orchestrator framed RLS options as "path A/B/C" without stating whether A was the same as the previously-chosen Q2.3=(i) column-REVOKE or a new option from new findings — silent relabel forces re-authorization of choices already made.
+
+**Fix — two guardrails together (rules #14 and #15) in `~/.claude/plans/skill-tmr-orchestrate/guardrails.md`:**
+
+**Guardrail #14 — over-cautiousness rule (when prior auth already covers next step).** Three cases:
+1. **Obviously covers next step** (Q1=ii means merge; merge is next step) → proceed silent.
+2. **Arguably covers next step** (auth applied to artifact X, but X has been amended via a separate decision) → proceed with one-line extension sentence: *"Proceeding with [action] under prior authorization [Q-number]; this assumes [the extension being made]. Will hold if you object."*
+3. **Genuinely new info** (finding that didn't exist at time of prior decisions, e.g. fresh RLS leak) → hold for fresh auth.
+
+Plus the labeling rule: when surfacing path A/B/C options after prior decisions, the orchestrator MUST cross-reference the prior Q-number explicitly — state whether each label maps to a previously-chosen option or is a new option from new findings.
+
+**Guardrail #15 — enforcement-vs-convention rule (added late evening 2026-04-26 from Brad's standalone-Opus retro on the same ClaimGuard Sprint 4 run).** When orchestrator surfaces a security or correctness finding, its DEFAULT recommendation must be **enforcement-level fix** (DB-level RLS, separate table, service_role-only route, automated test), NOT **convention-level fix** (documented "never do X" rules). Convention layers fail silently; enforcement layers fail loudly. Convention-level acceptable ONLY when ALL of: (a) enforcement-level cost > 4 hrs, AND (b) no plausible single-line exploit path exists, AND (c) the convention is paired with an automated test that would fail loudly if violated. Otherwise: enforcement. The Phase-1 framing "no user-facing impact today, harden later if a real exploit appears" is a trap because the relevant failures (an applicant reading "AI recommended disposition: decline" before you've decided) don't surface as complaints — they surface as silent withdrawals. Brad's standalone Opus caught two of these in one evening (Q5 six-routes audit drop, and ai_review_* fields readable via Supabase JS + devtools). Both times the right call was the higher-cost enforcement fix while the cost was still low and context was fresh.
+
+**Why both rules together:** orchestrator miscalibrates risk in BOTH directions — over-asks when prior auth covered next step (#14), and under-asks when a finding has no user-impact today (#15). Same root: under-weighting latent risk vs immediate friction. The asymmetric risk is the silent failure mode in each — silent scope drift on #14, silent trust erosion on #15.
+
+**Possibly model-capability correlated.** TermDeck doesn't pin a model — panels run whatever Claude Code defaults to at launch (currently Sonnet 4.6). The standalone Opus 4.7 sessions are catching what the in-panel orchestrator misses. **Practical fix:** when running a 4+1 sprint where the orchestrator will make security/correctness tradeoffs, launch the orchestrator panel with `ANTHROPIC_MODEL=claude-opus-4-7 claude` or `claude --model claude-opus-4-7`. Workers stay on Sonnet (cheap; they execute well-scoped lanes); orchestrator gets Opus (judgment lives there). Both rules also work on Sonnet — they're durable past any single model — but the model swap is a 5-second config change that compounds the discipline.
+
+This is a TMR skill edit, not a TermDeck code change. Lives at `~/.claude/plans/skill-tmr-orchestrate/guardrails.md` (skill repo, separate from any npm-published artifact). Same "outside every npm repo" position as Lane 1 (the harness hook). One terminal can take this lane in parallel with Lanes 1-5; ~50 LOC of skill-doc text for both rules. Cross-project memory already stores both rules (mcp `memory_recall(query="orchestrator over-cautiousness")` for #14, `memory_recall(query="orchestrator enforcement convention")` for #15).
+
 ## Other pending work (not Sprint 35 unless scope allows)
 
 - **Migration-001 idempotency** (CREATE OR REPLACE FUNCTION return-type collision when re-running migrations against an upgraded store). Surfaced 2026-04-25 v0.6.3 live test. Doesn't affect fresh installs.
