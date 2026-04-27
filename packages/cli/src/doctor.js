@@ -1,22 +1,33 @@
-// `termdeck doctor` — Sprint 28 T2.
+// `termdeck doctor` — Sprint 28 T2 + Sprint 35 T3.
 //
-// Compares installed versions of the four TermDeck-stack packages against
-// the npm registry's `dist-tags.latest` and prints a status table. Zero new
-// deps — uses only node:https, node:child_process, and process.stdout.
+// Two-section diagnostic:
+//   Section 1 (Sprint 28) — npm version-check across the four stack packages,
+//     comparing installed (`npm ls -g`) to the registry's `dist-tags.latest`.
+//   Section 2 (Sprint 35) — Supabase schema state. Connects via DATABASE_URL
+//     from ~/.termdeck/secrets.env and verifies the tables / columns / RPCs /
+//     extensions that TermDeck + Mnestra + Rumen depend on.
 //
-// Module contract (per docs/sprint-28-update-signal/STATUS.md):
+// Read-only — no auto-fix. Each fail prints a remediation hint.
+//
+// Module contract:
 //   module.exports = function doctor(argv): Promise<exitCode>
-//     0 = all current
-//     1 = at least one update available
-//     2 = network/registry failure or unrecoverable error
+//     0 = all current and schema clean
+//     1 = at least one update available OR at least one schema gap
+//     2 = network/registry failure or DB-unreachable when --schema requested
 //
-// `_detectInstalled` and `_fetchLatest` are exposed as properties on the
-// exported function so tests can monkey-patch the network/process surface
-// without spinning up a real registry. The doctor body calls them via
-// `module.exports.<name>` so monkey-patching takes effect at call time.
+// Flags:
+//   --json        Emit a parseable JSON document (shape extended for Sprint 35:
+//                 `{ exitCode, rows, schema? }` — `rows` retained for back-compat)
+//   --no-color    Strip ANSI codes
+//   --no-schema   Skip the Supabase schema section (used by tests + offline runs)
+//
+// Test seams (monkey-patchable):
+//   _detectInstalled / _fetchLatest — npm probes (Sprint 28)
+//   _runSchemaCheck — Supabase probe (Sprint 35) — tests stub to `{ skipped: true }`
 
 const https = require('https');
 const { spawn } = require('child_process');
+const path = require('path');
 
 const STACK_PACKAGES = [
   '@jhizzard/termdeck',
@@ -200,7 +211,253 @@ function parseArgv(argv) {
   return {
     json: args.includes('--json'),
     noColor: args.includes('--no-color'),
+    noSchema: args.includes('--no-schema'),
   };
+}
+
+// ── Sprint 35 T3: Supabase schema-check ────────────────────────────────────
+//
+// Connects via DATABASE_URL from ~/.termdeck/secrets.env and runs the schema
+// invariants TermDeck + Mnestra + Rumen depend on. Read-only — no DDL.
+//
+// Returns `{ skipped, sections, passed, total, hasGaps, error? }` where
+// `sections` is an ordered list of `{ name, checks: [{ label, status, hint? }] }`.
+// `status` is one of 'pass' | 'fail'. A `skipped: true` result short-circuits
+// rendering with an informational note.
+
+const SCHEMA_QUERIES = {
+  table: (name) =>
+    `SELECT EXISTS(SELECT 1 FROM information_schema.tables ` +
+    `WHERE table_schema = 'public' AND table_name = '${name}') AS ok`,
+  column: (table, column) =>
+    `SELECT EXISTS(SELECT 1 FROM information_schema.columns ` +
+    `WHERE table_schema = 'public' AND table_name = '${table}' ` +
+    `AND column_name = '${column}') AS ok`,
+  rpc: (name) =>
+    `SELECT EXISTS(SELECT 1 FROM pg_proc WHERE proname = '${name}') AS ok`,
+  extension: (name) =>
+    `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = '${name}') AS ok`,
+};
+
+// pgvector ships under extname 'vector' on Supabase; some older installs
+// or self-hosted boxes use 'pgvector' directly. Accept either.
+async function checkPgVector(client) {
+  try {
+    const r = await client.query(
+      "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname IN ('vector', 'pgvector')) AS ok"
+    );
+    return r.rows && r.rows[0] && r.rows[0].ok === true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+async function probeSchema(client, sql) {
+  try {
+    const r = await client.query(sql);
+    return r.rows && r.rows[0] && r.rows[0].ok === true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+async function _runSchemaCheck(opts = {}) {
+  const optsObj = opts || {};
+  // Lazy-require so users running version-check-only never load pg / fs.
+  const fs = require('fs');
+  const os = require('os');
+  const SETUP_DIR = path.join(__dirname, '..', '..', 'server', 'src', 'setup');
+  let pgRunner;
+  let dotenv;
+  try {
+    pgRunner = require(path.join(SETUP_DIR, 'pg-runner'));
+    dotenv = require(path.join(SETUP_DIR, 'dotenv-io'));
+  } catch (err) {
+    return {
+      skipped: true,
+      reason: `setup helpers unavailable: ${err.message}`,
+      sections: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+
+  const secretsPath = optsObj.secretsPath ||
+    path.join(os.homedir(), '.termdeck', 'secrets.env');
+  if (!fs.existsSync(secretsPath)) {
+    return {
+      skipped: true,
+      reason: `~/.termdeck/secrets.env not found — run \`termdeck init --mnestra\` first`,
+      sections: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+  const secrets = optsObj.secrets || dotenv.readSecrets(secretsPath);
+  if (!secrets.DATABASE_URL) {
+    return {
+      skipped: true,
+      reason: `DATABASE_URL not set in ${secretsPath}`,
+      sections: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+
+  let client = optsObj._pgClient || null;
+  let ownsClient = false;
+  if (!client) {
+    try {
+      client = await pgRunner.connect(secrets.DATABASE_URL);
+      ownsClient = true;
+    } catch (err) {
+      return {
+        skipped: false,
+        connectError: err.message,
+        sections: [], passed: 0, total: 0, hasGaps: true,
+      };
+    }
+  }
+
+  const sections = [
+    { name: 'Mnestra modern schema',  checks: [] },
+    { name: 'Mnestra legacy schema',  checks: [] },
+    { name: 'Transcript backup',      checks: [] },
+    { name: 'Rumen schema',           checks: [] },
+    { name: 'Postgres extensions',    checks: [] },
+  ];
+
+  try {
+    // Mnestra modern
+    const modern = sections[0].checks;
+    for (const t of ['memory_items', 'memory_sessions', 'memory_relationships']) {
+      modern.push({
+        label: `${t} table`,
+        status: (await probeSchema(client, SCHEMA_QUERIES.table(t))) ? 'pass' : 'fail',
+        hint: `run: termdeck init --mnestra (applies migrations 001–007)`,
+      });
+    }
+    modern.push({
+      label: `memory_items.source_session_id column (v0.6.5+)`,
+      status: (await probeSchema(client, SCHEMA_QUERIES.column('memory_items', 'source_session_id'))) ? 'pass' : 'fail',
+      hint: `migration 007 adds it — run: npm cache clean --force && npm i -g @jhizzard/termdeck@latest && termdeck init --mnestra --yes`,
+    });
+    for (const fn of ['match_memories', 'search_memories', 'memory_status_aggregation']) {
+      modern.push({
+        label: `${fn}() RPC`,
+        status: (await probeSchema(client, SCHEMA_QUERIES.rpc(fn))) ? 'pass' : 'fail',
+        hint: `migration 005/006 creates it — re-run: termdeck init --mnestra --yes`,
+      });
+    }
+
+    // Mnestra legacy (Sprint 35 T2 ships these via 008_legacy_rag_tables.sql)
+    const legacy = sections[1].checks;
+    for (const t of ['mnestra_session_memory', 'mnestra_project_memory', 'mnestra_developer_memory', 'mnestra_commands']) {
+      legacy.push({
+        label: `${t} table`,
+        status: (await probeSchema(client, SCHEMA_QUERIES.table(t))) ? 'pass' : 'fail',
+        hint: `run: termdeck init --mnestra --yes (applies migration 008 — Sprint 35)`,
+      });
+    }
+
+    // Transcript
+    sections[2].checks.push({
+      label: `termdeck_transcripts table`,
+      status: (await probeSchema(client, SCHEMA_QUERIES.table('termdeck_transcripts'))) ? 'pass' : 'fail',
+      hint: `run: psql "$DATABASE_URL" -f config/transcript-migration.sql`,
+    });
+
+    // Rumen — table existence and the created_at column drift Brad hit
+    const rumen = sections[3].checks;
+    for (const t of ['rumen_jobs', 'rumen_insights', 'rumen_questions']) {
+      const tableOk = await probeSchema(client, SCHEMA_QUERIES.table(t));
+      rumen.push({
+        label: `${t} table`,
+        status: tableOk ? 'pass' : 'fail',
+        hint: `run: termdeck init --rumen (applies rumen migration 001)`,
+      });
+      // Only check the column when the table exists — otherwise the column
+      // line is redundant noise.
+      if (tableOk) {
+        rumen.push({
+          label: `${t}.created_at column`,
+          status: (await probeSchema(client, SCHEMA_QUERIES.column(t, 'created_at'))) ? 'pass' : 'fail',
+          hint: `column drift detected — re-run: termdeck init --rumen`,
+        });
+      }
+    }
+
+    // Extensions — pg_cron / pg_net / pgvector / pg_trgm / pgcrypto
+    const exts = sections[4].checks;
+    const dashboardHint = (() => {
+      if (!secrets.SUPABASE_URL) return `enable in dashboard: Database → Extensions`;
+      const m = String(secrets.SUPABASE_URL).match(/https:\/\/([a-z0-9-]+)\.supabase\.(co|in)/i);
+      if (!m) return `enable in dashboard: Database → Extensions`;
+      return `enable: https://supabase.com/dashboard/project/${m[1]}/database/extensions`;
+    })();
+    for (const ext of ['pg_cron', 'pg_net', 'pg_trgm', 'pgcrypto']) {
+      exts.push({
+        label: `${ext}`,
+        status: (await probeSchema(client, SCHEMA_QUERIES.extension(ext))) ? 'pass' : 'fail',
+        hint: dashboardHint,
+      });
+    }
+    exts.push({
+      label: `pgvector (extname: vector)`,
+      status: (await checkPgVector(client)) ? 'pass' : 'fail',
+      hint: dashboardHint,
+    });
+  } finally {
+    if (ownsClient) {
+      try { await client.end(); } catch (_e) { /* ignore */ }
+    }
+  }
+
+  let passed = 0;
+  let total = 0;
+  for (const s of sections) {
+    for (const c of s.checks) {
+      total += 1;
+      if (c.status === 'pass') passed += 1;
+    }
+  }
+  return {
+    skipped: false,
+    sections,
+    passed,
+    total,
+    hasGaps: passed < total,
+  };
+}
+
+function renderSchemaResult(result, c) {
+  const out = [];
+  out.push('');
+  out.push(c.bold('TermDeck stack — Supabase schema check'));
+  out.push('');
+  if (result.skipped) {
+    out.push(`  ${c.dim(`(skipped) ${result.reason}`)}`);
+    return out.join('\n');
+  }
+  if (result.connectError) {
+    out.push(`  ${c.yellow('✗')} could not connect: ${result.connectError}`);
+    out.push(`  ${c.dim('Check DATABASE_URL in ~/.termdeck/secrets.env, then re-run.')}`);
+    return out.join('\n');
+  }
+  for (const section of result.sections) {
+    out.push(`  ${c.bold(section.name)}`);
+    if (section.checks.length === 0) {
+      out.push(`    ${c.dim('(no checks ran)')}`);
+      continue;
+    }
+    for (const check of section.checks) {
+      if (check.status === 'pass') {
+        out.push(`    ${c.green('✓')} ${check.label}`);
+      } else {
+        out.push(`    ${c.yellow('✗')} ${check.label}`);
+        if (check.hint) {
+          out.push(`        ${c.dim(check.hint)}`);
+        }
+      }
+    }
+    out.push('');
+  }
+  out.push(`  ${result.passed}/${result.total} schema checks passed`);
+  return out.join('\n');
 }
 
 async function doctor(argv) {
@@ -223,9 +480,24 @@ async function doctor(argv) {
     })
   );
 
-  // Exit-code priority: any network failure → 2; any update available → 1;
-  // else 0. Computed after all rows resolve so a single transient failure
-  // doesn't mask real updates in stdout.
+  // Sprint 35 T3: schema check (skippable for tests / offline runs).
+  let schema = null;
+  if (!opts.noSchema) {
+    try {
+      schema = await module.exports._runSchemaCheck();
+    } catch (err) {
+      schema = {
+        skipped: false,
+        connectError: `unexpected error: ${err && err.message || err}`,
+        sections: [], passed: 0, total: 0, hasGaps: true,
+      };
+    }
+  }
+
+  // Exit-code priority: any network failure → 2; any update available OR
+  // schema gap → 1; else 0. Computed after all rows resolve so a single
+  // transient failure doesn't mask real updates in stdout. A schema connect
+  // error counts as 2 (same class as a registry fetch failure).
   let exitCode = 0;
   for (const r of rows) {
     if (r.status === STATUS.NETWORK_ERROR) {
@@ -234,9 +506,13 @@ async function doctor(argv) {
     }
     if (r.status === STATUS.UPDATE && exitCode < 1) exitCode = 1;
   }
+  if (schema && schema.connectError && exitCode < 2) exitCode = 2;
+  if (schema && !schema.skipped && schema.hasGaps && exitCode < 1) exitCode = 1;
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify({ exitCode, rows }, null, 2) + '\n');
+    const payload = { exitCode, rows };
+    if (schema) payload.schema = schema;
+    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return exitCode;
   }
 
@@ -244,6 +520,9 @@ async function doctor(argv) {
   const c = makeColors(colorEnabled);
   process.stdout.write(renderTable(rows, c) + '\n');
   process.stdout.write(renderFooter(rows, exitCode) + '\n');
+  if (schema) {
+    process.stdout.write(renderSchemaResult(schema, c) + '\n');
+  }
   return exitCode;
 }
 
@@ -251,5 +530,6 @@ module.exports = doctor;
 module.exports._detectInstalled = _detectInstalled;
 module.exports._fetchLatest = _fetchLatest;
 module.exports._compareSemver = _compareSemver;
+module.exports._runSchemaCheck = _runSchemaCheck;
 module.exports.STACK_PACKAGES = STACK_PACKAGES;
 module.exports.STATUS = STATUS;

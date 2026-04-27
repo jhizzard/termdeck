@@ -246,6 +246,62 @@ test('verifyMnestraOutcomes: missing memory_items table is a distinct, recoverab
   assert.equal(result.gaps[0].key, 'memory_items');
 });
 
+// ── Sprint 35 T3: project-ref dashboard URL in extension hints ─────────────
+
+test('extensionsDashboardUrl: derives the Database → Extensions URL from SUPABASE_URL', () => {
+  const url = preconditions.extensionsDashboardUrl({
+    SUPABASE_URL: 'https://abcdefghijklmno.supabase.co'
+  });
+  assert.equal(url, 'https://supabase.com/dashboard/project/abcdefghijklmno/database/extensions');
+});
+
+test('extensionsDashboardUrl: returns null when SUPABASE_URL is missing or unparseable', () => {
+  assert.equal(preconditions.extensionsDashboardUrl({}), null);
+  assert.equal(preconditions.extensionsDashboardUrl({ SUPABASE_URL: 'not-a-url' }), null);
+  assert.equal(preconditions.extensionsDashboardUrl(null), null);
+});
+
+test('auditRumenPreconditions: pg_cron / pg_net hints include the project-specific dashboard URL', async () => {
+  const client = makeFakeClient([
+    ['pg_extension', { rows: [] }],            // both extensions miss
+    ['vault.decrypted_secrets', { rows: [{ ok: 1 }] }]
+  ]);
+
+  const result = await preconditions.auditRumenPreconditions({
+    secrets: {
+      DATABASE_URL: 'postgres://x:y@z/db',
+      SUPABASE_URL: 'https://abcdefghijklmno.supabase.co'
+    },
+    env: { SUPABASE_ACCESS_TOKEN: 'sbp_set' },
+    _pgClient: client
+  });
+
+  const cronGap = result.gaps.find((g) => g.key === 'pg_cron');
+  const netGap = result.gaps.find((g) => g.key === 'pg_net');
+  assert.ok(cronGap, 'expected pg_cron gap');
+  assert.ok(netGap, 'expected pg_net gap');
+  assert.match(cronGap.hint, /supabase\.com\/dashboard\/project\/abcdefghijklmno\/database\/extensions/);
+  assert.match(netGap.hint, /supabase\.com\/dashboard\/project\/abcdefghijklmno\/database\/extensions/);
+});
+
+test('auditRumenPreconditions: extension hints fall back to generic copy when SUPABASE_URL absent', async () => {
+  const client = makeFakeClient([
+    ['pg_extension', { rows: [] }],
+    ['vault.decrypted_secrets', { rows: [{ ok: 1 }] }]
+  ]);
+
+  const result = await preconditions.auditRumenPreconditions({
+    secrets: { DATABASE_URL: 'postgres://x:y@z/db' }, // no SUPABASE_URL
+    env: { SUPABASE_ACCESS_TOKEN: 'sbp_set' },
+    _pgClient: client
+  });
+
+  const cronGap = result.gaps.find((g) => g.key === 'pg_cron');
+  assert.ok(cronGap);
+  assert.match(cronGap.hint, /Database → Extensions/);
+  assert.doesNotMatch(cronGap.hint, /supabase\.com\/dashboard\/project/);
+});
+
 // ── Render helpers (smoke only — exercise the path, don't pin formatting) ──
 
 test('printAuditReport / printVerifyReport: do not throw on either ok or failed input', () => {

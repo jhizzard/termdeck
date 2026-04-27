@@ -11,9 +11,10 @@
 //      or migration failure doesn't lose the user's typed-in keys.
 //   3. Connect via `pg` using the direct URL
 //   4. Apply the six bundled Mnestra migrations in order
-//   5. Update ~/.termdeck/config.yaml to enable RAG + point at ${VAR} refs
-//      (only after migrations apply cleanly — otherwise the server would
-//      try to use an incomplete schema on next startup)
+//   5. Update ~/.termdeck/config.yaml — set rag.enabled: false (MCP-only
+//      default; opt into TermDeck-side RAG via dashboard toggle) and point
+//      at ${VAR} refs (only after migrations apply cleanly — otherwise the
+//      server would try to use an incomplete schema on next startup)
 //   6. Verify with a memory_status_aggregation() call
 //
 // Flags:
@@ -74,7 +75,8 @@ const HELP = [
   '  2. Writes ~/.termdeck/secrets.env IMMEDIATELY (merge-aware) so a later',
   '     pg connect or migration failure does not lose what you typed in.',
   '  3. Connects to Postgres and applies the six Mnestra schema + RPC migrations.',
-  '  4. Updates ~/.termdeck/config.yaml to enable RAG and reference ${VAR} keys.',
+  '  4. Updates ~/.termdeck/config.yaml — sets rag.enabled: false (MCP-only',
+  '     default) and references ${VAR} keys for credentials.',
   '  5. Verifies the Mnestra store is reachable via memory_status_aggregation().',
   '',
   'Every secret stays on your machine. Nothing is ever printed once entered.',
@@ -180,7 +182,8 @@ This wizard configures TermDeck's Tier 2 memory layer (Mnestra) by:
   5. Writing ~/.termdeck/secrets.env (before any database work, so a
      pg failure cannot lose what you typed in)
   6. Connecting to Postgres + applying six SQL migrations
-  7. Updating ~/.termdeck/config.yaml to enable RAG (only after
+  7. Updating ~/.termdeck/config.yaml — rag.enabled: false (MCP-only
+     default; toggle in dashboard later) with \${VAR} refs (only after
      migrations apply cleanly)
   8. Verifying the connection with a memory_status call
 
@@ -410,11 +413,27 @@ function writeSecretsFile(inputs, dryRun) {
   ok();
 }
 
+// MCP-only is the default starting v0.7.3. Mnestra's MCP server populates
+// `memory_items` whenever an AI worker calls memory_remember / memory_recall,
+// so the dashboard's Flashback queries work out of the box. The TermDeck-side
+// RAG event tables (mnestra_session_memory / mnestra_project_memory /
+// mnestra_developer_memory / mnestra_commands) stay off until the user opts
+// in via the dashboard or by editing config.yaml. This matches Joshua's
+// daily-driver setup and avoids the v0.7.2-and-earlier asymmetry that hit
+// Brad's box on 2026-04-27 (default `enabled: true` against tables no init
+// path created → 404 cascade → silent RAG drop).
 function writeYamlConfig(dryRun) {
-  step('Updating ~/.termdeck/config.yaml (rag.enabled: true)...');
+  process.stdout.write(
+    '\nSetup mode: MCP-only (default)\n' +
+    '  Mnestra MCP tools fill memory_items via memory_remember / memory_recall.\n' +
+    '  TermDeck event tables (session / project / developer) stay OFF by default.\n' +
+    '  Enable later: toggle in dashboard at http://localhost:3000/#config\n' +
+    '  or set rag.enabled: true in ~/.termdeck/config.yaml.\n\n'
+  );
+  step('Updating ~/.termdeck/config.yaml (rag.enabled: false, MCP-only default)...');
   if (dryRun) { ok('(dry-run)'); return; }
   const r = yaml.updateRagConfig({
-    enabled: true,
+    enabled: false,
     supabaseUrl: '${SUPABASE_URL}',
     supabaseKey: '${SUPABASE_SERVICE_ROLE_KEY}',
     openaiApiKey: '${OPENAI_API_KEY}',
@@ -427,6 +446,11 @@ function writeYamlConfig(dryRun) {
 function printNextSteps() {
   process.stdout.write(`
 Mnestra is configured.
+
+Setup mode: MCP-only (default) — TermDeck-side RAG event tables are off.
+To enable session / project / developer memory tables, toggle in the dashboard
+at http://localhost:3000/#config or set rag.enabled: true in
+~/.termdeck/config.yaml and restart TermDeck.
 
 Next steps:
   1. Restart TermDeck: termdeck

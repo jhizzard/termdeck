@@ -39,6 +39,18 @@
 
 const { spawnSync } = require('child_process');
 const pgRunner = require('./pg-runner');
+const supabaseUrlHelper = require('./supabase-url');
+
+// Build the project-specific Supabase dashboard URL for the Database →
+// Extensions page when SUPABASE_URL is derivable, else null. Sprint 35 T3:
+// previous hints said "Database → Extensions" with no clickable target —
+// this gives the user a one-click landing page.
+function extensionsDashboardUrl(secrets) {
+  if (!secrets || !secrets.SUPABASE_URL) return null;
+  const parsed = supabaseUrlHelper.parseProjectUrl(secrets.SUPABASE_URL);
+  if (!parsed.ok) return null;
+  return `https://supabase.com/dashboard/project/${parsed.projectRef}/database/extensions`;
+}
 
 // Render a single gap into 2-3 lines of CLI output (one indented hint per
 // non-empty `hint` line). Format aligned with the rest of the wizard's
@@ -144,6 +156,13 @@ async function auditRumenPreconditions({ secrets, env, _pgClient } = {}) {
     return { ok: gaps.length === 0, gaps };
   }
 
+  // Project-specific dashboard URL for missing-extension hints. Falls back
+  // to generic copy when SUPABASE_URL isn't derivable.
+  const dashboardUrl = extensionsDashboardUrl(secrets);
+  const dashboardLine = dashboardUrl
+    ? `  Open: ${dashboardUrl}\n  Search for the extension and toggle it ON.`
+    : '  Database → Extensions → toggle ON';
+
   try {
     // pg_cron extension
     const cron = await safeQuery(client,
@@ -153,8 +172,8 @@ async function auditRumenPreconditions({ secrets, env, _pgClient } = {}) {
         key: 'pg_cron',
         message: 'The pg_cron extension is not enabled on this Supabase project',
         hint:
-          'Enable it in the Supabase dashboard:\n' +
-          '  Database → Extensions → pg_cron → toggle ON\n' +
+          'Enable pg_cron in the Supabase dashboard:\n' +
+          dashboardLine + '\n' +
           '(Without pg_cron, the rumen-tick schedule cannot run.)'
       });
     }
@@ -167,8 +186,8 @@ async function auditRumenPreconditions({ secrets, env, _pgClient } = {}) {
         key: 'pg_net',
         message: 'The pg_net extension is not enabled on this Supabase project',
         hint:
-          'Enable it in the Supabase dashboard:\n' +
-          '  Database → Extensions → pg_net → toggle ON\n' +
+          'Enable pg_net in the Supabase dashboard:\n' +
+          dashboardLine + '\n' +
           '(pg_net is what the cron schedule uses to call the Edge Function.)'
       });
     }
@@ -364,6 +383,7 @@ module.exports = {
   verifyMnestraOutcomes,
   printAuditReport,
   printVerifyReport,
+  extensionsDashboardUrl,
   // Test surface
   _probeSupabaseAuth: probeSupabaseAuth,
   _safeQuery: safeQuery

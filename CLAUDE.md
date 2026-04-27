@@ -107,7 +107,7 @@ termdeck/
 ├── config/
 │   ├── config.example.yaml               # Template config
 │   ├── secrets.env.example               # Template secrets
-│   ├── supabase-migration.sql            # Legacy v0.1 RAG DDL
+│   ├── supabase-migration.sql            # Legacy v0.1 RAG DDL (mirror; auto-applied via mnestra-migrations/008_legacy_rag_tables.sql)
 │   └── transcript-migration.sql          # Sprint 6 transcripts DDL
 ├── docs/
 │   ├── GETTING-STARTED.md                # 4-tier install guide

@@ -1733,7 +1733,7 @@ if (require.main === module) {
     console.log(`  Terminals:  0 active`);
     console.log(`  Database:   ${Database ? 'SQLite OK' : 'unavailable'}`);
     console.log(`  PTY:        ${pty ? 'node-pty OK' : 'unavailable (install node-pty)'}`);
-    console.log(`  RAG:        ${config.rag?.supabaseUrl ? 'configured' : 'not configured'}`);
+    console.log(`  RAG:        ${config.rag?.enabled === true ? 'on (writing to mnestra_*_memory tables)' : 'off (MCP-only mode)'}`);
     console.log(`  Session logs: ${config.sessionLogs?.enabled ? '~/.termdeck/sessions/ (on exit)' : 'off'}`);
     console.log(`  Transcripts:  ${transcriptWriter ? 'streaming to Supabase' : 'off (no DATABASE_URL)'}`);
     console.log(`\n  WARNING: TermDeck binds to ${host} only.`);

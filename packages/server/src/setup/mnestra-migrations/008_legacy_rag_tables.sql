@@ -1,14 +1,10 @@
+-- 008_legacy_rag_tables.sql
+-- Mirror of config/supabase-migration.sql (kept in repo root for reference / manual application).
+-- Auto-applied by packages/server/src/setup/migration-runner.js as the 8th Mnestra migration.
+-- Safe to re-run: all CREATE statements use IF NOT EXISTS guards (and DROP IF EXISTS for policies).
+
 -- Mnestra RAG Tables
 -- Multi-layer memory: session → project → developer (cross-project)
---
--- This file is the legacy v0.1 RAG schema. It is auto-applied by the wizard
--- as bundled migration 008 (packages/server/src/setup/mnestra-migrations/
--- 008_legacy_rag_tables.sql is a byte-for-byte mirror). Kept here at the
--- repo root so manual `psql -f` against an existing database stays a valid
--- recovery path.
---
--- Re-run safe: every statement uses IF NOT EXISTS or a DROP-then-CREATE
--- guard, and pg_trgm is created before any object that depends on it.
 
 -- pg_trgm enables gin_trgm_ops used by the commands FTS index below.
 -- Must be created before any object that depends on it.

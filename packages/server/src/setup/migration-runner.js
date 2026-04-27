@@ -1,11 +1,18 @@
 // Unified migration runner for the setup wizard and `termdeck init --mnestra`.
 //
-// Applies the full 7-migration bootstrap sequence in order:
-//   1-6. Mnestra schema + RPCs (bundled under ./mnestra-migrations)
-//   7.   termdeck_transcripts table (repo root: config/transcript-migration.sql)
+// Applies the full bootstrap sequence in order:
+//   - Every *.sql file bundled under ./mnestra-migrations, sorted alphabetically
+//     by filename (currently 001…008 — Mnestra schema + RPCs + the legacy RAG
+//     tables that rag.js writes to when rag.enabled is on).
+//   - Then config/transcript-migration.sql (the termdeck_transcripts table).
 //
-// Every migration file is authored with IF NOT EXISTS / CREATE OR REPLACE so
-// re-running the sequence is a no-op on an already-configured database.
+// Migrations are discovered via migrations.listMnestraMigrations(), so adding
+// a new file under ./mnestra-migrations/ is the only step needed to ship it —
+// no edits here required as long as the filename sorts after the previous one.
+//
+// Every migration file is authored with IF NOT EXISTS / CREATE OR REPLACE
+// (and DROP POLICY IF EXISTS where applicable) so re-running the sequence is
+// a no-op on an already-configured database.
 
 const fs = require('fs');
 const path = require('path');

@@ -14,7 +14,75 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execSync } = require('child_process');
+const { exec, execSync } = require('child_process');
+
+// Sprint 35 T4: stale-port reclaim. If the target port is held by a previous
+// TermDeck instance (crash, runaway, prior `termdeck` left orphaned), kill it
+// and continue. If it's held by something else, print a clear error and exit
+// instead of letting `server.listen()` throw a generic EADDRINUSE.
+// Lifted from scripts/start.sh:127–154 so npm-installed users (who never see
+// start.sh) get the same recovery behavior.
+function reclaimStalePort(port) {
+  let pids = [];
+  try {
+    const out = execSync(`lsof -ti TCP:${port} -sTCP:LISTEN 2>/dev/null`, { encoding: 'utf8' });
+    pids = out.split(/\s+/).filter(Boolean);
+  } catch (_e) {
+    // lsof exits 1 when no PIDs match — empty case, not an error.
+    pids = [];
+  }
+  if (pids.length === 0) {
+    // Linux fallback for systems without lsof
+    try {
+      const out = execSync(`fuser -n tcp ${port} 2>/dev/null`, { encoding: 'utf8' });
+      pids = out.split(/\s+/).filter((s) => /^\d+$/.test(s));
+    } catch (_e) { pids = []; }
+  }
+  if (pids.length === 0) return;
+
+  let isTermDeck = false;
+  for (const pid of pids) {
+    try {
+      const cmd = execSync(`ps -o command= -p ${pid}`, { encoding: 'utf8' });
+      if (/packages\/cli\/src\/index\.js/.test(cmd) || /termdeck/i.test(cmd)) {
+        isTermDeck = true;
+        break;
+      }
+    } catch (_e) { /* PID gone between lsof and ps — ignore */ }
+  }
+
+  if (isTermDeck) {
+    console.log(`  \x1b[2m[port] Reclaiming :${port} from stale TermDeck (PIDs: ${pids.join(' ')})\x1b[0m`);
+    for (const pid of pids) {
+      try { process.kill(parseInt(pid, 10), 'SIGTERM'); } catch (_e) {}
+    }
+    try { execSync('sleep 1'); } catch (_e) {}
+    for (const pid of pids) {
+      try { process.kill(parseInt(pid, 10), 'SIGKILL'); } catch (_e) {}
+    }
+  } else {
+    console.error(`\n  \x1b[31m✗ Port ${port} is in use by a non-TermDeck process (PIDs: ${pids.join(' ')})\x1b[0m`);
+    console.error(`  \x1b[2mTry a different port: termdeck --port ${port + 1}\x1b[0m\n`);
+    process.exit(1);
+  }
+}
+
+// Sprint 35 T4: transcript-table-missing hint. If DATABASE_URL is set and
+// psql is on PATH, probe for termdeck_transcripts. Fire-and-forget so a slow
+// network round-trip to Supabase never blocks boot. Lifted from
+// scripts/start.sh:309–313.
+function checkTranscriptTableHint(databaseUrl) {
+  if (!databaseUrl) return;
+  try { execSync('command -v psql', { stdio: 'ignore' }); } catch (_e) { return; }
+  exec('psql "$DATABASE_URL" -c "SELECT 1 FROM termdeck_transcripts LIMIT 0"', {
+    env: { ...process.env, DATABASE_URL: databaseUrl },
+    timeout: 5000,
+  }, (err) => {
+    if (err) {
+      console.log(`  \x1b[33m[hint]\x1b[0m Transcript backup table missing. Run: \x1b[1mtermdeck doctor\x1b[0m (or psql $DATABASE_URL -f config/transcript-migration.sql)`);
+    }
+  });
+}
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -130,7 +198,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck init --mnestra     Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
     termdeck forge              Generate Claude skills from memories (experimental)
-    termdeck doctor             Check whether the stack packages are up to date
+    termdeck doctor             Diagnose stack — npm versions + Supabase schema (use --no-schema to skip the DB probe)
 
   Keyboard shortcuts (in browser):
     Ctrl+Shift+N                Focus prompt bar
@@ -173,6 +241,11 @@ const { server } = createServer(config);
 const port = config.port || 3000;
 const host = config.host || '127.0.0.1';
 const url = `http://${host}:${port}`;
+
+// Sprint 35 T4: reclaim the port if a previous TermDeck is squatting on it,
+// or hard-stop with a useful hint if a non-TermDeck process holds it. Runs
+// before server.listen() so EADDRINUSE never bubbles up.
+reclaimStalePort(port);
 
 // Bind guardrail: refuse non-loopback without auth token
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -229,9 +302,22 @@ server.listen(port, host, async () => {
   ╚══════════════════════════════════════╝
   `);
 
+  // Sprint 35 T4: RAG state line. Always-visible indicator of what mode the
+  // user is in — MCP-only (the new default after Sprint 35 T1) or full RAG
+  // writing to mnestra_*_memory tables. Dim line, single sentence.
+  if (config.rag && config.rag.enabled === true) {
+    console.log(`  \x1b[2mRAG: on — events syncing to mnestra_session_memory / mnestra_project_memory / mnestra_developer_memory\x1b[0m\n`);
+  } else {
+    console.log(`  \x1b[2mRAG: off (MCP-only mode) — toggle in dashboard at ${url}/#config to enable session/project/developer memory tables\x1b[0m\n`);
+  }
+
   if (firstRun) {
     console.log("  First run detected. Open http://localhost:3000 and click 'config' to set up.\n");
   }
+
+  // Sprint 35 T4: probe Supabase for the transcript backup table; print a
+  // hint if it's missing. Non-blocking — the result lands after the banner.
+  checkTranscriptTableHint(process.env.DATABASE_URL || (config.rag && config.rag.databaseUrl));
 
   // Run preflight health checks (non-blocking — warn but don't prevent startup)
   runPreflight(config).then((result) => {
