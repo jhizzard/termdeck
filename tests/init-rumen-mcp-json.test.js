@@ -237,3 +237,71 @@ test('supabase entry without an env block gets one created and the token set', (
   const cfg = JSON.parse(fs.readFileSync(file, 'utf-8'));
   assert.equal(cfg.mcpServers.supabase.env.SUPABASE_ACCESS_TOKEN, 'sbp_real_token');
 });
+
+// ── Sprint 36 T2: ~/.claude.json shape — preserve every other top-level key ─
+
+// When the helper runs against the canonical ~/.claude.json (which holds
+// ~55 unrelated top-level keys Claude Code owns: oauthAccount, projects,
+// installMethod, …), the backfill must mutate ONLY the supabase env field.
+// Everything else must round-trip byte-equivalent so the next Claude Code
+// release that adds a key isn't silently dropped by us.
+test('preserves all unrelated top-level keys when target is a ~/.claude.json-shaped fixture', () => {
+  const dir = freshTmpDir();
+  const file = path.join(dir, 'claude.json');
+
+  const fixture = {
+    oauthAccount: { id: 'acct-abc-123', email: 'dev@example.com', emailVerified: true },
+    projects: {
+      '/Users/dev/repo-a': { lastUsed: 1717000000000, history: [{ id: 'h1' }] },
+      '/Users/dev/repo-b': { lastUsed: 1717111111111 },
+    },
+    installMethod: 'unknown',
+    autoUpdates: true,
+    skipAutoPermissionPrompt: false,
+    extraKnownMarketplaces: ['foo', 'bar'],
+    mcpServers: {
+      mnestra: {
+        type: 'stdio',
+        command: 'mnestra',
+        args: ['serve'],
+        env: { SUPABASE_URL: 'https://example.supabase.co' },
+      },
+      supabase: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@supabase/mcp-server-supabase@latest'],
+        env: { SUPABASE_ACCESS_TOKEN: 'SUPABASE_PAT_HERE' },
+      },
+    },
+  };
+  fs.writeFileSync(file, JSON.stringify(fixture, null, 2) + '\n', { mode: 0o600 });
+
+  const r = wireAccessTokenInMcpJson({
+    token: 'sbp_real_token_value_xyz',
+    mcpJsonPath: file,
+  });
+
+  assert.equal(r.status, 'updated');
+
+  const reread = JSON.parse(fs.readFileSync(file, 'utf-8'));
+
+  // Backfill landed.
+  assert.equal(reread.mcpServers.supabase.env.SUPABASE_ACCESS_TOKEN, 'sbp_real_token_value_xyz');
+
+  // Every unrelated top-level key survives byte-for-byte.
+  assert.deepEqual(reread.oauthAccount, fixture.oauthAccount);
+  assert.deepEqual(reread.projects, fixture.projects);
+  assert.equal(reread.installMethod, fixture.installMethod);
+  assert.equal(reread.autoUpdates, fixture.autoUpdates);
+  assert.equal(reread.skipAutoPermissionPrompt, fixture.skipAutoPermissionPrompt);
+  assert.deepEqual(reread.extraKnownMarketplaces, fixture.extraKnownMarketplaces);
+
+  // Sibling MCP entry untouched.
+  assert.deepEqual(reread.mcpServers.mnestra, fixture.mcpServers.mnestra);
+
+  // The set of top-level keys is unchanged — no key dropped, no key added.
+  assert.deepEqual(
+    Object.keys(reread).sort(),
+    Object.keys(fixture).sort(),
+  );
+});

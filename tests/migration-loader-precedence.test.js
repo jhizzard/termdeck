@@ -40,7 +40,7 @@ function loadMigrations() {
 // will fail loudly.
 const BUNDLED_DIR = path.join(repoRoot, 'packages', 'server', 'src', 'setup', 'mnestra-migrations');
 
-test('bundled migration directory contains all expected files including 007', () => {
+test('bundled migration directory contains all expected files including 008', () => {
   // This is the lowest-level guard: if the bundled file goes missing for
   // any reason — accidental rm, .gitignore mistake, files-glob in
   // package.json drops it — this fails before anything else.
@@ -52,14 +52,15 @@ test('bundled migration directory contains all expected files including 007', ()
     '004_mnestra_match_count_cap_and_explain.sql',
     '005_v0_1_to_v0_2_upgrade.sql',
     '006_memory_status_rpc.sql',
-    '007_add_source_session_id.sql'
+    '007_add_source_session_id.sql',
+    '008_legacy_rag_tables.sql'
   ]);
 });
 
-test('listMnestraMigrations() returns 7 files in lexical order', () => {
+test('listMnestraMigrations() returns 8 files in lexical order', () => {
   const m = loadMigrations();
   const list = m.listMnestraMigrations();
-  assert.equal(list.length, 7, 'expected 7 mnestra migrations from v0.6.5+');
+  assert.equal(list.length, 8, 'expected 8 mnestra migrations from v0.7.3+');
   const basenames = list.map((p) => path.basename(p));
   // Lexical order is what the SQL runner relies on — pin it.
   assert.deepEqual(basenames, [
@@ -69,7 +70,8 @@ test('listMnestraMigrations() returns 7 files in lexical order', () => {
     '004_mnestra_match_count_cap_and_explain.sql',
     '005_v0_1_to_v0_2_upgrade.sql',
     '006_memory_status_rpc.sql',
-    '007_add_source_session_id.sql'
+    '007_add_source_session_id.sql',
+    '008_legacy_rag_tables.sql'
   ]);
 });
 
@@ -132,9 +134,9 @@ test('listMnestraMigrations() prefers bundled even when a stale @jhizzard/mnestr
       fakeReachable = true;
     } catch (_e) { /* fake not reachable; the tryNodeModules path won't resolve either */ }
 
-    assert.equal(list.length, 7, fakeReachable
-      ? 'bundled (7) must win over a stale node_modules @jhizzard/mnestra (6)'
-      : 'bundled fallback must still return 7 even when no @jhizzard/mnestra is reachable');
+    assert.equal(list.length, 8, fakeReachable
+      ? 'bundled (8) must win over a stale node_modules @jhizzard/mnestra (6)'
+      : 'bundled fallback must still return 8 even when no @jhizzard/mnestra is reachable');
     // And the resolved paths must be the bundled ones, not the fake's.
     for (const p of list) {
       assert.ok(

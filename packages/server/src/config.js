@@ -298,11 +298,107 @@ function addProject({ name, path: projectPath, defaultTheme, defaultCommand }) {
   return parsed.projects;
 }
 
+// Apply a structural patch to ~/.termdeck/config.yaml. Sprint 36 introduces
+// this for the dashboard RAG toggle (PATCH /api/config) but the helper is
+// generic — pass a deep partial of the config tree, every leaf in `patch` that
+// matches the whitelist gets written through. Returns the parsed-from-disk
+// post-write tree (NOT post-substitution; we only persist user-authored values
+// here, never substituted secrets).
+//
+// Whitelist deliberately tight. Only fields a UI can safely flip live belong
+// here. Adding a new field is an explicit one-line edit (vs. a freeform writer
+// that would let a buggy/malicious client change `port`, `shell`, or projects).
+//
+// Comments and formatting in config.yaml are NOT preserved — same trade-off
+// as `addProject`. The yaml package's parseDocument API can preserve comments
+// but we'd need to migrate addProject too for consistency; that's a follow-up.
+const UPDATABLE_PATHS = new Set([
+  'rag.enabled'
+]);
+
+function flattenPatch(obj, prefix = '') {
+  const out = [];
+  if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return out;
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v != null && typeof v === 'object' && !Array.isArray(v)) {
+      out.push(...flattenPatch(v, key));
+    } else {
+      out.push([key, v]);
+    }
+  }
+  return out;
+}
+
+function setPath(obj, segs, value) {
+  let cur = obj;
+  for (let i = 0; i < segs.length - 1; i++) {
+    const s = segs[i];
+    if (cur[s] == null || typeof cur[s] !== 'object') cur[s] = {};
+    cur = cur[s];
+  }
+  cur[segs[segs.length - 1]] = value;
+}
+
+function updateConfig(patch, configPath = CONFIG_PATH) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new Error('updateConfig: patch must be a plain object');
+  }
+
+  const flat = flattenPatch(patch);
+  if (flat.length === 0) {
+    throw new Error('updateConfig: patch is empty');
+  }
+
+  for (const [key, val] of flat) {
+    if (!UPDATABLE_PATHS.has(key)) {
+      throw new Error(`updateConfig: ${key} is not in the updatable whitelist`);
+    }
+    if (key === 'rag.enabled' && typeof val !== 'boolean') {
+      throw new Error('updateConfig: rag.enabled must be a boolean');
+    }
+  }
+
+  const yaml = require('yaml');
+  let parsed = {};
+  if (fs.existsSync(configPath)) {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    try {
+      parsed = yaml.parse(raw) || {};
+    } catch (err) {
+      throw new Error(`config.yaml is not valid YAML — refusing to overwrite: ${err.message}`);
+    }
+  }
+
+  for (const [key, val] of flat) {
+    setPath(parsed, key.split('.'), val);
+  }
+
+  if (fs.existsSync(configPath)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const bak = `${configPath}.${ts}.bak`;
+    try {
+      fs.copyFileSync(configPath, bak);
+    } catch (err) {
+      console.warn('[config] Could not write backup before updateConfig:', err.message);
+    }
+  }
+
+  const out = yaml.stringify(parsed);
+  fs.writeFileSync(configPath, out, 'utf-8');
+  console.log(`[config] updateConfig wrote ${flat.map(([k]) => k).join(', ')}`);
+
+  return parsed;
+}
+
 module.exports = {
   loadConfig,
   addProject,
+  updateConfig,
   // exported for tests / introspection
   _parseDotenv: parseDotenv,
   _substituteEnv: substituteEnv,
+  _flattenPatch: flattenPatch,
+  _UPDATABLE_PATHS: UPDATABLE_PATHS,
   _paths: { CONFIG_DIR, CONFIG_PATH, SECRETS_PATH }
 };

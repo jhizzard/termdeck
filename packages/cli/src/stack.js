@@ -22,6 +22,16 @@ const SECRETS_FILE = path.join(CONFIG_DIR, 'secrets.env');
 const DEFAULT_MNESTRA_PORT = parseInt(process.env.MNESTRA_PORT || '37778', 10);
 const MNESTRA_LOG = path.join(os.tmpdir(), 'termdeck-mnestra.log');
 
+// Sprint 36: Claude Code v2.1.119+ reads MCP servers from ~/.claude.json
+// (canonical). The legacy ~/.claude/mcp.json is still accepted by older
+// versions. Detection checks BOTH; T2 migrates writes to the canonical path.
+// Exported so T2 (init-rumen, stack-installer, supabase-mcp) and any other
+// caller stays in sync — single source of truth for "where does Claude Code
+// look for MCP entries today".
+const CLAUDE_MCP_PATH_CANONICAL = path.join(HOME, '.claude.json');
+const CLAUDE_MCP_PATH_LEGACY = path.join(HOME, '.claude', 'mcp.json');
+const CLAUDE_MCP_PATHS = [CLAUDE_MCP_PATH_CANONICAL, CLAUDE_MCP_PATH_LEGACY];
+
 const ANSI = {
   green: '\x1b[32m', red: '\x1b[31m', yellow: '\x1b[33m', blue: '\x1b[34m',
   dim: '\x1b[2m', bold: '\x1b[1m', reset: '\x1b[0m',
@@ -49,6 +59,23 @@ function stepLine(step, label, status, detail) {
 
 function subNote(msg) {
   process.stdout.write(`  ${ANSI.dim}└ ${msg}${ANSI.reset}\n`);
+}
+
+// Sprint 36: scan both Claude Code MCP config paths for a Mnestra entry.
+// Returns true if either file parses and contains the substring "mnestra"
+// anywhere in its JSON (covers top-level mcpServers.mnestra AND per-project
+// blocks). Malformed JSON or missing files count as "no entry" — the hint
+// will fire and tell the user to run the installer, which is the desired
+// recovery for both states.
+function hasMnestraMcpEntry() {
+  for (const p of CLAUDE_MCP_PATHS) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (JSON.stringify(j).includes('mnestra')) return true;
+    } catch (_e) { /* malformed — skip, treat as missing */ }
+  }
+  return false;
 }
 
 // ── Args ─────────────────────────────────────────────────────────────
@@ -181,11 +208,32 @@ function isPidTermDeck(pid) {
   return /packages\/cli\/src\/index\.js|termdeck/.test(r.stdout || '');
 }
 
+// Liveness probe — a TermDeck that answers /api/sessions with a JSON array is
+// not stale; it's the orchestrator's live server, and killing it cascades to
+// every child PTY. On 2026-04-27 this caused two Sprint 36 server-kill
+// incidents (lane workers triggering reclaimPort against the live :3000).
+async function isTermDeckLive(port) {
+  try {
+    const j = await httpJson(`http://localhost:${port}/api/sessions`, 1500);
+    return Array.isArray(j);
+  } catch (_e) {
+    return false;
+  }
+}
+
 async function reclaimPort(port) {
   const pids = lsofPids(port);
   if (pids.length === 0) return { reclaimed: false, blockerPids: [] };
   const termdeckPids = pids.filter(isPidTermDeck);
   if (termdeckPids.length === 0) return { reclaimed: false, blockerPids: pids };
+
+  // Self-recognition guard: never kill a responsive TermDeck. Use --port to
+  // start a second instance instead.
+  if (await isTermDeckLive(port)) {
+    subNote(`TermDeck on port ${port} is live (PIDs: ${termdeckPids.join(' ')}) — not killing. Use --port <other> to start a second instance.`);
+    return { reclaimed: false, blockerPids: termdeckPids, alreadyLive: true };
+  }
+
   for (const pid of termdeckPids) {
     try { process.kill(pid, 'SIGTERM'); } catch (_e) { /* already dead */ }
   }
@@ -449,17 +497,11 @@ async function main(rawArgs) {
 
   const mnestra = await startMnestra({ skip: args.noMnestra });
 
-  // MCP config hint
-  if (mnestra.active) {
-    const mcpPath = path.join(HOME, '.claude', 'mcp.json');
-    let needsHint = !fs.existsSync(mcpPath);
-    if (!needsHint) {
-      try {
-        const j = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
-        if (!JSON.stringify(j).includes('mnestra')) needsHint = true;
-      } catch (_e) { needsHint = true; }
-    }
-    if (needsHint) subNote(`Hint: add a 'mnestra' entry to ~/.claude/mcp.json for Claude Code`);
+  // Sprint 36: MCP-absence hint. Claude Code v2.1.119+ reads from
+  // ~/.claude.json; legacy versions read ~/.claude/mcp.json. Mnestra is
+  // "wired" if EITHER file mentions it — otherwise the hint fires.
+  if (mnestra.active && !hasMnestraMcpEntry()) {
+    subNote(`TermDeck doesn't see Mnestra wired in Claude Code yet. Run: npx @jhizzard/termdeck-stack`);
   }
 
   const rumen = await checkRumen();
@@ -482,3 +524,11 @@ module.exports = function (argv) {
     return 1;
   });
 };
+
+// Sprint 36: shared MCP-config path constants. Other CLI/installer modules
+// (T2's lane: init-rumen.js, stack-installer, supabase-mcp.js) import from
+// here so the canonical-vs-legacy decision lives in exactly one file.
+module.exports.CLAUDE_MCP_PATH_CANONICAL = CLAUDE_MCP_PATH_CANONICAL;
+module.exports.CLAUDE_MCP_PATH_LEGACY = CLAUDE_MCP_PATH_LEGACY;
+module.exports.CLAUDE_MCP_PATHS = CLAUDE_MCP_PATHS;
+module.exports.hasMnestraMcpEntry = hasMnestraMcpEntry;

@@ -52,6 +52,23 @@ function reclaimStalePort(port) {
   }
 
   if (isTermDeck) {
+    // Liveness probe — never kill a TermDeck that's actively serving requests.
+    // A responsive /api/sessions means it's the orchestrator's live server, and
+    // killing it cascades to every child PTY. This was the actual root cause of
+    // four Sprint 36 server-kill incidents on 2026-04-27 (a sibling reclaimPort
+    // in stack.js had the same flaw and was already patched; this twin in the
+    // CLI entry was missed). Mirror of stack.js:isTermDeckLive.
+    let alreadyLive = false;
+    try {
+      const probe = execSync(`curl -sf -m 1.5 -o /dev/null -w "%{http_code}" http://127.0.0.1:${port}/api/sessions 2>/dev/null`, { encoding: 'utf8' });
+      if (probe.trim() === '200') alreadyLive = true;
+    } catch (_e) { /* curl missing or non-200 → treat as stale */ }
+
+    if (alreadyLive) {
+      console.log(`  \x1b[2m[port] :${port} held by live TermDeck (PIDs: ${pids.join(' ')}) — not killing. Use --port <other> for a second instance.\x1b[0m`);
+      process.exit(0); // graceful exit; don't try to bind a port that's already serving
+    }
+
     console.log(`  \x1b[2m[port] Reclaiming :${port} from stale TermDeck (PIDs: ${pids.join(' ')})\x1b[0m`);
     for (const pid of pids) {
       try { process.kill(parseInt(pid, 10), 'SIGTERM'); } catch (_e) {}
@@ -232,6 +249,7 @@ const firstRun = !fs.existsSync(path.join(os.homedir(), '.termdeck', 'config.yam
 
 const config = loadConfig();
 if (flags.port) config.port = flags.port;
+else if (process.env.TERMDECK_PORT) config.port = parseInt(process.env.TERMDECK_PORT, 10);
 if (flags.sessionLogs) {
   config.sessionLogs = { ...(config.sessionLogs || {}), enabled: true };
   console.log('[cli] session logs enabled — writing to ~/.termdeck/sessions/ on panel exit');
@@ -262,17 +280,20 @@ if (!LOOPBACK.has(host)) {
 // Sprint 25 T4: non-blocking nudge when RAG is configured but the Supabase MCP
 // (T1's `@supabase/mcp-server-supabase` detection) isn't installed. Lazy-loads
 // T1's module so Tier 1 users with no RAG never pay the require cost. Silent
-// when RAG is off, when the MCP is detected, when ~/.claude/mcp.json already
-// declares a `supabase` server, or when anything below throws.
+// when RAG is off, when the MCP is detected, when the MCP config (canonical
+// ~/.claude.json or legacy ~/.claude/mcp.json) already declares a `supabase`
+// server, or when anything below throws.
+//
+// Sprint 36 T2: read order is canonical → legacy. Claude Code v2.1.119+ reads
+// only the canonical file; the legacy fallback covers users who haven't yet
+// migrated and pinned other tooling to the old path.
 async function checkSupabaseMcpHint(cfg) {
   if (!cfg || !cfg.rag || cfg.rag.enabled !== true) return null;
   try {
-    const claudeMcpPath = path.join(os.homedir(), '.claude', 'mcp.json');
-    if (fs.existsSync(claudeMcpPath)) {
-      try {
-        const parsed = JSON.parse(fs.readFileSync(claudeMcpPath, 'utf8'));
-        if (parsed && parsed.mcpServers && parsed.mcpServers.supabase) return null;
-      } catch (_e) { /* malformed JSON — fall through and let detectMcp decide */ }
+    const { CLAUDE_MCP_PATH_CANONICAL, CLAUDE_MCP_PATH_LEGACY, readMcpServers } = require('./mcp-config');
+    for (const candidate of [CLAUDE_MCP_PATH_CANONICAL, CLAUDE_MCP_PATH_LEGACY]) {
+      const read = readMcpServers(candidate);
+      if (read.servers && read.servers.supabase) return null;
     }
     const { detectMcp } = require(path.join(__dirname, '..', '..', 'server', 'src', 'setup', 'supabase-mcp.js'));
     const result = await detectMcp();

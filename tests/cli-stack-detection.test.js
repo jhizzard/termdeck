@@ -1,8 +1,11 @@
-// Sprint 24 T4 — unit tests for shouldAutoOrchestrate().
+// Sprint 36 — unit tests for shouldAutoOrchestrate().
 //
-// Verifies the detection rule that decides whether plain `termdeck`
-// should route through stack.js. Uses a temp HOME so the test never
-// touches the developer's real ~/.termdeck/.
+// Sprint 24 (original) gated default-entry orchestration on
+// `~/.termdeck/{secrets.env,config.yaml}` presence + flags. Sprint 36
+// flips the policy: orchestrate always; rely on stack.js's first-run
+// bootstrap to write the config and on `--no-stack` (handled in
+// index.js) for the explicit opt-out. The function signature is
+// retained as a future telemetry hook.
 //
 // Run: node --test tests/cli-stack-detection.test.js
 
@@ -28,55 +31,52 @@ function writeSecrets(home) {
   fs.writeFileSync(path.join(home, '.termdeck', 'secrets.env'), 'SUPABASE_URL=https://x.supabase.co\n');
 }
 
-test('fresh machine — no ~/.termdeck/ at all', () => {
+test('fresh machine — no ~/.termdeck/ at all → orchestrate', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-test-'));
-  assert.equal(shouldAutoOrchestrate(home), false);
+  assert.equal(shouldAutoOrchestrate(home), true);
 });
 
-test('secrets.env exists but no config.yaml', () => {
+test('secrets.env exists but no config.yaml → orchestrate', () => {
   const home = makeFixture();
   writeSecrets(home);
-  assert.equal(shouldAutoOrchestrate(home), false);
+  assert.equal(shouldAutoOrchestrate(home), true);
 });
 
-test('config.yaml exists but no secrets.env', () => {
+test('config.yaml exists but no secrets.env → orchestrate', () => {
   const home = makeFixture();
   writeConfig(home, 'mnestra:\n  autoStart: true\n');
-  assert.equal(shouldAutoOrchestrate(home), false);
+  assert.equal(shouldAutoOrchestrate(home), true);
 });
 
-test('secrets.env + config.yaml with mnestra.autoStart: true', () => {
+test('configured machine: secrets + config + autoStart → orchestrate', () => {
   const home = makeFixture();
   writeSecrets(home);
   writeConfig(home, 'mnestra:\n  autoStart: true\n');
   assert.equal(shouldAutoOrchestrate(home), true);
 });
 
-test('secrets.env + config.yaml with rag.enabled: true', () => {
-  const home = makeFixture();
-  writeSecrets(home);
-  writeConfig(home, 'rag:\n  enabled: true\n');
-  assert.equal(shouldAutoOrchestrate(home), true);
-});
-
-test('both flags false → no orchestration', () => {
+test('opted-out config (autoStart: false) — still orchestrate by default; --no-stack opts out at the dispatcher layer', () => {
+  // Sprint 36 deliberately moves the opt-out from config.yaml to the CLI
+  // flag. The choreography itself is harmless on opted-out boxes (Step 2
+  // prints SKIP instead of starting Mnestra), so always letting it run
+  // gives users the diagnostic value of the step output without altering
+  // their Mnestra preference.
   const home = makeFixture();
   writeSecrets(home);
   writeConfig(home, 'mnestra:\n  autoStart: false\nrag:\n  enabled: false\n');
-  assert.equal(shouldAutoOrchestrate(home), false);
+  assert.equal(shouldAutoOrchestrate(home), true);
 });
 
-test('malformed YAML returns false (no throw)', () => {
+test('malformed YAML does not throw — still orchestrates', () => {
   const home = makeFixture();
   writeSecrets(home);
   writeConfig(home, ':\n  bad: [broken\n');
   assert.doesNotThrow(() => shouldAutoOrchestrate(home));
-  assert.equal(shouldAutoOrchestrate(home), false);
+  assert.equal(shouldAutoOrchestrate(home), true);
 });
 
-test('autoStart: true OR rag.enabled: true — either triggers', () => {
-  const home = makeFixture();
-  writeSecrets(home);
-  writeConfig(home, 'mnestra:\n  autoStart: false\nrag:\n  enabled: true\n');
-  assert.equal(shouldAutoOrchestrate(home), true);
+test('homeDir argument is accepted (signature preserved as a telemetry seam)', () => {
+  // Older callers passed an explicit home; new callers can omit. Both work.
+  assert.equal(shouldAutoOrchestrate('/nonexistent/path'), true);
+  assert.equal(shouldAutoOrchestrate(), true);
 });

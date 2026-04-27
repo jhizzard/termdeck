@@ -29,6 +29,16 @@ const path = require('node:path');
 const readline = require('node:readline/promises');
 const { spawn, spawnSync } = require('node:child_process');
 
+const mcpConfigLib = require('./mcp-config');
+const {
+  CLAUDE_MCP_PATH_CANONICAL,
+  CLAUDE_MCP_PATH_LEGACY,
+  readMcpServers,
+  mergeMcpServers,
+  writeMcpServers,
+  migrateLegacyIfPresent,
+} = mcpConfigLib;
+
 const ANSI = {
   green: '\x1b[32m', red: '\x1b[31m', yellow: '\x1b[33m', blue: '\x1b[34m',
   cyan: '\x1b[36m', magenta: '\x1b[35m', dim: '\x1b[2m', bold: '\x1b[1m',
@@ -36,7 +46,13 @@ const ANSI = {
 };
 
 const HOME = os.homedir();
-const MCP_CONFIG = path.join(HOME, '.claude', 'mcp.json');
+const MCP_CONFIG = CLAUDE_MCP_PATH_CANONICAL;
+const SETTINGS_JSON = path.join(HOME, '.claude', 'settings.json');
+const HOOK_DEST_DIR = path.join(HOME, '.claude', 'hooks');
+const HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-session-end.js');
+const HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-session-end.js');
+const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
+const HOOK_TIMEOUT_SECONDS = 30;
 
 const LAYERS = [
   {
@@ -249,36 +265,40 @@ async function installLayers(plan, opts) {
   return failures;
 }
 
-// ── ~/.claude/mcp.json wiring ───────────────────────────────────────
-
-function readMcpConfig() {
-  if (!fs.existsSync(MCP_CONFIG)) return { mcpServers: {} };
-  try {
-    const parsed = JSON.parse(fs.readFileSync(MCP_CONFIG, 'utf8'));
-    if (!parsed.mcpServers) parsed.mcpServers = {};
-    return parsed;
-  } catch (_e) {
-    return { mcpServers: {} };
-  }
-}
-
-function writeMcpConfig(cfg) {
-  fs.mkdirSync(path.dirname(MCP_CONFIG), { recursive: true });
-  fs.writeFileSync(MCP_CONFIG, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
-}
+// ── ~/.claude.json wiring ───────────────────────────────────────────
+//
+// Sprint 36 T2: writes go to ~/.claude.json (the path Claude Code v2.1.119+
+// actually reads). On install, any entries living in the legacy
+// ~/.claude/mcp.json are merged forward — the legacy file is left in place
+// so users who pin other tooling to it keep working.
 
 function wireMcpEntries(plan, opts) {
   if (opts.dryRun) {
-    process.stdout.write(`${ANSI.bold}Would wire ~/.claude/mcp.json (dry-run skipped)${ANSI.reset}\n\n`);
+    process.stdout.write(`${ANSI.bold}Would wire ${MCP_CONFIG} (dry-run skipped)${ANSI.reset}\n\n`);
     return;
   }
-  const cfg = readMcpConfig();
+
+  // Step 1: forward-migrate any legacy entries, current always wins.
+  const migration = migrateLegacyIfPresent({ canonicalPath: MCP_CONFIG, legacyPath: CLAUDE_MCP_PATH_LEGACY });
+
+  // Step 2: re-read the canonical file (may have just been written by the
+  // migration) and apply our additions.
+  const current = readMcpServers(MCP_CONFIG);
+  if (current.malformed) {
+    process.stdout.write(
+      `${ANSI.red}✗${ANSI.reset} ${MCP_CONFIG} is malformed (${current.error || 'parse error'}); ` +
+      `not modified — fix the JSON and re-run.\n\n`
+    );
+    return;
+  }
+  const servers = { ...current.servers };
   const installedTiers = new Set(plan.map((l) => l.tier));
   const additions = [];
   const keptExisting = [];
 
-  if (installedTiers.has(2) && !cfg.mcpServers.mnestra) {
-    cfg.mcpServers.mnestra = {
+  if (installedTiers.has(2) && !servers.mnestra) {
+    servers.mnestra = {
+      type: 'stdio',
       command: 'mnestra',
       env: {
         SUPABASE_URL: '${SUPABASE_URL}',
@@ -287,12 +307,13 @@ function wireMcpEntries(plan, opts) {
       },
     };
     additions.push('mnestra');
-  } else if (cfg.mcpServers.mnestra) {
+  } else if (servers.mnestra) {
     keptExisting.push('mnestra');
   }
 
-  if (installedTiers.has(4) && !cfg.mcpServers.supabase) {
-    cfg.mcpServers.supabase = {
+  if (installedTiers.has(4) && !servers.supabase) {
+    servers.supabase = {
+      type: 'stdio',
       command: 'npx',
       args: ['-y', '@supabase/mcp-server-supabase@latest'],
       env: {
@@ -300,17 +321,213 @@ function wireMcpEntries(plan, opts) {
       },
     };
     additions.push('supabase');
-  } else if (cfg.mcpServers.supabase) {
+  } else if (servers.supabase) {
     keptExisting.push('supabase');
   }
 
-  if (additions.length === 0 && keptExisting.length === 0) return;
+  const migrated = (migration && migration.migrated) || [];
+  if (additions.length === 0 && keptExisting.length === 0 && migrated.length === 0) return;
 
-  process.stdout.write(`${ANSI.bold}Wiring ~/.claude/mcp.json...${ANSI.reset}\n`);
+  process.stdout.write(`${ANSI.bold}Wiring ${MCP_CONFIG}...${ANSI.reset}\n`);
+  if (migrated.length > 0) {
+    statusLine(
+      `${ANSI.cyan}↑${ANSI.reset}`,
+      `migrated ${migrated.length} entr${migrated.length === 1 ? 'y' : 'ies'} from legacy`,
+      `${migrated.join(', ')} (legacy ${CLAUDE_MCP_PATH_LEGACY} left in place)`,
+    );
+  }
   for (const name of additions) statusLine(`${ANSI.green}+${ANSI.reset}`, `${name} entry`, 'added');
   for (const name of keptExisting) statusLine(`${ANSI.dim}=${ANSI.reset}`, `${name} entry`, 'already present, kept as-is');
-  if (additions.length > 0) writeMcpConfig(cfg);
+  if (additions.length > 0) writeMcpServers(MCP_CONFIG, servers);
   process.stdout.write('\n');
+}
+
+// Test hook — exposed so unit tests can drive the merge primitives without
+// spawning a full installer. Not part of the public CLI surface.
+const _mcpInternals = {
+  readMcpServers,
+  mergeMcpServers,
+  writeMcpServers,
+  migrateLegacyIfPresent,
+};
+
+// ── Session-end hook bundling ───────────────────────────────────────
+
+// Returns true if the given hook-entry's `command` string references our
+// session-end hook file. Substring match is robust to `~` vs `$HOME` vs
+// absolute paths.
+function _isSessionEndHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && entry.command.includes('memory-session-end.js');
+}
+
+// Pure: merges our Stop entry into the given settings object. Idempotent.
+// Returns { settings, status } where status is 'already-installed' or
+// 'installed'. Mutates the input.
+function _mergeSessionEndHookEntry(settings, opts = {}) {
+  const command = opts.command || HOOK_COMMAND;
+  const timeout = opts.timeout != null ? opts.timeout : HOOK_TIMEOUT_SECONDS;
+
+  if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
+  if (!Array.isArray(settings.hooks.Stop)) settings.hooks.Stop = [];
+
+  for (const group of settings.hooks.Stop) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    if (group.hooks.some(_isSessionEndHookEntry)) {
+      return { settings, status: 'already-installed' };
+    }
+  }
+
+  const entry = { type: 'command', command, timeout };
+  const emptyMatcher = settings.hooks.Stop.find(
+    (g) => g && g.matcher === '' && Array.isArray(g.hooks)
+  );
+  if (emptyMatcher) {
+    emptyMatcher.hooks.push(entry);
+  } else {
+    settings.hooks.Stop.push({ matcher: '', hooks: [entry] });
+  }
+  return { settings, status: 'installed' };
+}
+
+function _readSettingsJson(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { settings: {}, status: 'no-file' };
+  }
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (raw.trim() === '') return { settings: {}, status: 'empty' };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { settings: {}, status: 'malformed', error: 'top-level must be an object' };
+    }
+    return { settings: parsed, status: 'ok' };
+  } catch (e) {
+    return { settings: {}, status: 'malformed', error: e.message };
+  }
+}
+
+function _writeSettingsJson(filePath, settings) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, filePath);
+}
+
+// Compares two file contents byte-for-byte. Returns 'identical', 'different',
+// or 'missing-dest'.
+function _compareHookFiles(srcPath, destPath) {
+  if (!fs.existsSync(destPath)) return 'missing-dest';
+  const a = fs.readFileSync(srcPath);
+  const b = fs.readFileSync(destPath);
+  return a.equals(b) ? 'identical' : 'different';
+}
+
+async function promptYesNo({ question, defaultYes = true }) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const suffix = defaultYes ? '(Y/n)' : '(y/N)';
+  const ans = (await rl.question(`  ${question} ${suffix} `)).trim().toLowerCase();
+  rl.close();
+  if (ans === '') return defaultYes;
+  return ans === 'y' || ans === 'yes';
+}
+
+// Orchestrator: prompt → file copy → settings.json merge.
+// Exposed so tests can drive it with explicit paths and a stub prompt.
+async function installSessionEndHook(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const sourcePath = opts.sourcePath || HOOK_SOURCE;
+  const destPath = opts.destPath || HOOK_DEST;
+  const settingsPath = opts.settingsPath || SETTINGS_JSON;
+  // promptInstall: () => Promise<boolean>; defaults to Y.
+  // promptOverwrite: () => Promise<boolean>; defaults to N.
+  const promptInstall = opts.promptInstall
+    || (() => promptYesNo({ question: "Install TermDeck's session-end memory hook?", defaultYes: true }));
+  const promptOverwrite = opts.promptOverwrite
+    || (() => promptYesNo({
+      question: `Existing hook found at ${destPath}. Overwrite?`,
+      defaultYes: false,
+    }));
+
+  rule();
+  process.stdout.write(`${ANSI.bold}Session-end memory hook${ANSI.reset}\n`);
+  process.stdout.write(`${ANSI.dim}  Fires on every Claude Code session close to summarize the session into Mnestra.${ANSI.reset}\n\n`);
+
+  const userWantsInstall = opts.assumeYes ? true
+    : opts.assumeNo ? false
+    : await promptInstall();
+
+  if (!userWantsInstall) {
+    statusLine(`${ANSI.dim}─${ANSI.reset}`, 'session-end hook', 'skipped (user declined)');
+    process.stdout.write('\n');
+    return { fileStatus: 'declined', settingsStatus: 'declined' };
+  }
+
+  // 1. File copy.
+  let fileStatus;
+  const cmp = _compareHookFiles(sourcePath, destPath);
+  if (cmp === 'missing-dest') {
+    if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would copy hook to ${destPath}`);
+      fileStatus = 'would-copy';
+    } else {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.copyFileSync(sourcePath, destPath);
+      fs.chmodSync(destPath, 0o644);
+      statusLine(`${ANSI.green}+${ANSI.reset}`, 'hook file', `copied to ${destPath}`);
+      fileStatus = 'copied';
+    }
+  } else if (cmp === 'identical') {
+    statusLine(`${ANSI.dim}=${ANSI.reset}`, 'hook file', 'already present, identical contents');
+    fileStatus = 'already-current';
+  } else {
+    // different
+    const overwrite = opts.assumeYes ? false // --yes preserves existing on overwrite
+      : opts.forceOverwrite ? true
+      : await promptOverwrite();
+    if (!overwrite) {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'hook file', `existing kept (differs from vendored copy)`);
+      fileStatus = 'kept-existing';
+    } else if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would overwrite ${destPath}`);
+      fileStatus = 'would-overwrite';
+    } else {
+      fs.copyFileSync(sourcePath, destPath);
+      fs.chmodSync(destPath, 0o644);
+      statusLine(`${ANSI.green}↻${ANSI.reset}`, 'hook file', `overwrote ${destPath}`);
+      fileStatus = 'overwritten';
+    }
+  }
+
+  // 2. Settings.json merge.
+  const read = _readSettingsJson(settingsPath);
+  let settingsStatus;
+  if (read.status === 'malformed') {
+    statusLine(`${ANSI.red}✗${ANSI.reset}`, 'settings.json', `malformed (${read.error}); not modified`);
+    settingsStatus = 'malformed';
+  } else {
+    const merged = _mergeSessionEndHookEntry(read.settings);
+    if (merged.status === 'already-installed') {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json Stop hook', 'already installed');
+      settingsStatus = 'already-installed';
+    } else if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would merge Stop hook into ${settingsPath}`);
+      settingsStatus = 'would-install';
+    } else {
+      _writeSettingsJson(settingsPath, merged.settings);
+      statusLine(`${ANSI.green}+${ANSI.reset}`, 'settings.json Stop hook', 'merged');
+      settingsStatus = 'installed';
+    }
+  }
+
+  process.stdout.write('\n');
+  if (!dryRun && (fileStatus === 'copied' || settingsStatus === 'installed')) {
+    process.stdout.write(`  ${ANSI.dim}Hook installed at ${destPath}.${ANSI.reset}\n`);
+    process.stdout.write(`  ${ANSI.dim}It runs on every Claude Code session close to summarize the session into Mnestra.${ANSI.reset}\n`);
+    process.stdout.write(`  ${ANSI.dim}See assets/hooks/README.md in @jhizzard/termdeck-stack for details.${ANSI.reset}\n\n`);
+  }
+
+  return { fileStatus, settingsStatus };
 }
 
 // ── Next steps ──────────────────────────────────────────────────────
@@ -405,6 +622,13 @@ async function main(argv) {
   // "already had everything but never set up Claude Code MCP" case.
   wireMcpEntries(wantedLayers, { dryRun: args.dryRun });
 
+  // Bundle the session-end memory hook (default-on, opt-in via prompt).
+  // --yes accepts the install but preserves any existing differing hook.
+  await installSessionEndHook({
+    dryRun: args.dryRun,
+    assumeYes: args.yes,
+  });
+
   printNextSteps(wantedLayers, { dryRun: args.dryRun });
 
   if (failures > 0) {
@@ -422,3 +646,16 @@ if (require.main === module) {
 }
 
 module.exports = main;
+module.exports._mergeSessionEndHookEntry = _mergeSessionEndHookEntry;
+module.exports._readSettingsJson = _readSettingsJson;
+module.exports._writeSettingsJson = _writeSettingsJson;
+module.exports._isSessionEndHookEntry = _isSessionEndHookEntry;
+module.exports._compareHookFiles = _compareHookFiles;
+module.exports.installSessionEndHook = installSessionEndHook;
+module.exports.HOOK_COMMAND = HOOK_COMMAND;
+module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;
+module.exports.HOOK_SOURCE = HOOK_SOURCE;
+module.exports._mcpInternals = _mcpInternals;
+module.exports.MCP_CONFIG_PATH = MCP_CONFIG;
+module.exports.CLAUDE_MCP_PATH_CANONICAL = CLAUDE_MCP_PATH_CANONICAL;
+module.exports.CLAUDE_MCP_PATH_LEGACY = CLAUDE_MCP_PATH_LEGACY;

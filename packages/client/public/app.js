@@ -25,6 +25,7 @@
     async function init() {
       // Load config
       state.config = await api('GET', '/api/config');
+      updateRagIndicator();
 
       // Populate project dropdown
       const sel = document.getElementById('promptProject');
@@ -246,6 +247,16 @@
               break;
             case 'status_broadcast':
               updateGlobalStats(msg.sessions);
+              break;
+            case 'config_changed':
+              // Sprint 36 T3 Deliverable A: server-broadcast on PATCH /api/config.
+              // Each open panel WebSocket receives one copy; the handler is
+              // idempotent so multiple receipts settle the same state.
+              if (msg.config) {
+                state.config = { ...state.config, ...msg.config };
+                if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+                if (typeof updateRagIndicator === 'function') updateRagIndicator();
+              }
               break;
           }
         } catch (err) { console.error('[client] ws message parse failed:', err); }
@@ -2299,8 +2310,17 @@
       // Explicitly show the spotlight. CSS default is `display:none` so the
       // 9999px box-shadow doesn't darken the page before/after a tour runs.
       document.getElementById('tourSpotlight').style.display = 'block';
-      await ensurePanelForTour();
-      renderTourStep();
+      // Defensive cleanup: if ensurePanelForTour or renderTourStep throws
+      // after the spotlight is shown, the 9999px box-shadow stays up with no
+      // tooltip on top — that's the "dark veil" symptom users hit with no
+      // visible way out. Roll back to a clean state on any failure.
+      try {
+        await ensurePanelForTour();
+        renderTourStep();
+      } catch (err) {
+        console.error('[tour] start failed, rolling back:', err);
+        endTour();
+      }
     }
 
     function nextTourStep() {
@@ -2523,6 +2543,7 @@
             <button type="button" class="setup-close" id="setupClose" aria-label="Close">×</button>
           </header>
           <div class="setup-body">
+            <div class="setup-settings" id="setupSettings"></div>
             <div class="setup-tiers" id="setupTiers">
               <div class="setup-loading">Checking tier status…</div>
             </div>
@@ -2553,6 +2574,7 @@
       ensureSetupModal();
       document.getElementById('setupModal').classList.add('open');
       setupModalOpen = true;
+      renderSettingsPanel();
       await refreshSetupStatus();
     }
 
@@ -2560,6 +2582,96 @@
       const m = document.getElementById('setupModal');
       if (m) m.classList.remove('open');
       setupModalOpen = false;
+    }
+
+    // ===== Settings panel inside the setup modal (Sprint 36 T3 Deliverable A) =====
+    // Renders the writable subset of /api/config — currently just the RAG toggle.
+    // Body is mutated in place; the panel is idempotent so config_changed WS
+    // events can call it without reflow flicker.
+    function renderSettingsPanel() {
+      const el = document.getElementById('setupSettings');
+      if (!el) return;
+      const cfg = state.config || {};
+      const intent = !!cfg.ragConfigEnabled;
+      const effective = !!cfg.ragEnabled;
+      const supabaseConfigured = !!cfg.ragSupabaseConfigured;
+
+      // Mismatch: user enabled RAG in config but Supabase isn't wired → show
+      // a hint so the toggle's "ON but not pushing" state is explainable.
+      const mismatch = intent && !effective && !supabaseConfigured;
+
+      const offCopy = 'MCP-only mode. Memory tools available through Claude Code; the in-CLI <code>termdeck flashback</code> command and the hybrid search are disabled. Faster boot, slimmer surface.';
+      const onCopy = 'Enables <code>termdeck flashback</code> and the in-CLI hybrid search. Requires a Mnestra connection at boot — adds a few hundred ms to startup.';
+
+      el.innerHTML = `
+        <div class="settings-section">
+          <h4 class="settings-heading">RAG mode</h4>
+          <div class="settings-row">
+            <label class="toggle" for="settingsRagToggle">
+              <input type="checkbox" id="settingsRagToggle" ${intent ? 'checked' : ''}>
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">${intent ? 'On' : 'Off'}</span>
+            </label>
+            <p class="settings-copy">${intent ? onCopy : offCopy}</p>
+          </div>
+          ${mismatch ? `
+            <div class="settings-warn">
+              RAG is enabled in <code>config.yaml</code> but Supabase isn't configured yet, so it isn't actually pushing.
+              Configure Tier 2 below or run <code>npx @jhizzard/termdeck-stack</code>.
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      const toggle = document.getElementById('settingsRagToggle');
+      if (toggle) {
+        toggle.addEventListener('change', async (e) => {
+          const desired = !!e.target.checked;
+          // Optimistic UI: lock the toggle while the round-trip is in flight.
+          toggle.disabled = true;
+          try {
+            const updated = await api('PATCH', '/api/config', { rag: { enabled: desired } });
+            state.config = { ...state.config, ...updated };
+            renderSettingsPanel();
+            updateRagIndicator();
+          } catch (err) {
+            console.error('[settings] PATCH /api/config failed:', err);
+            // Revert: refetch and re-render.
+            try {
+              state.config = await api('GET', '/api/config');
+              renderSettingsPanel();
+            } catch {}
+          } finally {
+            const t = document.getElementById('settingsRagToggle');
+            if (t) t.disabled = false;
+          }
+        });
+      }
+    }
+
+    // Topbar RAG indicator. The #stat-rag stub in index.html was hidden by
+    // Sprint 9 T2; re-purpose it as a live state line so users can see, at a
+    // glance, what the toggle is doing without opening Settings each time.
+    function updateRagIndicator() {
+      const el = document.getElementById('stat-rag');
+      if (!el) return;
+      const cfg = state.config || {};
+      const intent = !!cfg.ragConfigEnabled;
+      const effective = !!cfg.ragEnabled;
+      el.style.display = '';
+      if (effective) {
+        el.textContent = 'RAG · on';
+        el.className = 'topbar-stat rag-on';
+        el.title = 'Mnestra hybrid search + termdeck flashback enabled';
+      } else if (intent) {
+        el.textContent = 'RAG · pending';
+        el.className = 'topbar-stat rag-pending';
+        el.title = 'RAG enabled in config.yaml but Supabase not wired — see Settings';
+      } else {
+        el.textContent = 'RAG · mcp-only';
+        el.className = 'topbar-stat rag-off';
+        el.title = 'MCP-only mode; toggle in Settings to enable';
+      }
     }
 
     async function refreshSetupStatus() {

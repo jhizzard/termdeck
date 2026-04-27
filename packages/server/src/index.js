@@ -61,7 +61,7 @@ const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler, runPreflight } = require('./preflight');
 const { getFullHealth } = require('./health');
 const { themes, statusColors } = require('./themes');
-const { loadConfig, addProject } = require('./config');
+const { loadConfig, addProject, updateConfig } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
 
 function createServer(config) {
@@ -1069,16 +1069,64 @@ function createServer(config) {
     res.json(t);
   });
 
-  // GET /api/config - current config (sanitized)
-  app.get('/api/config', (req, res) => {
-    res.json({
+  // Public-shape helper so GET and PATCH return the same envelope.
+  function publicConfigPayload() {
+    return {
       projects: config.projects || {},
       defaultTheme: config.defaultTheme,
+      // ragEnabled is the EFFECTIVE state (after credential eligibility).
+      // ragConfigEnabled is the user's intent from config.yaml. The dashboard
+      // toggle reads ragConfigEnabled (intent) but renders a warning when it
+      // diverges from ragEnabled (e.g. enabled in config but Supabase creds
+      // missing → effective state stays off).
       ragEnabled: rag.enabled,
+      ragConfigEnabled: !!(config.rag && config.rag.enabled),
+      ragSupabaseConfigured: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey),
       aiQueryAvailable: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey && config.rag?.openaiApiKey),
       statusColors,
       firstRun
-    });
+    };
+  }
+
+  // GET /api/config - current config (sanitized)
+  app.get('/api/config', (req, res) => {
+    res.json(publicConfigPayload());
+  });
+
+  // PATCH /api/config - update writable config fields. Sprint 36 T3 Deliverable A.
+  // Body: { rag: { enabled: boolean } } — the only currently writable path.
+  // Persists to ~/.termdeck/config.yaml, live-updates the in-memory integration,
+  // and broadcasts a `config_changed` WS event so all open dashboards re-render
+  // their RAG indicator without a refresh.
+  app.patch('/api/config', (req, res) => {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'body must be a JSON object' });
+    }
+    try {
+      updateConfig(body);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    if (body.rag && typeof body.rag.enabled === 'boolean') {
+      rag.setEnabled(body.rag.enabled);
+    }
+
+    const payload = publicConfigPayload();
+
+    try {
+      const wsPayload = JSON.stringify({ type: 'config_changed', config: payload });
+      wss.clients.forEach((client) => {
+        if (client.readyState === 1) {
+          try { client.send(wsPayload); } catch (err) { console.error('[ws] config_changed send failed:', err); }
+        }
+      });
+    } catch (err) {
+      console.error('[ws] config_changed broadcast failed:', err);
+    }
+
+    res.json(payload);
   });
 
   // POST /api/projects - add a new project on the fly, persist to config.yaml
@@ -1466,6 +1514,14 @@ function createServer(config) {
 
     ws.on('close', () => {
       console.log(`[ws] Client disconnected from session ${sessionId}`);
+      // Intentional: PTYs survive WS close. The session stays in the manager,
+      // the PTY keeps running, and reconnecting (?session=<id>) re-binds.
+      // PTY teardown happens only via DELETE /api/sessions/:id (user-initiated)
+      // or the PTY's own exit event. Hard-refresh is therefore non-destructive.
+      // Sprint 36 T3 Deliverable C audit (2026-04-27): the briefing predicted
+      // this handler would call pty.kill() — it does not. Joshua's original
+      // hard-refresh-loses-PTYs symptom was the reclaimStalePort SIGKILL chain
+      // (orchestrator hotfix #2, 15:25 ET), not a WS-close cascade.
       if (session.ws === ws) {
         session.ws = null;
       }

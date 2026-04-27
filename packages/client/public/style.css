@@ -2002,6 +2002,127 @@
       justify-content: center;
     }
     .setup-modal.open { display: flex; }
+
+    /* Settings panel inside the setup modal (Sprint 36 T3 Deliverable A) */
+    .setup-settings {
+      padding: 0 0 16px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--tg-border);
+    }
+    .settings-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .settings-heading {
+      margin: 0;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-sans);
+    }
+    .settings-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+    .settings-copy {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--tg-text);
+    }
+    .settings-copy code {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      background: var(--tg-bg);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .settings-warn {
+      margin-top: 4px;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--tg-text);
+      background: rgba(224, 175, 104, 0.10);
+      border: 1px solid var(--tg-amber);
+      border-radius: 4px;
+    }
+    .settings-warn code {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      background: var(--tg-bg);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    /* iOS-style toggle. The native checkbox is visually hidden but stays in
+       the tab order so keyboard + screen reader navigation still work. */
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .toggle input[type="checkbox"] {
+      position: absolute;
+      opacity: 0;
+      width: 1px;
+      height: 1px;
+      pointer-events: none;
+    }
+    .toggle-track {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
+      background: var(--tg-border);
+      border-radius: 999px;
+      transition: background 0.15s ease;
+    }
+    .toggle-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      background: var(--tg-text-bright);
+      border-radius: 50%;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .toggle input[type="checkbox"]:checked + .toggle-track {
+      background: var(--tg-green);
+    }
+    .toggle input[type="checkbox"]:checked + .toggle-track .toggle-thumb {
+      transform: translateX(16px);
+      background: var(--tg-bg);
+    }
+    .toggle input[type="checkbox"]:focus-visible + .toggle-track {
+      outline: 2px solid var(--tg-accent);
+      outline-offset: 2px;
+    }
+    .toggle input[type="checkbox"]:disabled + .toggle-track {
+      opacity: 0.5;
+    }
+    .toggle-label {
+      font-size: 12px;
+      color: var(--tg-text);
+      font-family: var(--tg-mono);
+    }
+    /* Topbar #stat-rag — re-purposed as a live RAG state line */
+    .topbar-stat.rag-on {
+      color: var(--tg-green);
+      font-weight: 500;
+    }
+    .topbar-stat.rag-pending {
+      color: var(--tg-amber);
+    }
+    .topbar-stat.rag-off {
+      color: var(--tg-text-dim);
+    }
     .setup-backdrop {
       position: absolute;
       inset: 0;

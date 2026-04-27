@@ -66,6 +66,14 @@ class RAGIntegration {
     this._circuitBreaker = new Map(); // table -> { count, open, openedAt, halfOpen }
     this._halfOpenDelayMs = 5 * 60 * 1000;
 
+    // Status-change debounce: rapid `active ↔ thinking` cycling from busy
+    // Claude Code workers (4+1 sprint lanes) produces dozens of status_changed
+    // events per second. Untreated, this floods stdout and the outbox; on
+    // 2026-04-27 it contributed to two server-kill incidents during Sprint 36.
+    // Drop intra-second status edges; let error transitions always pass.
+    this._statusWriteAt = new Map(); // sessionId -> last write timestamp (ms)
+    this._statusDebounceMs = 1000;
+
     if (this.enabled) {
       this._startSync();
     }
@@ -148,6 +156,16 @@ class RAGIntegration {
   }
 
   onStatusChanged(session, oldStatus, newStatus) {
+    // Always pass through error transitions — those carry signal worth ingesting
+    // every time. Debounce only the active ↔ thinking churn that floods the log
+    // when a worker cycles tool calls rapidly.
+    const isError = newStatus === 'errored' || oldStatus === 'errored';
+    if (!isError) {
+      const now = Date.now();
+      const last = this._statusWriteAt.get(session.id) || 0;
+      if (now - last < this._statusDebounceMs) return;
+      this._statusWriteAt.set(session.id, now);
+    }
     this._recordForSession(session, 'status_changed', {
       from: oldStatus,
       to: newStatus,
@@ -351,7 +369,32 @@ class RAGIntegration {
   stop() {
     if (this._syncTimer) {
       clearInterval(this._syncTimer);
+      this._syncTimer = null;
     }
+    this._statusWriteAt.clear();
+  }
+
+  // Live-toggle for the dashboard RAG settings panel (Sprint 36 T3 Deliverable A).
+  // Re-evaluates eligibility — flipping `enabled: true` without configured
+  // Supabase creds is a no-op so the live integration never claims to be on
+  // when it can't actually push. Returns the resolved effective flag.
+  setEnabled(value) {
+    const desired = !!value;
+    if (this.config && this.config.rag) {
+      this.config.rag.enabled = desired;
+    }
+    const effective = !!(desired && this.supabaseUrl && this.supabaseKey);
+    if (effective === this.enabled) return effective;
+    this.enabled = effective;
+    if (effective) {
+      if (!this._syncTimer) this._startSync();
+    } else {
+      if (this._syncTimer) {
+        clearInterval(this._syncTimer);
+        this._syncTimer = null;
+      }
+    }
+    return effective;
   }
 }
 

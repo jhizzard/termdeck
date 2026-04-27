@@ -1,4 +1,4 @@
-// Sprint 24 T4 — dispatch integration tests.
+// Sprint 24 T4 / Sprint 36 T1 — dispatch integration tests.
 //
 // Spawns `node packages/cli/src/index.js` against a temp HOME and
 // asserts on stdout. We don't actually want a server to come up —
@@ -6,6 +6,9 @@
 // signal: stack.js prints "TermDeck Stack Launcher" before any
 // PTY/Express work happens. Index.js without orchestration prints
 // the boxed banner ("TermDeck v0.4.6"). Either signal is enough.
+//
+// Sprint 36 policy (current): plain `termdeck` ALWAYS routes through
+// stack.js — fresh or configured. `--no-stack` is the explicit opt-out.
 //
 // Run: node --test tests/cli-default-routing.test.js
 
@@ -54,11 +57,14 @@ function captureCliOutput(args, env, windowMs = 1500) {
   });
 }
 
-test('fresh machine: plain `termdeck` does NOT enter stack.js', async () => {
+test('fresh machine: plain `termdeck` routes through stack.js (Sprint 36)', async () => {
+  // Sprint 36 flips the Sprint 24 policy: orchestrate by default. Fresh
+  // boxes get the Step 1/4–4/4 choreography (mostly SKIP) so output
+  // matches scripts/start.sh step-by-step.
   const home = freshHome();
   const out = await captureCliOutput([], { HOME: home, USERPROFILE: home, TERMDECK_PORT: '0' });
-  assert.ok(!/TermDeck Stack Launcher/.test(out),
-    `expected no "TermDeck Stack Launcher" header on a fresh machine, got:\n${out}`);
+  assert.match(out, /TermDeck Stack Launcher/,
+    `expected stack.js banner on a fresh machine (Sprint 36 policy), got:\n${out}`);
 });
 
 test('configured machine: plain `termdeck` routes through stack.js', async () => {
@@ -73,6 +79,15 @@ test('configured machine: `termdeck --no-stack` skips orchestration', async () =
   const out = await captureCliOutput(['--no-stack'], { HOME: home, USERPROFILE: home, TERMDECK_PORT: '0' });
   assert.ok(!/TermDeck Stack Launcher/.test(out),
     `--no-stack should bypass stack.js, got:\n${out}`);
+});
+
+test('fresh machine: `termdeck --no-stack` also skips orchestration', async () => {
+  // The opt-out works on fresh boxes too — Tier-1-only boot, no config
+  // bootstrap, no Step 1/4 output.
+  const home = freshHome();
+  const out = await captureCliOutput(['--no-stack'], { HOME: home, USERPROFILE: home, TERMDECK_PORT: '0' });
+  assert.ok(!/TermDeck Stack Launcher/.test(out),
+    `--no-stack should bypass stack.js on fresh machines too, got:\n${out}`);
 });
 
 test('any machine: explicit `termdeck stack` always orchestrates', async () => {
