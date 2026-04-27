@@ -5,6 +5,11 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [0.3.3] — 2026-04-27
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@0.7.3`, the Sprint 35 reconciliation patch. v0.7.3 closes the personal-vs-product asymmetry that surfaced in Brad's 2026-04-27 overnight crash by (a) flipping `init --mnestra` default to `rag.enabled: false` (MCP-only mode), (b) shipping the legacy RAG schema as bundled migration `008_legacy_rag_tables.sql` so opt-in users no longer hit silent 404 cascades on `mnestra_session_memory` etc., (c) extending `termdeck doctor` with a Supabase schema-check section + `--no-schema` flag, (d) adding a boot banner RAG state line, (e) porting stale-port reclaim and transcript-table-missing hint from `scripts/start.sh` into the published CLI, and (f) closing a packaging gap that left `config/transcript-migration.sql` out of the npm tarball since v0.6.8. No installer-side code changes — this is an audit-trail-only bump aligning the stack-installer's published trail with the underlying `@jhizzard/termdeck` version it validates against.
+
 ## [0.3.2] — 2026-04-26
 
 ### Documentation
