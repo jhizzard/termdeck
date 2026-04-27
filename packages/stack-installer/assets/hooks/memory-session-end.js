@@ -1,52 +1,63 @@
 /**
- * TermDeck session-end memory hook.
+ * TermDeck session-end memory hook (Mnestra-direct, no rag-system dependency).
  *
- * Vendored from Joshua's ~/.claude/hooks/memory-session-end.js (2026-03-11).
- * Installed by `@jhizzard/termdeck-stack` into ~/.claude/hooks/ and wired
- * into ~/.claude/settings.json under hooks.Stop. Fires on every Claude Code
- * session close.
+ * Vendored into ~/.claude/hooks/memory-session-end.js by @jhizzard/termdeck-stack.
+ * Wired into ~/.claude/settings.json under hooks.Stop. Fires on Claude Code Stop event.
  *
  * Behavior:
- *   1. Reads {transcript_path, cwd} from stdin (Claude Code's Stop payload).
- *   2. Skips small transcripts (<5KB).
- *   3. Detects project from cwd against PROJECT_MAP (else "global").
- *   4. Spawns the rag-system ingester detached, returns immediately.
- *   5. Logs to ~/.claude/hooks/memory-hook.log.
+ *   1. Reads {transcript_path, cwd, session_id} from stdin (Claude Code Stop payload).
+ *   2. Skips small transcripts (< MIN_TRANSCRIPT_BYTES, default 5KB).
+ *   3. Validates env vars; logs and exits cleanly if any required key is missing.
+ *   4. Detects project from cwd against PROJECT_MAP (else "global"). Extend the
+ *      map by editing the array below — see assets/hooks/README.md for guidance.
+ *   5. Builds a coarse session summary from the transcript (last ~30 message excerpts).
+ *   6. Embeds the summary via OpenAI text-embedding-3-small.
+ *   7. POSTs ONE row to Supabase /rest/v1/memory_items with source_type='session_summary'.
+ *   8. Logs every step to ~/.claude/hooks/memory-hook.log.
  *
- * Path resolution (parameterized for portability — was hardcoded in source):
- *   RAG_DIR := process.env.TERMDECK_RAG_DIR
- *           || path.join(os.homedir(), 'Documents/Graciella/rag-system')
+ * Required env vars (validated at entry):
+ *   - SUPABASE_URL              e.g. https://luvvbrpaopnblvxdxwzb.supabase.co
+ *   - SUPABASE_SERVICE_KEY      service-role key (NOT the anon key — needs INSERT on memory_items)
+ *   - OPENAI_API_KEY            sk-... for text-embedding-3-small
  *
- * If the resolved RAG_DIR doesn't exist on disk, the hook logs and exits
- * cleanly. Fresh users who haven't installed rag-system get a no-op hook
- * rather than a spawn error. See assets/hooks/README.md for the full story.
+ * Optional:
+ *   - TERMDECK_HOOK_DEBUG=1            verbose logging
+ *   - TERMDECK_HOOK_MIN_BYTES=5000     transcript size threshold
+ *
+ * Fail-soft contract: any error (network, parse, env-var-missing, malformed transcript)
+ * logs and exits 0. Never blocks Claude Code session close.
+ *
+ * Co-existence with Joshua's personal rag-system hook: this bundled hook writes
+ * source_type='session_summary' (one row per session). Joshua's personal hook
+ * writes source_type='fact' (multiple rows from extractFacts pipeline). Different
+ * source_types coexist in memory_items without dedup collisions.
  */
 
-const { spawn } = require('child_process');
-const { existsSync, statSync, appendFileSync } = require('fs');
+'use strict';
+
+const { existsSync, statSync, appendFileSync, readFileSync } = require('fs');
 const { join } = require('path');
 const os = require('os');
 
-const RAG_DIR = process.env.TERMDECK_RAG_DIR
-  || join(os.homedir(), 'Documents', 'Graciella', 'rag-system');
-const PROCESS_SCRIPT = join(RAG_DIR, 'src', 'scripts', 'process-session.ts');
 const LOG_FILE = join(os.homedir(), '.claude', 'hooks', 'memory-hook.log');
 
+// PROJECT_MAP — minimal default. Users extend by adding entries to this array.
+// Patterns match against the cwd reported by Claude Code at Stop time.
+// First match wins; falls through to "global".
 const PROJECT_MAP = [
-  { pattern: /\/PVB\//i, project: 'pvb' },
-  { pattern: /chopin-scheduler|chopin_scheduler/i, project: 'chopin-scheduler' },
-  { pattern: /ChopinNashville|ChopinInBohemia/i, project: 'chopin-nashville' },
-  { pattern: /rag-system/i, project: 'rag-system' },
-  { pattern: /PianoCameraAI/i, project: 'piano-camera' },
-  { pattern: /Practice Piano Network/i, project: 'ppn' },
-  { pattern: /StanczakJosh/i, project: 'stanczak' },
-  { pattern: /JoshIzPiano/i, project: 'joshizpiano' },
-  { pattern: /AutumnArtist/i, project: 'autumn-artist' },
-  { pattern: /Crosswords/i, project: 'crosswords' },
-  { pattern: /gorgias/i, project: 'gorgias' },
-  { pattern: /imessage-reader/i, project: 'imessage-reader' },
-  { pattern: /antigravity/i, project: 'antigravity' },
+  // Example entries — uncomment + edit, or add your own:
+  // { pattern: /\/myproject\//i,        project: 'my-project' },
+  // { pattern: /work-stuff/i,           project: 'work' },
 ];
+
+const MIN_TRANSCRIPT_BYTES = parseInt(process.env.TERMDECK_HOOK_MIN_BYTES || '5000', 10);
+const DEBUG = process.env.TERMDECK_HOOK_DEBUG === '1';
+
+function log(msg) {
+  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); }
+  catch (_) { /* fail-soft */ }
+}
+function debug(msg) { if (DEBUG) log(`[debug] ${msg}`); }
 
 function detectProject(cwd) {
   for (const { pattern, project } of PROJECT_MAP) {
@@ -55,59 +66,173 @@ function detectProject(cwd) {
   return 'global';
 }
 
-function log(msg) {
-  try {
-    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
-  } catch (_) {}
+function readEnv() {
+  const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'OPENAI_API_KEY'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    log(`env-var-missing: ${missing.join(', ')} — set these in ~/.termdeck/secrets.env or your shell to enable Mnestra ingestion. Skipping.`);
+    return null;
+  }
+  return {
+    supabaseUrl: process.env.SUPABASE_URL.replace(/\/$/, ''),
+    supabaseKey: process.env.SUPABASE_SERVICE_KEY,
+    openaiKey: process.env.OPENAI_API_KEY,
+  };
 }
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => { input += chunk; });
-process.stdin.on('end', () => {
-  try {
-    const data = JSON.parse(input);
-    const transcriptPath = data.transcript_path;
-    const cwd = data.cwd || '';
+function buildSummary(transcriptPath) {
+  let raw;
+  try { raw = readFileSync(transcriptPath, 'utf8'); }
+  catch (e) { log(`read-transcript-failed: ${e.message}`); return null; }
 
-    if (!transcriptPath) {
-      log('No transcript_path in input, skipping');
-      return;
+  const lines = raw.split('\n').filter(Boolean);
+  const messages = [];
+  for (const line of lines) {
+    let msg;
+    try { msg = JSON.parse(line); } catch (_) { continue; }
+    const role = msg?.message?.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    const content = msg.message.content;
+    let text = '';
+    if (typeof content === 'string') text = content;
+    else if (Array.isArray(content)) {
+      text = content.filter((c) => c && c.type === 'text').map((c) => c.text).join(' ');
     }
-
-    try {
-      const stat = statSync(transcriptPath);
-      if (stat.size < 5000) {
-        log(`Skipping small transcript (${stat.size} bytes): ${transcriptPath}`);
-        return;
-      }
-    } catch (e) {
-      log(`Cannot stat transcript: ${transcriptPath} — ${e.message}`);
-      return;
-    }
-
-    if (!existsSync(PROCESS_SCRIPT)) {
-      log(`RAG_DIR not present (${RAG_DIR}); skipping ingestion. Set TERMDECK_RAG_DIR or install rag-system to enable.`);
-      return;
-    }
-
-    const project = detectProject(cwd);
-    log(`Processing session for project "${project}" from ${transcriptPath}`);
-
-    const child = spawn(
-      'npx',
-      ['tsx', PROCESS_SCRIPT, transcriptPath, '--project', project],
-      {
-        cwd: RAG_DIR,
-        detached: true,
-        stdio: 'ignore',
-        env: { ...process.env, DOTENV_CONFIG_PATH: join(RAG_DIR, '.env') },
-      }
-    );
-    child.unref();
-
-    log(`Spawned process-session (pid ${child.pid}) for project "${project}"`);
-  } catch (e) {
-    log(`Error: ${e.message}`);
+    if (text) messages.push({ role, content: text.slice(0, 400) });
   }
-});
+
+  if (messages.length < 5) {
+    debug(`session-too-short: ${messages.length} messages, skipping`);
+    return null;
+  }
+
+  const tail = messages.slice(-30);
+  const summary =
+    `Session with ${messages.length} messages.\n\n` +
+    tail.map((m) => `[${m.role}] ${m.content}`).join('\n');
+  // OpenAI text-embedding-3-small accepts up to 8192 tokens (~32K chars).
+  // 7000 chars is a safe headroom that survives multibyte expansion.
+  return summary.slice(0, 7000);
+}
+
+async function embedText(text, openaiKey) {
+  try {
+    const res = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openaiKey}`,
+      },
+      body: JSON.stringify({ model: 'text-embedding-3-small', input: text }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      log(`openai-embed-failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+      return null;
+    }
+    const data = await res.json();
+    return data?.data?.[0]?.embedding || null;
+  } catch (e) {
+    log(`openai-embed-exception: ${e.message}`);
+    return null;
+  }
+}
+
+async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, project, sessionId }) {
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/memory_items`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({
+        content,
+        embedding: `[${embedding.join(',')}]`,
+        source_type: 'session_summary',
+        category: 'workflow',
+        project,
+        source_session_id: sessionId || null,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      log(`supabase-insert-failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    log(`supabase-insert-exception: ${e.message}`);
+    return false;
+  }
+}
+
+async function processStdinPayload(input) {
+  let data;
+  try { data = JSON.parse(input); }
+  catch (e) { log(`parse-stdin-failed: ${e.message}`); return; }
+
+  const transcriptPath = data.transcript_path;
+  const cwd = data.cwd || '';
+  const sessionId =
+    data.session_id ||
+    (transcriptPath ? transcriptPath.split('/').pop().replace('.jsonl', '') : null);
+
+  if (!transcriptPath) { log('no-transcript-path: skipping'); return; }
+
+  let stat;
+  try { stat = statSync(transcriptPath); }
+  catch (e) { log(`cannot-stat-transcript: ${transcriptPath} — ${e.message}`); return; }
+
+  if (stat.size < MIN_TRANSCRIPT_BYTES) {
+    debug(`small-transcript: ${stat.size} bytes < ${MIN_TRANSCRIPT_BYTES}, skipping`);
+    return;
+  }
+
+  const env = readEnv();
+  if (!env) return;
+
+  const project = detectProject(cwd);
+  debug(`project="${project}", session=${sessionId}`);
+
+  const summary = buildSummary(transcriptPath);
+  if (!summary) return;
+
+  const embedding = await embedText(summary, env.openaiKey);
+  if (!embedding) return;
+
+  const ok = await postMemoryItem({
+    supabaseUrl: env.supabaseUrl,
+    supabaseKey: env.supabaseKey,
+    content: summary,
+    embedding,
+    project,
+    sessionId,
+  });
+
+  if (ok) log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length}`);
+}
+
+// Module-export contract for testability. When run as a script (require.main === module),
+// read stdin and process. When require()d (tests), expose helpers.
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => { input += chunk; });
+  process.stdin.on('end', () => {
+    processStdinPayload(input).catch((e) => log(`hook-error: ${e.message}`));
+  });
+} else {
+  module.exports = {
+    PROJECT_MAP,
+    detectProject,
+    readEnv,
+    buildSummary,
+    embedText,
+    postMemoryItem,
+    processStdinPayload,
+    LOG_FILE,
+  };
+}

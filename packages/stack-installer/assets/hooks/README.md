@@ -2,72 +2,131 @@
 
 The `@jhizzard/termdeck-stack` installer can drop `memory-session-end.js`
 into `~/.claude/hooks/` and wire it into `~/.claude/settings.json` under
-`hooks.Stop`. The installer prompts you before doing this; default is yes.
+`hooks.Stop`. The installer prompts you before doing this; default is
+yes.
 
 ## What the hook does
 
-On every Claude Code session close, Claude Code fires its `Stop` hook with
-a JSON payload on stdin:
+On every Claude Code session close, Claude Code fires its `Stop` hook
+with a JSON payload on stdin:
 
 ```json
-{ "transcript_path": "/path/to/session-transcript.jsonl", "cwd": "/path/where/you/were/working" }
+{ "transcript_path": "/path/to/session.jsonl", "cwd": "/path/where/you/were/working", "session_id": "..." }
 ```
 
 The hook:
 
-1. Skips transcripts smaller than 5 KB (no signal in tiny sessions).
-2. Detects the project from `cwd` against a built-in regex table; falls
-   back to `"global"` when nothing matches.
-3. Spawns a detached ingester (`process-session.ts` from `rag-system`),
-   which reads the transcript and writes a session summary into Mnestra.
-4. Logs every step to `~/.claude/hooks/memory-hook.log`.
+1. Skips transcripts smaller than 5 KB (no signal in tiny sessions —
+   override via `TERMDECK_HOOK_MIN_BYTES`).
+2. Validates env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
+   `OPENAI_API_KEY`); if any are missing, logs the missing list and
+   exits cleanly without blocking the session close.
+3. Detects the project from `cwd` against a built-in regex table; falls
+   back to `"global"` when nothing matches. **The default table is
+   intentionally empty** — see "Customizing the project map" below to
+   add your own entries.
+4. Builds a coarse session summary from the last ~30 messages of the
+   transcript (~7 KB cap to stay inside OpenAI's embedding-input
+   budget).
+5. Embeds the summary via OpenAI `text-embedding-3-small` (1,536-dim).
+6. POSTs **one row** to Supabase `/rest/v1/memory_items` with
+   `source_type='session_summary'`.
+7. Logs every step to `~/.claude/hooks/memory-hook.log`.
 
-The spawn is detached + unref'd, so Claude Code's session close is not
-blocked waiting for ingestion — the 30-second `timeout` in
-`settings.json` is a backstop, not a target.
+The hook is **fail-soft**: any error (network, parse, env-var-missing,
+malformed transcript) is logged and the hook exits 0. Claude Code's
+session close is never blocked.
 
-## Dependency on `rag-system`
+## Required environment
 
-The hook delegates ingestion to a script inside the `rag-system` repo:
+The hook needs three env vars at run time:
+
+| Var | What | How to set |
+|---|---|---|
+| `SUPABASE_URL` | Your Supabase project URL (e.g. `https://abc.supabase.co`) | `~/.termdeck/secrets.env` (Tier 2) |
+| `SUPABASE_SERVICE_KEY` | Service-role key with INSERT on `memory_items`. **Not the anon key.** | `~/.termdeck/secrets.env` |
+| `OPENAI_API_KEY` | OpenAI key for embedding inference | `~/.termdeck/secrets.env` or your shell |
+
+Claude Code propagates the parent shell's environment into hook
+processes, so anything in your shell init or
+`~/.termdeck/secrets.env` (sourced by `scripts/start.sh` /
+`npx @jhizzard/termdeck`) is visible to the hook.
+
+If any of the three is missing the log line will name them:
 
 ```
-${RAG_DIR}/src/scripts/process-session.ts
+[2026-04-27T21:30:00.000Z] env-var-missing: OPENAI_API_KEY — set these in ~/.termdeck/secrets.env or your shell to enable Mnestra ingestion. Skipping.
 ```
 
-`RAG_DIR` resolves in this order:
+## Customizing the project map
 
-1. `process.env.TERMDECK_RAG_DIR` (if set)
-2. `~/Documents/Graciella/rag-system` (default — Joshua's layout)
+The hook ships with an **empty `PROJECT_MAP`** by default — every
+session lands under `project: 'global'` until you add entries. To add
+your own:
 
-**If the resolved `RAG_DIR` does not exist on disk, the hook logs that
-fact and exits cleanly.** It does not error, does not block session
-close, and does not leak a spawn. Fresh users who installed the stack
-but do not have `rag-system` checked out will see this skip-message in
-the log and nothing else — as if no hook were installed.
+1. Open `~/.claude/hooks/memory-session-end.js` after the installer
+   has dropped it.
+2. Find the `PROJECT_MAP` array near the top of the file.
+3. Add one entry per project; each entry is `{ pattern, project }`
+   where `pattern` is a regex matched against `cwd`:
 
-A future TermDeck sprint will rewrite the hook to call Mnestra's MCP
-tools directly so the `rag-system` dependency drops away. Until then,
-this hook is most useful for users who already have `rag-system`
-available.
+```js
+const PROJECT_MAP = [
+  { pattern: /\/PVB\//i,           project: 'pvb' },
+  { pattern: /\/my-startup\//i,    project: 'my-startup' },
+  { pattern: /chopin-nashville/i,  project: 'chopin-nashville' },
+];
+```
+
+First match wins. Iteration order is array order, so put more specific
+patterns first. Anything that doesn't match falls through to
+`'global'`.
+
+The map is local-only — it's never sent to any service. Editing it
+takes effect on the next Claude Code session close (no restart
+needed).
+
+## Coexistence with Joshua's `rag-system` hook
+
+If you have Joshua's private `rag-system` repo and his rag-system-based
+session hook installed, this bundled hook and that one can coexist:
+
+- The bundled hook writes `source_type='session_summary'` — one row
+  per session, summary-only.
+- The `rag-system` hook writes `source_type='fact'` — multiple rows
+  per session via Claude Haiku fact extraction + dedup.
+
+Different `source_type` values mean the two paths don't dedup against
+each other. If both are installed at the same path
+(`~/.claude/hooks/memory-session-end.js`) the installer will prompt
+before overwriting; choose accordingly.
 
 ## How to disable
 
 Two options:
 
-1. Edit `~/.claude/settings.json` and remove the entry under `hooks.Stop`
-   that references `memory-session-end.js`. Leave the file in place; it
-   simply won't fire.
-2. Or delete `~/.claude/hooks/memory-session-end.js` and remove the
+1. Edit `~/.claude/settings.json` and remove the entry under
+   `hooks.Stop` that references `memory-session-end.js`. Leave the
+   file in place; it simply won't fire.
+2. Or delete `~/.claude/hooks/memory-session-end.js` AND remove the
    `settings.json` entry. (Removing only the file leaves a broken
-   `command` in settings — Claude Code will log a missing-file error on
-   every session close.)
+   `command` in settings — Claude Code will log a missing-file error
+   on every session close.)
 
-Re-running `npx @jhizzard/termdeck-stack` after disabling will re-prompt
-to install. Decline at the prompt to stay opted out.
+Re-running `npx @jhizzard/termdeck-stack` after disabling will
+re-prompt to install. Decline at the prompt to stay opted out.
+
+## Optional flags
+
+| Env var | Effect |
+|---|---|
+| `TERMDECK_HOOK_DEBUG=1` | Verbose `[debug]` lines in the log |
+| `TERMDECK_HOOK_MIN_BYTES=10000` | Override the 5 KB skip threshold |
 
 ## Log file
 
-`~/.claude/hooks/memory-hook.log` accumulates one line per session-close
-event. The hook never rotates it. If it grows unwieldy you can truncate
-it (`: > ~/.claude/hooks/memory-hook.log`) without affecting hook
+`~/.claude/hooks/memory-hook.log` accumulates one line per session
+event (skips, errors, ingests). The hook never rotates it. If it
+grows unwieldy you can truncate it
+(`: > ~/.claude/hooks/memory-hook.log`) without affecting hook
 behavior.
