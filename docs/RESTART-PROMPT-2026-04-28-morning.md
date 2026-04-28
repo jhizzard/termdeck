@@ -1,6 +1,21 @@
-# Restart Prompt — TermDeck — 2026-04-28 morning (post-Sprint-39)
+# Restart Prompt — TermDeck — 2026-04-28 morning (post-Sprint-39 + Sprint-40)
 
-This document is the canonical hand-off for the next Claude Code session that Joshua opens after waking from the overnight Sprint 39 orchestration. The overnight orchestrator (this session, ending ~22:00 ET 2026-04-27) shipped Sprint 39 to commit `bfff819` on `origin/main`. npm publishes are pending Joshua's manual action (Passkey-not-OTP).
+This document is the canonical hand-off for the next Claude Code session that Joshua opens after waking from the overnight orchestration. **Two sprints shipped overnight** — Sprint 39 (Flashback Resurrection 2.0, commit `bfff819`, `v0.10.1`) and Sprint 40 (Defensive Hardening, commit `17186a0`, `v0.10.2`). npm publishes are pending Joshua's manual action (Passkey-not-OTP).
+
+## Sprint 40 addendum (commit 17186a0, v0.10.2, 2026-04-27 ~22:30 ET)
+
+After Sprint 39 close, Joshua approved continuing through Sprint 40 in single-orchestrator mode (lane panels were still doing post-DONE work and weren't safe to inject). Three lanes shipped:
+
+- **T1 — WS handler contract smoke test**: NEW `tests/ws-handler-contract.test.js` (3 tests, all pass). Statically scans server JS for every `JSON.stringify({type:'X'})` emit and every `case 'X':` in app.js ws.onmessage switches; asserts every emit has a handler in every switch + parity guard. **Would have caught Sprint 39's 9-day silence on first CI run.** Surface fix: reconnect WS at `app.js:1245+` was missing `case 'config_changed':` — added.
+- **T2 — Analyzer broadening**: closed all 3 pre-existing PATTERNS.error case-sensitivity gaps (uppercase ERROR:, ENOENT/EACCES/ECONNREFUSED colon shapes, HTTP 5xx server log via new `pythonServer.serverError` pattern, `npm ERR!` and mixed-case `Fatal:` in errorLineStart). `packages/server/tests/session.test.js`: 32/35 → **35/35**. Sprint 39 fixture corpora still green.
+- **T4 — Sprint 39 postmortem + WS message contract docs**: NEW `docs/POSTMORTEM-sprint-39.md` (timeline, root cause analysis, 5 lessons learned). NEW `docs/WS-MESSAGE-CONTRACT.md` (source-of-truth for the 6 WS types).
+- **T3 — `/api/flashback/diag` dashboard UI**: deferred to Sprint 41 (UI work needs browser verification per CLAUDE.md; Joshua asleep).
+
+Test status after Sprint 40: top-level `tests/` 394/391/0/3 (+3 net new). server `tests/` 35/35. Zero new failures across both sprints.
+
+Sprint 40 made **zero database writes**, **no migration**, **no companion releases** (`@jhizzard/termdeck-stack@0.4.3` unchanged from Sprint 39 close).
+
+Pending publishes have been bumped: `@jhizzard/termdeck@0.10.2` (was @0.10.1 at Sprint 39 close); `@jhizzard/termdeck-stack@0.4.3` (unchanged).
 
 ## Live state at hand-off (2026-04-27 22:00 ET, post-commit-bfff819)
 
@@ -23,7 +38,7 @@ The 3-line fix (× 2 sites) is in `bfff819` at `app.js:237` + `app.js:1245`. **R
 
 1. **Restart TermDeck server.** The orchestrator did NOT restart the server. The new `/api/flashback/diag` route, the `case 'proactive_memory':` client handler, and T2's tightened `PATTERNS.shellError` regex all require a restart to surface. Use `./scripts/start.sh` or `npx @jhizzard/termdeck@0.10.0` (or `@0.10.1` once published).
 2. **Verify Flashback fires in real flow.** After restart, trigger any error in a TermDeck session (e.g., `cat /nonexistent`) and confirm a toast surfaces. If it doesn't, `curl http://localhost:3000/api/flashback/diag?sessionId=<your-session-id>` to read T1's structured event log and diagnose at the gate that dropped it.
-3. **Publish the new versions to npm.** Passkey-not-OTP per `docs/RELEASE.md`. Order: `@jhizzard/termdeck-stack@0.4.3` first (audit-trail), then `@jhizzard/termdeck@0.10.1`. Do NOT use `--otp` (the `@jhizzard/*` org auths via web Passkey).
+3. **Publish the new versions to npm.** Passkey-not-OTP per `docs/RELEASE.md`. Order: `@jhizzard/termdeck-stack@0.4.3` first (audit-trail bump from Sprint 39), then `@jhizzard/termdeck@0.10.2` (Sprint 39 + 40 combined). Do NOT use `--otp` (the `@jhizzard/*` org auths via web Passkey). Note: v0.10.1 was bumped in `bfff819` and v0.10.2 in `17186a0` — only the latest needs publishing; npm doesn't gate-check intermediate version skips for the same package.
 4. **Forward-fix the harness hook PROJECT_MAP.** `~/.claude/hooks/memory-session-end.js` is OUT OF REPO (your harness, not the bundled hook). Its PROJECT_MAP at lines 14–28 has no entries for termdeck/mnestra/rumen/podium/dor; without a forward-fix, new sessions in those projects continue to land under `chopin-nashville` even after the 011 backfill heals the historical rows. Add entries like:
    ```js
    { pattern: /SideHustles\/TermDeck/i, project: 'termdeck' },
