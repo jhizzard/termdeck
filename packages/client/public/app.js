@@ -2509,12 +2509,29 @@
       {
         targets: ['#btn-status', '#btn-config'],
         title: 'Status and config',
-        body: `<strong>status</strong> opens a global-metrics modal (session counts by state, RAG mode, memory bridge). <strong>config</strong> shows your loaded project list and theme defaults. Both are in the polish queue for Sprint 3 — buttons are visible but unwired right now.`,
+        body: `<strong>status</strong> opens a global-metrics modal (session counts by state, RAG mode, memory bridge). <strong>config</strong> shows your loaded project list and theme defaults — plus a live RAG-mode toggle (Sprint 36) that flips Flashback on/off without a server restart.`,
+      },
+      {
+        targets: ['#btn-sprint', '#btn-graph'],
+        title: 'Sprint runner and knowledge graph',
+        body: `<strong>sprint</strong> opens the in-dashboard 4+1 sprint runner (Sprint 37): name the sprint, define T1–T4 lane goals, click kick off — TermDeck spawns four panels and injects boot prompts via the two-stage submit pattern automatically. Optional <strong>--isolation=worktree</strong> creates a git worktree per lane so concurrent edits can't stomp. <strong>graph</strong> opens the D3.js force-directed knowledge graph (Sprint 38) of your memory_items + memory_relationships in a new tab — click any node to open its memory in a drawer, filter by relationship type, search, zoom/pan.`,
       },
       {
         targets: ['#btn-how', '#btn-help'],
         title: 'How this works and help',
-        body: `Click <strong>how this works</strong> any time to replay this tour. <strong>help</strong> opens the full TermDeck documentation in a new tab.`,
+        body: `Click <strong>how this works</strong> any time to replay this tour. <strong>help</strong> opens the full TermDeck documentation in a new tab. The <strong>📖 Guide</strong> tab on the right edge of the screen — also opens with the <kbd>g</kbd> keyboard shortcut — is the always-on Orchestrator Guide (Sprint 37): nine sections covering the 4+1 sprint pattern, inject mandate, CLAUDE.md hierarchy, memory-first discipline, sprint discipline, restart-prompt rituals, scaffolding files, channel inject patterns. Search built in.`,
+      },
+      {
+        target: '#guideRail',
+        title: 'Right-rail Orchestrator Guide',
+        body: `The <strong>📖 Guide</strong> rail is your orchestration cheat-sheet — collapsed by default, one click (or <kbd>g</kbd>) to expand. It auto-scrolls to the relevant section based on what you're focused on: clicking a terminal panel jumps the Guide to the 4+1 pattern; opening the project drawer jumps to CLAUDE.md hierarchy. Useful when you forget exactly how the two-stage submit pattern works at 2 AM in the middle of a sprint inject.`,
+        fallback: '#btn-how',
+      },
+      {
+        target: '#btnPreviewProject',
+        title: 'Orchestration preview',
+        body: `The <strong>preview</strong> button next to the project + button (Sprint 37) shows you exactly what <code>termdeck init --project &lt;name&gt;</code> would create for the selected project — file tree, contents per file, expand-on-click. Read-only by default; optional generate button writes the scaffolding (CLAUDE.md, CONTRADICTIONS.md, project_facts.md, .claude/settings.json, docs/orchestration/, RESTART-PROMPT.md template). Lets you see-before-commit instead of running the CLI blind.`,
+        fallback: '#btn-how',
       },
       {
         target: '.panel-header',
@@ -2555,8 +2572,13 @@
       },
       {
         target: null,
+        title: 'Knowledge graph + memory inference',
+        body: `Sprint 38 brought your <strong>memory_relationships</strong> table to life. The <strong>graph</strong> button (top toolbar) renders your memories as a force-directed network — supersedes / relates_to / contradicts / elaborates / caused_by / blocks / inspired_by / cross_project_link edges, color-coded, filterable. The Mnestra MCP server now exposes four new tools: <code>memory_link</code>, <code>memory_unlink</code>, <code>memory_related</code>, and <code>memory_recall_graph</code> — Claude Code can connect related memories explicitly, traverse N-hop neighborhoods, and recall via graph-aware re-ranking (vector_score × edge_weight × recency). Edges populate automatically from Joshua's private rag-system classifier; a nightly cron in Sprint 39+ will surface cross-project connections.`,
+      },
+      {
+        target: null,
         title: 'You are ready.',
-        body: `That's every major surface. Click <strong>how this works</strong> in the top toolbar to replay this walkthrough. <strong>help</strong> opens the full docs. Questions, bugs, feedback: <a href="https://github.com/jhizzard/termdeck/issues" target="_blank" style="color:var(--tg-accent)">github.com/jhizzard/termdeck/issues</a>. Now launch something.`,
+        body: `That's every major surface. Click <strong>how this works</strong> in the top toolbar to replay this walkthrough. <strong>help</strong> opens the full docs. Press <kbd>g</kbd> any time to crack open the Orchestrator Guide. Questions, bugs, feedback: <a href="https://github.com/jhizzard/termdeck/issues" target="_blank" style="color:var(--tg-accent)">github.com/jhizzard/termdeck/issues</a>. Now launch something.`,
       },
     ];
 
