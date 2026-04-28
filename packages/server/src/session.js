@@ -14,6 +14,7 @@ const { v4: uuidv4 } = require('uuid');
 const os = require('os');
 const path = require('path');
 const { resolveTheme } = require('./theme-resolver');
+const flashbackDiag = require('./flashback-diag');
 
 // Strip ANSI escape codes for pattern matching
 function stripAnsi(str) {
@@ -77,7 +78,27 @@ const PATTERNS = {
   // mentioning the same words. Each branch requires either the colon-prefix
   // structure or a stand-alone anchored keyword. Validated against an
   // adversarial prose suite (see tests/analyzer-error-fixtures.test.js).
-  shellError: /(?:^|\n)(?:[^\n]*:\s+(?:.*?:\s+)?(?:No such file or directory|Permission denied|Is a directory|Not a directory|command not found)\b|[^\n]*?\(\d+\)\s+Could not resolve host\b|\s*ModuleNotFoundError:\s+\S|\s*Segmentation fault\b|\s*fatal:\s+\S)/m
+  //
+  // Sprint 39 T2: separated `command not found` from the other phrases. The
+  // unified branch was matching rcfile-noise lines emitted by version
+  // managers during shell startup — most notably:
+  //   `pyenv: pyenv-virtualenv-init: command not found in path`
+  // …which has the colon-prefix-with-`command not found` shape but with a
+  // descriptive suffix (` in path`) rather than ending the line. The pyenv
+  // case confirms the strong rcfile-noise hypothesis for pyenv users: their
+  // shell startup burns the 30s onErrorDetected rate limit before the user
+  // can type their first command. The dedicated `command not found` branch
+  // below requires the keyword to be either:
+  //   • followed by `:` (the zsh `command not found: <cmd>` form), or
+  //   • at end-of-line (the bash `<sh>: <cmd>: command not found` form).
+  // Suffixes like ` in path`, ` in $PATH`, ` (compinit)` are silenced as
+  // rcfile noise.
+  // Trade-off: custom command_not_found_handler output that adds a comma-
+  // separated "did you mean X" suggestion is silenced — those are cosmetic
+  // suggestions, not the error itself, which the user already saw fire.
+  // See tests/rcfile-noise.test.js and tests/analyzer-error-fixtures.test.js
+  // for the locked corpus.
+  shellError: /(?:^|\n)(?:[^\n]*:\s+(?:.*?:\s+)?(?:No such file or directory|Permission denied|Is a directory|Not a directory)\b|[^\n]*:\s+(?:.*?:\s+)?command not found(?::|\s*(?:[\r\n]|$))|[^\n]*?\(\d+\)\s+Could not resolve host\b|\s*ModuleNotFoundError:\s+\S|\s*Segmentation fault\b|\s*fatal:\s+\S)/m
 };
 
 class Session {
@@ -350,14 +371,32 @@ class Session {
     // Claude Code's tool output frequently contains "error"/"Error" mid-line
     // (grep matches, test results, log dumps). Use a line-anchored pattern
     // for that session type so we don't flag content as failure.
-    const pattern = this.meta.type === 'claude-code'
+    const primaryPattern = this.meta.type === 'claude-code'
       ? PATTERNS.errorLineStart
       : PATTERNS.error;
+    const primaryName = this.meta.type === 'claude-code' ? 'errorLineStart' : 'error';
     // Sprint 33 fix: the structured patterns above miss `cat: /foo: No such
     // file or directory` and friends — the most common Unix shell error
     // shapes Josh hits day-to-day. Fall through to PATTERNS.shellError so
     // the analyzer flips status='errored' and Flashback can fire.
-    if (!pattern.test(clean) && !PATTERNS.shellError.test(clean)) return;
+    const primaryMatch = clean.match(primaryPattern);
+    const shellMatch = !primaryMatch ? clean.match(PATTERNS.shellError) : null;
+    if (!primaryMatch && !shellMatch) return;
+
+    // Sprint 39 T1 — pattern_match diag event. Emitted on every PATTERNS hit,
+    // including ones that get rate-limited downstream. T2 reads these to
+    // measure the rcfile-noise false-positive rate against real shell output.
+    const matchedSrc = primaryMatch || shellMatch;
+    const matchedLine = (matchedSrc && typeof matchedSrc[0] === 'string')
+      ? matchedSrc[0].replace(/^\n+/, '').slice(0, 200)
+      : '';
+    flashbackDiag.log({
+      sessionId: this.id,
+      event: 'pattern_match',
+      pattern: primaryMatch ? primaryName : 'shellError',
+      matched_line: matchedLine,
+      output_chunk_size: clean.length,
+    });
 
     const oldStatus = this.meta.status;
     this.meta.status = 'errored';
@@ -371,7 +410,30 @@ class Session {
 
     // Server-side rate limit: at most one error_detected event every 30s per session
     const now = Date.now();
+    const remainingMs = this._lastErrorFireAt
+      ? Math.max(0, 30000 - (now - this._lastErrorFireAt))
+      : 0;
+
+    // Sprint 39 T1 — error_detected diag event, before the rate-limit gate.
+    // The (error_detected count − rate_limit_blocked count) is the number of
+    // errors that actually got dispatched to onErrorDetected. T2/T3 use this
+    // to spot rcfile noise burning the rate-limit window before real errors.
+    flashbackDiag.log({
+      sessionId: this.id,
+      event: 'error_detected',
+      error_text: matchedLine,
+      rate_limit_remaining_ms: remainingMs,
+      last_emit_at: this._lastErrorFireAt
+        ? new Date(this._lastErrorFireAt).toISOString()
+        : null,
+    });
+
     if (now - this._lastErrorFireAt < 30000) {
+      flashbackDiag.log({
+        sessionId: this.id,
+        event: 'rate_limit_blocked',
+        rate_limit_remaining_ms: remainingMs,
+      });
       console.log(`[flashback] error detected in session ${this.id} but rate-limited (${Math.round((30000 - (now - this._lastErrorFireAt)) / 1000)}s left)`);
       return;
     }

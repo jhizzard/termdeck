@@ -56,6 +56,7 @@ const { SessionManager } = require('./session');
 const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = require('./database');
 const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./mnestra-bridge');
+const flashbackDiag = require('./flashback-diag');
 const { writeSessionLog } = require('./session-logger');
 const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler, runPreflight } = require('./preflight');
@@ -853,30 +854,69 @@ function createServer(config) {
             question,
             project: sess.meta.project,
             searchAll: false,
+            cwd: sess.meta.cwd,
+            sessionId: sess.id,
             sessionContext: {
               type: sess.meta.type,
               project: sess.meta.project,
+              cwd: sess.meta.cwd,
               lastCommands: sess.meta.lastCommands.slice(-5),
               status: 'errored'
             }
           }).then((result) => {
-            const count = (result.memories || []).length;
+            const memories = (result && result.memories) || [];
+            const count = memories.length;
             console.log(`[flashback] query returned ${count} matches for session ${sess.id}`);
-            const hit = (result.memories || [])[0];
+            const hit = memories[0];
+            const wsReadyState = sess.ws ? sess.ws.readyState : null;
             if (!hit) {
               console.log(`[flashback] no matches — skipping proactive_memory send for session ${sess.id}`);
+              flashbackDiag.log({
+                sessionId: sess.id,
+                event: 'proactive_memory_emit',
+                ws_ready_state: wsReadyState,
+                frame_size_bytes: 0,
+                result_count_in_frame: 0,
+                outcome: 'dropped_empty',
+              });
               return;
             }
             if (sess.ws && sess.ws.readyState === 1) {
+              const frame = JSON.stringify({ type: 'proactive_memory', hit });
               try {
-                sess.ws.send(JSON.stringify({ type: 'proactive_memory', hit }));
+                sess.ws.send(frame);
                 console.log(`[flashback] proactive_memory sent to session ${sess.id} (source_type=${hit.source_type}, project=${hit.project})`);
+                flashbackDiag.log({
+                  sessionId: sess.id,
+                  event: 'proactive_memory_emit',
+                  ws_ready_state: 1,
+                  frame_size_bytes: Buffer.byteLength(frame, 'utf8'),
+                  result_count_in_frame: 1,
+                  outcome: 'emitted',
+                });
               } catch (err) {
                 console.error('[flashback] proactive_memory send failed:', err);
                 console.error('[ws] proactive_memory send failed:', err);
+                flashbackDiag.log({
+                  sessionId: sess.id,
+                  event: 'proactive_memory_emit',
+                  ws_ready_state: 1,
+                  frame_size_bytes: Buffer.byteLength(frame, 'utf8'),
+                  result_count_in_frame: 1,
+                  outcome: 'error',
+                  error_message: err && err.message ? err.message : String(err),
+                });
               }
             } else {
               console.log(`[flashback] ws not open for session ${sess.id} (readyState=${sess.ws ? sess.ws.readyState : 'null'}) — dropped hit`);
+              flashbackDiag.log({
+                sessionId: sess.id,
+                event: 'proactive_memory_emit',
+                ws_ready_state: wsReadyState,
+                frame_size_bytes: 0,
+                result_count_in_frame: count,
+                outcome: 'dropped_no_ws',
+              });
             }
           }).catch((err) => {
             console.error(`[flashback] query failed for session ${sess.id}: ${err.message}`);
@@ -1347,6 +1387,23 @@ function createServer(config) {
     });
   });
 
+  // GET /api/flashback/diag - Sprint 39 T1 diagnostic ring buffer.
+  // Returns the last N Flashback decision-point events so Joshua can trigger
+  // a real-shell error and read the timeline of which gate dropped the toast.
+  // Optional filters: ?sessionId=<uuid>, ?eventType=pattern_match, ?limit=N
+  // (capped at 200, the ring size).
+  app.get('/api/flashback/diag', (req, res) => {
+    const { sessionId, eventType } = req.query || {};
+    const rawLimit = req.query && req.query.limit;
+    const limit = rawLimit != null ? parseInt(rawLimit, 10) : undefined;
+    const events = flashbackDiag.snapshot({
+      sessionId: typeof sessionId === 'string' && sessionId.length ? sessionId : undefined,
+      eventType: typeof eventType === 'string' && eventType.length ? eventType : undefined,
+      limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, flashbackDiag.RING_SIZE) : undefined,
+    });
+    res.json({ count: events.length, events });
+  });
+
   // ==================== Transcript endpoints (Sprint 6 T3) ====================
 
   // GET /api/transcripts/search - FTS across all sessions
@@ -1568,6 +1625,7 @@ function createServer(config) {
     const sessionContext = session ? {
       type: session.meta.type,
       project: session.meta.project,
+      cwd: session.meta.cwd,
       lastCommands: session.meta.lastCommands.slice(-5),
       status: session.meta.status
     } : null;
@@ -1577,6 +1635,7 @@ function createServer(config) {
         question,
         project,
         searchAll,
+        cwd: session ? session.meta.cwd : undefined,
         sessionContext
       });
 

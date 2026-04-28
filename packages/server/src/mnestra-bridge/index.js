@@ -10,6 +10,7 @@
 
 const { spawn } = require('child_process');
 const { resolveProjectName } = require('../rag');
+const flashbackDiag = require('../flashback-diag');
 
 function createBridge(config) {
   const mode = config.rag?.mnestraMode || 'direct';
@@ -225,7 +226,7 @@ function createBridge(config) {
     }
   }
 
-  async function queryMnestra({ question, project, searchAll, sessionContext, cwd }) {
+  async function queryMnestra({ question, project, searchAll, sessionContext, cwd, sessionId }) {
     // Flashback callers pass the session's project (from config.yaml). If that
     // slot is empty — e.g. a session created without an explicit project — fall
     // back to resolving the session's cwd against config.projects so queries
@@ -246,15 +247,68 @@ function createBridge(config) {
     // out-of-repo session-end hook), the mismatch surfaces here at query time.
     console.log(`[mnestra-bridge] query project=${effectiveProject ?? 'ALL'} source=${searchAll ? 'searchAll' : projectSource} mode=${mode}`);
 
-    switch (mode) {
-      case 'webhook':
-        return queryWebhook({ question, project: effectiveProject, searchAll });
-      case 'mcp':
-        return queryMcp({ question, project: effectiveProject, searchAll });
-      case 'direct':
-      default:
-        return queryDirect({ question, project: effectiveProject, searchAll });
+    const projectTagInFilter = searchAll ? null : (effectiveProject || null);
+    const t0 = Date.now();
+    let result;
+    let callError;
+    try {
+      switch (mode) {
+        case 'webhook':
+          result = await queryWebhook({ question, project: effectiveProject, searchAll });
+          break;
+        case 'mcp':
+          result = await queryMcp({ question, project: effectiveProject, searchAll });
+          break;
+        case 'direct':
+        default:
+          result = await queryDirect({ question, project: effectiveProject, searchAll });
+          break;
+      }
+    } catch (err) {
+      callError = err;
     }
+    const durationMs = Date.now() - t0;
+
+    // Sprint 39 T1 — bridge_query / bridge_result diag events. Emitted at
+    // queryMnestra's outer boundary so all three backends (direct, webhook,
+    // mcp) flow through one observability point. T3 reads project_tag_in_filter
+    // (the tag the bridge SENT to the RPC) and top_3_project_tags (the tags
+    // it GOT BACK) to confirm or refute the project-mismatch hypothesis.
+    flashbackDiag.log({
+      sessionId,
+      event: 'bridge_query',
+      project_tag_in_filter: projectTagInFilter,
+      query_text: typeof question === 'string' ? question.slice(0, 200) : '',
+      mode,
+      rpc_args: {
+        project: projectTagInFilter,
+        searchAll: !!searchAll,
+        project_source: searchAll ? 'searchAll' : projectSource,
+      },
+      duration_ms: durationMs,
+    });
+
+    const memories = (result && Array.isArray(result.memories)) ? result.memories : [];
+    const tagCounts = {};
+    for (const m of memories) {
+      const tag = m && m.project != null ? String(m.project) : '(null)';
+      tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+    }
+    const top3 = Object.entries(tagCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([tag, count]) => ({ tag, count }));
+
+    flashbackDiag.log({
+      sessionId,
+      event: 'bridge_result',
+      result_count: memories.length,
+      error_message: callError ? (callError.message || String(callError)) : null,
+      top_3_project_tags: top3,
+    });
+
+    if (callError) throw callError;
+    return result;
   }
 
   return { mode, queryMnestra };

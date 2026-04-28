@@ -237,6 +237,9 @@
             case 'meta':
               updatePanelMeta(id, msg.session.meta);
               break;
+            case 'proactive_memory':
+              showProactiveToast(id, msg.hit);
+              break;
             case 'exit':
               updatePanelMeta(id, {
                 status: 'exited',
@@ -1244,6 +1247,9 @@
               break;
             case 'meta':
               updatePanelMeta(id, msg.session.meta);
+              break;
+            case 'proactive_memory':
+              showProactiveToast(id, msg.hit);
               break;
             case 'exit':
               updatePanelMeta(id, { status: 'exited', statusDetail: `Exited (${msg.exitCode})` });

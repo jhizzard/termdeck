@@ -1,0 +1,10 @@
+bash: typeset: -g: invalid option
+typeset: usage: typeset [-afFirtx] [-p] name[=value] ...
+bash: eval: line 15: syntax error in conditional expression: unexpected token `('
+bash: eval: line 15: syntax error near `$precmd_functions[(r'
+bash: eval: line 15: `if [[ -z $precmd_functions[(r)_pyenv_virtualenv_hook] ]]; then'
+
+The default interactive shell is now zsh.
+To update your account to use zsh, please run `chsh -s /bin/zsh`.
+For more details, please visit https://support.apple.com/kb/HT208050.
+[?1034h__T2_SPRINT39_PROMPT_1777340235963__

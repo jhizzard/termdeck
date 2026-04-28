@@ -24,82 +24,32 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const WebSocket = require('ws');
 
-const BASE_URL = (process.env.TERMDECK_URL || process.env.TERMDECK_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
-const WS_URL = BASE_URL.replace(/^http/, 'ws') + '/ws';
-const REQUEST_TIMEOUT_MS = 3000;
-const EVENT_POLL_TIMEOUT_MS = 8000;
-const EVENT_POLL_INTERVAL_MS = 200;
+// Sprint 39 T4 refactor: shared utilities extracted to _flashback-helpers.js
+// so tests/flashback-production-flow.test.js can reuse the same probe / poll
+// / fetch primitives. Behavior unchanged — pure mechanical move.
+const {
+  BASE_URL,
+  WS_URL,
+  REQUEST_TIMEOUT_MS,
+  EVENT_POLL_TIMEOUT_MS,
+  EVENT_POLL_INTERVAL_MS,
+  sleep,
+  fetchWithTimeout,
+  pollUntil,
+  probeServer,
+} = require('./_flashback-helpers');
 
 let skipAll = false;
 let skipReason = '';
 let createdSessionId = null;
 
-async function fetchWithTimeout(url, opts = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs || REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...opts, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-
-async function pollUntil(fn, { timeoutMs, intervalMs }) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const result = await fn();
-    if (result) return result;
-    await sleep(intervalMs);
-  }
-  return null;
-}
-
 before(async () => {
   // Probe the server + verify Mnestra is reachable. Flashback can't fire
   // without Mnestra, so testing the pipeline end-to-end requires both.
-  let healthBody;
-  try {
-    const res = await fetchWithTimeout(`${BASE_URL}/api/health`);
-    if (!res.ok && res.status >= 500) {
-      skipAll = true;
-      skipReason = `server health returned ${res.status}`;
-      return;
-    }
-    healthBody = await res.json();
-  } catch (err) {
+  const probe = await probeServer();
+  if (probe.skip) {
     skipAll = true;
-    skipReason = `server unreachable at ${BASE_URL}: ${err.message}`;
-    return;
-  }
-
-  const checks = Array.isArray(healthBody?.checks) ? healthBody.checks : [];
-  const mnestra = checks.find((c) => c.name === 'mnestra_reachable');
-  if (!mnestra || !mnestra.passed) {
-    skipAll = true;
-    skipReason = `mnestra_reachable not passing (${mnestra ? mnestra.detail : 'check absent'})`;
-    return;
-  }
-
-  // rag_events is the authoritative observable. If the server has no SQLite
-  // (db==null) the endpoint returns []; the pipeline cannot be observed.
-  try {
-    const res = await fetchWithTimeout(`${BASE_URL}/api/rag/status`);
-    if (!res.ok) {
-      skipAll = true;
-      skipReason = `rag status returned ${res.status}`;
-      return;
-    }
-    const body = await res.json();
-    // `localEvents` only exists when SQLite is live. Its absence means db==null.
-    if (body.localEvents === undefined) {
-      skipAll = true;
-      skipReason = 'server has no SQLite — cannot observe rag_events';
-    }
-  } catch (err) {
-    skipAll = true;
-    skipReason = `rag status unreachable: ${err.message}`;
+    skipReason = probe.reason;
   }
 });
 
@@ -513,41 +463,36 @@ test('project-bound flashback: termdeck session surfaces termdeck/null memories 
       `either the bridge is not being queried with project='termdeck' or the corpus mis-tag is hiding all matches.`
     );
 
-    // 5. The frame must carry a non-empty memories array. An empty array
-    //    means the bridge was queried but returned zero matches — which,
-    //    given the preflight confirmed termdeck-tagged memories exist, is
-    //    a writer-side regression where the session is being filtered with
-    //    a stale or wrong project tag.
-    const memories = Array.isArray(proactiveMemoryFrame.memories)
-      ? proactiveMemoryFrame.memories
-      : [];
-    t.diagnostic(`[T3] proactive_memory frame received with ${memories.length} memories`);
+    // 5. The frame's hit must carry non-empty content. The production
+    //    emit shape is { type: 'proactive_memory', hit: <single memory> }
+    //    (server: index.js _onErrorDetected → JSON.stringify({type, hit})).
+    //    Line 416 above stores msg.hit directly into proactiveMemoryFrame,
+    //    so proactiveMemoryFrame IS the single hit — not a wrapping frame
+    //    with a .memories[] array. Sprint 39 T4 corrected the prior
+    //    .memories[]-shaped assertion that was structurally unreachable.
+    t.diagnostic(`[T3] proactive_memory hit received: project=${JSON.stringify(proactiveMemoryFrame.project)} similarity=${proactiveMemoryFrame.similarity}`);
 
     assert.ok(
-      memories.length > 0,
-      `proactive_memory frame.memories is empty even though ${preflightMemories.length} termdeck-tagged memories ` +
+      proactiveMemoryFrame.content && proactiveMemoryFrame.content.length > 0,
+      `proactive_memory frame.hit.content is empty even though ${preflightMemories.length} termdeck-tagged memories ` +
       `match the probe — the bridge is filtering on a different project tag than the session was created with.`
     );
 
-    // 6. Every memory must be tagged 'termdeck' or null. Anything tagged
+    // 6. The hit must be tagged 'termdeck' or null. Anything tagged
     //    'chopin-nashville' for a project='termdeck' session is the v0.7.1
     //    regression we shipped v0.7.2 to fix; it must never come back
     //    silently. (null is acceptable because some legitimate cross-
     //    project memories — universal patterns, e.g. — are written without
     //    a project tag.)
-    const offenders = memories.filter(
-      (m) => m && m.project != null && m.project !== 'termdeck'
-    );
-    if (offenders.length > 0) {
-      const sample = offenders.slice(0, 3).map(
-        (m) => `project=${JSON.stringify(m.project)} content=${JSON.stringify((m.content || '').slice(0, 80))}`
-      ).join('\n  ');
-      t.diagnostic(`[T3] offending memories:\n  ${sample}`);
+    const hitProject = proactiveMemoryFrame.project;
+    const offending = hitProject != null && hitProject !== 'termdeck';
+    if (offending) {
+      t.diagnostic(`[T3] offending hit: project=${JSON.stringify(hitProject)} content=${JSON.stringify((proactiveMemoryFrame.content || '').slice(0, 80))}`);
     }
-    assert.equal(
-      offenders.length, 0,
-      `${offenders.length} of ${memories.length} memories returned to a project='termdeck' session ` +
-      `carry a non-termdeck, non-null project tag — Sprint 34 regression. Expected only 'termdeck' or null.`
+    assert.ok(
+      !offending,
+      `proactive_memory hit returned to a project='termdeck' session carries a non-termdeck, non-null project tag ` +
+      `(${JSON.stringify(hitProject)}) — Sprint 34 regression. Expected only 'termdeck' or null.`
     );
   } finally {
     try { ws.close(); } catch { /* already closed */ }
