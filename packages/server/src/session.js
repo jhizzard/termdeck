@@ -44,6 +44,13 @@ const PATTERNS = {
     django: /Starting development server/,
     httpServer: /Serving HTTP on/,
     request: /(?:^|\s|")(GET|POST|PUT|DELETE|PATCH)\s+\S+.*?\s(\d{3})/m,
+    // Sprint 40 T2: HTTP 5xx response in a web-server log line is a real
+    // error condition for the application. Used as a python-server-typed
+    // fallback in _detectErrors when the prose-shape analyzers miss because
+    // the line carries no `Error:` keyword — just `"GET /foo HTTP/1.1" 503`.
+    // 5xx only (not 4xx, which are typically client-caused). The leading
+    // `(?:^|\s|")` mirrors `request` so colon-quoted log shapes still match.
+    serverError: /(?:^|\s|")(?:GET|POST|PUT|DELETE|PATCH)\s+\S+.*?\sHTTP\/\d(?:\.\d)?"?\s+5\d{2}\b/m,
     // Port detection — matches any of:
     //   • "port NNNN" phrase (capture group 1)
     //   • URL with http/https scheme, optionally prefixed with "on " or "at "
@@ -66,11 +73,20 @@ const PATTERNS = {
   // tools (cat, ls, cd, rm, etc.) report filesystem misses in plain English
   // without ever emitting the ENOENT errno code. Flagged as a gap by Rumen's
   // first production kickstart insight on 2026-04-15.
-  error: /(?:^|\n)\s*(?:Error:\s+\S|error:\s+\S|Traceback \(most recent call last\):|npm ERR!|error\[E\d+\]:|Uncaught Exception|Fatal:)/m,
+  // Sprint 40 T2: added uppercase `ERROR:` (mirrors `Error:` / `error:` for
+  // case-symmetry — closes the stripAnsi-ERROR test fixture from Sprint 33)
+  // and Node errno-style colon-prefix shapes (`ENOENT:`, `EACCES:`,
+  // `ECONNREFUSED:`) so `ENOENT: no such file or directory` shapes from
+  // child-process error reporting fire without depending on the line ALSO
+  // containing the `No such file or directory` prose phrase.
+  error: /(?:^|\n)\s*(?:Error:\s+\S|error:\s+\S|ERROR:\s+\S|Traceback \(most recent call last\):|npm ERR!|error\[E\d+\]:|Uncaught Exception|Fatal:|ENOENT:\s+\S|EACCES:\s+\S|ECONNREFUSED:\s+\S)/m,
   // Stricter line-anchored variant for Claude Code, whose tool output (grep
   // results, test logs, file contents) routinely mentions "Error" mid-line
   // without representing an actual failure of the agent itself.
-  errorLineStart: /^\s*(error|Error|ERROR|exception|Exception|Traceback|fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied)\b/m,
+  // Sprint 40 T2: added mixed-case `Fatal` (mirrors `fatal` / `FATAL`) and
+  // the `npm ERR!` shape (special-cased outside the alternation because
+  // `!` is not a word character so `\b` after `npm ERR!` doesn't match).
+  errorLineStart: /^\s*(?:(?:error|Error|ERROR|exception|Exception|Traceback|fatal|Fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied)\b|npm ERR!)/m,
   // Sprint 33: PATTERNS.error misses the most common Unix shell errors —
   // `cat: /foo: No such file or directory`, `bash: foo: command not found`,
   // `rm: cannot remove ...: Permission denied`. These have a colon-prefix
@@ -381,19 +397,31 @@ class Session {
     // the analyzer flips status='errored' and Flashback can fire.
     const primaryMatch = clean.match(primaryPattern);
     const shellMatch = !primaryMatch ? clean.match(PATTERNS.shellError) : null;
-    if (!primaryMatch && !shellMatch) return;
+    // Sprint 40 T2: HTTP 5xx fallback for python-server sessions. The prose
+    // analyzers miss `"GET /foo HTTP/1.1" 503 -` because it carries no
+    // `Error:` keyword — but the response IS the error signal for an
+    // HTTP-server session. Gated on session type to avoid flagging 5xx
+    // status codes that legitimately appear in unrelated content (e.g. a
+    // shell that just printed a copy of an HTTP log).
+    const serverMatch = (!primaryMatch && !shellMatch && this.meta.type === 'python-server')
+      ? clean.match(PATTERNS.pythonServer.serverError)
+      : null;
+    if (!primaryMatch && !shellMatch && !serverMatch) return;
 
     // Sprint 39 T1 — pattern_match diag event. Emitted on every PATTERNS hit,
     // including ones that get rate-limited downstream. T2 reads these to
     // measure the rcfile-noise false-positive rate against real shell output.
-    const matchedSrc = primaryMatch || shellMatch;
+    const matchedSrc = primaryMatch || shellMatch || serverMatch;
     const matchedLine = (matchedSrc && typeof matchedSrc[0] === 'string')
       ? matchedSrc[0].replace(/^\n+/, '').slice(0, 200)
       : '';
+    const matchedPattern = primaryMatch
+      ? primaryName
+      : (shellMatch ? 'shellError' : 'serverError');
     flashbackDiag.log({
       sessionId: this.id,
       event: 'pattern_match',
-      pattern: primaryMatch ? primaryName : 'shellError',
+      pattern: matchedPattern,
       matched_line: matchedLine,
       output_chunk_size: clean.length,
     });

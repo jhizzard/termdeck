@@ -11,6 +11,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 40 candidate: analyzer broadening — `PATTERNS.error` case-sensitivity gaps documented in T2's audit (uppercase `ERROR:`, lowercase `no such file or directory` / `ENOENT:` shape, HTTP 5xx server log). False-negative gaps; orthogonal to the rcfile-noise false-positive concern Sprint 39 closed.
 - Sprint 40 candidate: LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows that 011_project_tag_backfill.sql deliberately left untouched (no clear single-project keyword signal). Conservative content-keyword backfill is shipped; opt-in semantic backfill is queued.
 
+## [0.10.2] - 2026-04-27
+
+### Fixed — Sprint 40: Defensive hardening (single-orchestrator, post-Sprint-39)
+
+> **Theme:** Sprint 40 ships the structural defenses that would have caught Sprint 39's 9-day Flashback regression on first CI run. Single-orchestrator overnight (the four lane panels were still doing post-DONE work and weren't safe to inject); 3 lanes shipped (T3 dashboard UI deferred to Sprint 41 because Joshua was asleep and couldn't browser-verify). No companion releases — `@jhizzard/termdeck-stack@0.4.3` unchanged from Sprint 39 close (no installer source touched). No live database writes; no migration; no server restart required for tests to pass.
+
+### Lanes
+- **T1 — WS handler contract smoke test.** NEW `tests/ws-handler-contract.test.js` (3 tests). Statically scans `packages/server/src/` for every `JSON.stringify({ type: '<X>' })` emit (both inline and multi-line shapes, recursive across all server `.js` files), scans `packages/client/public/app.js` for every `case '<X>':` literal inside every `ws.onmessage` switch, and asserts every emitted type has a handler in EVERY switch. Includes a parity guard: both switches must have identical case sets (the contract drift between Sprint 39's main panel WS and reconnect WS is exactly the class of bug that compounded the 9-day silence). Provides an `ALLOWED_OMISSIONS` map for documenting deliberate omissions. Surface fix from running the new test: reconnect WS handler at `packages/client/public/app.js:1245+` was missing `case 'config_changed':` (silent drop on reconnected sessions whenever `PATCH /api/config` broadcasts a config change); added with parity comment + idempotent semantics matching the main panel handler. **The new contract test would have caught Sprint 39's missing `case 'proactive_memory':` on first CI run after the gap was introduced.**
+- **T2 — Analyzer broadening.** Closed all 3 pre-existing case-sensitivity gaps in `packages/server/tests/session.test.js` that the Sprint 39 T2 audit documented as out-of-scope-for-that-lane false-negatives. `PATTERNS.error` extended to include uppercase `ERROR:`, Node errno colon-prefix shapes (`ENOENT:`, `EACCES:`, `ECONNREFUSED:`); `PATTERNS.errorLineStart` extended to include mixed-case `Fatal` and the `npm ERR!` shape (special-cased outside the alternation because `!` is not a word character so `\b` after `npm ERR!` doesn't match). NEW `PATTERNS.pythonServer.serverError` matches `"GET /foo HTTP/1.1" 503 -` log lines; wired into `_detectErrors` as a python-server-typed fallback when the prose analyzers miss. `packages/server/tests/session.test.js`: 32/35 → **35/35**. Sprint 39 T2 fixtures (`tests/rcfile-noise.test.js`, `tests/analyzer-error-fixtures.test.js`): all still pass — the broadening doesn't reintroduce false positives because every new branch requires structured shape (colon-prefix, errno-token, HTTP-status), not bare keyword presence.
+- **T4 — Sprint 39 postmortem + WS message contract docs.** NEW `docs/POSTMORTEM-sprint-39.md` (~6 KB) covering: TL;DR, sprint-by-sprint timeline (Sprint 6 ship → Sprint 21 + 33 + 34 partial fixes → Sprint 38 timeline-lock → Sprint 39 smoking gun), root cause analysis (the actual bug + why the fallback path looked like it worked + why prior fixes missed + why Sprint 39 succeeded), 5 lessons learned, Sprint 40 changes recap, deferred items. NEW `docs/WS-MESSAGE-CONTRACT.md` (~4 KB) — source-of-truth for the 6 WS message types with emit sites (file:line), recipients, frame shape, client handler responsibility, sprint origin. Includes the "adding a new message type" checklist and the "shapes the contract test does NOT cover" caveat.
+
+### Out of scope (deferred from Sprint 40)
+- **T3 — `/api/flashback/diag` dashboard surface.** Joshua asleep; UI work needs browser verification per CLAUDE.md ("if you can't test the UI, say so explicitly rather than claiming success"). Deferred to Sprint 41.
+- **Server-side `onStatusChange` per-session meta push** (defense-in-depth alongside the client handler) — Sprint 41 candidate.
+- **LLM-classification backfill for the ~876 chopin-nashville "other/uncertain" rows** — Sprint 41+ candidate.
+- **Sprint 38 follow-up: graph-inference SQL rewrite (LATERAL + HNSW)** — task #19, deferred.
+- **Out-of-repo:** `~/.claude/hooks/memory-session-end.js` PROJECT_MAP forward-fix is Joshua's morning checklist item, not orchestrator territory.
+
+### Test status
+- TermDeck top-level `tests/`: **394 tests, 391 pass, 0 fail, 3 skipped** (was 391/388/0/3 at Sprint 39 close, +3 net new from T1's three contract tests). Zero new failures.
+- TermDeck `packages/server/tests/`: **35/35 pass** (was 32/35; T2 closed all 3 case-sensitivity gaps).
+- All Sprint 39 fixture corpora still pass: `tests/rcfile-noise.test.js` 8/8, `tests/analyzer-error-fixtures.test.js` 4/4. T2's broadening is purely additive.
+
+### Substrate state
+- Sprint 40 made zero database writes. `petvetbid` row counts unchanged from Sprint 39 close. `chopin-nashville=947` remains.
+- Server NOT restarted — Sprint 40 changes are server + client + tests + docs only; the running TermDeck server keeps Sprint 38-baseline runtime. Sprint 39's pending restart still pending Joshua's morning action.
+
 ## [0.10.1] - 2026-04-27
 
 ### Fixed — Phase D: Flashback Resurrection 2.0 (Sprint 39, diagnostic-first)

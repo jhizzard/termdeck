@@ -1259,6 +1259,17 @@
             case 'status_broadcast':
               updateGlobalStats(msg.sessions);
               break;
+            case 'config_changed':
+              // Sprint 40 T1: parity with the main panel WS handler. The
+              // server broadcasts config_changed to ALL ws clients, including
+              // reconnected sessions; previously the reconnect path silently
+              // dropped these. Idempotent — safe to re-receive.
+              if (msg.config) {
+                state.config = { ...state.config, ...msg.config };
+                if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+                if (typeof updateRagIndicator === 'function') updateRagIndicator();
+              }
+              break;
           }
         } catch (err) { console.error('[client] reconnect ws message failed:', err); }
       };
