@@ -28,10 +28,12 @@ const {
   rowToFullMemory,
   snippet,
   fetchProjectGraph,
+  fetchAllGraph,
   fetchNeighborhood,
   fetchStats,
   UUID_RE,
   PROJECT_RE,
+  MAX_NODES_GLOBAL,
 } = require('../packages/server/src/graph-routes');
 
 const UUID_A = '11111111-2222-3333-4444-555555555555';
@@ -485,4 +487,128 @@ test('GET /api/graph/stats returns enabled=false when pool absent', async () => 
   const r = await request(app, 'GET', '/api/graph/stats');
   assert.equal(r.status, 200);
   assert.equal(r.body.enabled, false);
+});
+
+// -------- Sprint 41 T3 — fetchAllGraph + GET /api/graph/all --------------
+
+test('MAX_NODES_GLOBAL is exported and equals 2000 (Sprint 41 T3 contract)', () => {
+  assert.equal(MAX_NODES_GLOBAL, 2000);
+});
+
+test('fetchAllGraph returns truncated:false when total <= MAX_NODES_GLOBAL', async () => {
+  const { pool } = makeStubPool([
+    {
+      match: (sql) => sql.includes('SELECT COUNT(*)::int AS c') && sql.includes('memory_items'),
+      rows: [{ c: 12 }],
+    },
+    {
+      match: (sql) => sql.includes('WITH all_nodes AS') && sql.includes('FROM all_nodes n'),
+      rows: [
+        { id: UUID_A, content: 'a', source_type: 'fact', category: null, project: 'termdeck', created_at: new Date().toISOString(), updated_at: null, is_active: true, archived: false, superseded_by: null, degree: 1 },
+        { id: UUID_B, content: 'b', source_type: 'fact', category: null, project: 'pvb', created_at: new Date().toISOString(), updated_at: null, is_active: true, archived: false, superseded_by: null, degree: 1 },
+      ],
+    },
+    {
+      match: (sql) => sql.includes('FROM memory_relationships') && sql.includes('source_id = ANY'),
+      rows: [
+        { id: 'e1', source_id: UUID_A, target_id: UUID_B, relationship_type: 'cross_project_link', created_at: new Date().toISOString(), _row: { weight: 0.6 } },
+      ],
+    },
+  ]);
+
+  const out = await fetchAllGraph(pool);
+  assert.equal(out.totalAvailable, 12);
+  assert.equal(out.truncated, false);
+  assert.equal(out.nodes.length, 2);
+  assert.equal(out.edges.length, 1);
+  assert.equal(out.edges[0].kind, 'cross_project_link');
+  assert.equal(out.edges[0].weight, 0.6);
+});
+
+test('fetchAllGraph returns truncated:true when total > MAX_NODES_GLOBAL', async () => {
+  const { pool } = makeStubPool([
+    {
+      match: (sql) => sql.includes('SELECT COUNT(*)::int AS c') && sql.includes('memory_items'),
+      rows: [{ c: 5891 }],
+    },
+    {
+      match: (sql) => sql.includes('WITH all_nodes AS') && sql.includes('FROM all_nodes n'),
+      rows: [
+        { id: UUID_A, content: 'most recent', source_type: 'fact', category: null, project: 'termdeck', created_at: new Date().toISOString(), updated_at: null, is_active: true, archived: false, superseded_by: null, degree: 0 },
+      ],
+    },
+    {
+      match: (sql) => sql.includes('FROM memory_relationships'),
+      rows: [],
+    },
+  ]);
+
+  const out = await fetchAllGraph(pool);
+  assert.equal(out.totalAvailable, 5891);
+  assert.equal(out.truncated, true);
+  assert.equal(out.nodes.length, 1);
+  assert.deepEqual(out.edges, []);
+});
+
+test('fetchAllGraph short-circuits when no nodes are returned', async () => {
+  const { pool, calls } = makeStubPool([
+    {
+      match: (sql) => sql.includes('SELECT COUNT(*)::int AS c'),
+      rows: [{ c: 0 }],
+    },
+    {
+      match: (sql) => sql.includes('WITH all_nodes AS'),
+      rows: [],
+    },
+  ]);
+  const out = await fetchAllGraph(pool);
+  assert.deepEqual(out, { nodes: [], edges: [], totalAvailable: 0, truncated: false });
+  // Total + nodes queries ran; the edges query MUST NOT have run on an empty
+  // node set (parity with fetchProjectGraph's short-circuit).
+  assert.equal(calls.length, 2);
+});
+
+test('GET /api/graph/all returns enabled=false when pool absent', async () => {
+  const app = buildApp(() => null);
+  const r = await request(app, 'GET', '/api/graph/all');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.enabled, false);
+  assert.deepEqual(r.body.nodes, []);
+  assert.deepEqual(r.body.edges, []);
+  assert.equal(r.body.totalAvailable, 0);
+  assert.equal(r.body.truncated, false);
+});
+
+test('GET /api/graph/all returns nodes+edges+stats with truncated/totalAvailable', async () => {
+  const { pool } = makeStubPool([
+    {
+      match: (sql) => sql.includes('SELECT COUNT(*)::int AS c'),
+      rows: [{ c: 3 }],
+    },
+    {
+      match: (sql) => sql.includes('WITH all_nodes AS'),
+      rows: [
+        { id: UUID_A, content: 'first', source_type: 'fact', category: null, project: 'termdeck', created_at: new Date().toISOString(), updated_at: null, is_active: true, archived: false, superseded_by: null, degree: 1 },
+        { id: UUID_B, content: 'second', source_type: 'fact', category: null, project: 'pvb', created_at: new Date().toISOString(), updated_at: null, is_active: true, archived: false, superseded_by: null, degree: 1 },
+      ],
+    },
+    {
+      match: (sql) => sql.includes('FROM memory_relationships') && sql.includes('source_id = ANY'),
+      rows: [
+        { id: 'e1', source_id: UUID_A, target_id: UUID_B, relationship_type: 'relates_to', created_at: new Date().toISOString(), _row: {} },
+      ],
+    },
+  ]);
+  const app = buildApp(() => pool);
+  const r = await request(app, 'GET', '/api/graph/all');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.enabled, true);
+  assert.equal(r.body.nodes.length, 2);
+  assert.equal(r.body.edges.length, 1);
+  assert.equal(r.body.totalAvailable, 3);
+  assert.equal(r.body.truncated, false);
+  assert.equal(r.body.stats.nodes, 2);
+  assert.equal(r.body.stats.edges, 1);
+  assert.equal(r.body.stats.byType.relates_to, 1);
+  assert.equal(r.body.stats.totalAvailable, 3);
 });

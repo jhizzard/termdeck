@@ -26,6 +26,10 @@ const NODE_LABEL_LEN = 200;
 const MAX_DEPTH = 4;
 const DEFAULT_DEPTH = 2;
 const MAX_NODES_PER_PROJECT = 2000;
+// Sprint 41 T3 — All Projects view cap. Same ceiling as the per-project cap;
+// the global view trades cluster-fidelity for breadth and warns the client via
+// `truncated`/`totalAvailable` when the ceiling clips the corpus.
+const MAX_NODES_GLOBAL = 2000;
 
 function snippet(content, len = NODE_LABEL_LEN) {
   if (!content) return '';
@@ -156,6 +160,60 @@ async function fetchProjectGraph(pool, projectName) {
   const edgesRes = await pool.query(edgesSql, [ids]);
   const edges = edgesRes.rows.map(rowToEdge);
   return { nodes, edges };
+}
+
+async function fetchAllGraph(pool) {
+  // Sprint 41 T3 — backs the "All projects" picker option in /graph.html.
+  // Returns the most-recent MAX_NODES_GLOBAL active+non-archived memories plus
+  // every edge whose endpoints both land in the result set. `totalAvailable`
+  // and `truncated` let the client surface a toast when the corpus overflows
+  // the cap.
+  const totalSql = `
+    SELECT COUNT(*)::int AS c
+      FROM memory_items
+     WHERE is_active = TRUE AND archived = FALSE
+  `;
+  const totalRes = await pool.query(totalSql);
+  const totalAvailable = Number(totalRes.rows[0]?.c || 0);
+
+  const nodesSql = `
+    WITH all_nodes AS (
+      SELECT ${NODE_COLUMNS_SQL}
+        FROM memory_items
+       WHERE is_active = TRUE AND archived = FALSE
+       ORDER BY created_at DESC
+       LIMIT ${MAX_NODES_GLOBAL}
+    )
+    SELECT
+      n.*,
+      COALESCE((
+        SELECT COUNT(*)::int
+          FROM memory_relationships r
+         WHERE r.source_id = n.id OR r.target_id = n.id
+      ), 0) AS degree
+      FROM all_nodes n
+  `;
+  const nodesRes = await pool.query(nodesSql);
+  const nodes = nodesRes.rows.map(rowToNode);
+  if (nodes.length === 0) {
+    return { nodes: [], edges: [], totalAvailable, truncated: false };
+  }
+  const ids = nodes.map((n) => n.id);
+
+  const edgesSql = `
+    SELECT ${EDGE_COLUMNS_BASE_SQL}, ${EDGE_COLUMNS_T2_SQL}
+      FROM memory_relationships
+     WHERE source_id = ANY($1::uuid[])
+       AND target_id = ANY($1::uuid[])
+  `;
+  const edgesRes = await pool.query(edgesSql, [ids]);
+  const edges = edgesRes.rows.map(rowToEdge);
+  return {
+    nodes,
+    edges,
+    totalAvailable,
+    truncated: totalAvailable > MAX_NODES_GLOBAL,
+  };
 }
 
 async function fetchNeighborhood(pool, rootId, depth) {
@@ -467,6 +525,46 @@ function createGraphRoutes({ app, getPool }) {
     }
   });
 
+  // Sprint 41 T3 — All Projects view. Sibling of /api/graph/project/:name with
+  // no project filter; cap is MAX_NODES_GLOBAL and the response carries
+  // `truncated`/`totalAvailable` so the client can surface a "showing N of M"
+  // toast when the corpus overflows.
+  app.get('/api/graph/all', async (req, res) => {
+    const pool = getPool();
+    if (!pool) {
+      return res.json(disabledPayload({
+        nodes: [],
+        edges: [],
+        totalAvailable: 0,
+        truncated: false,
+      }));
+    }
+    try {
+      const { nodes, edges, totalAvailable, truncated } = await fetchAllGraph(pool);
+      const byType = {};
+      for (const e of edges) {
+        byType[e.kind] = (byType[e.kind] || 0) + 1;
+      }
+      res.json({
+        enabled: true,
+        stats: {
+          nodes: nodes.length,
+          edges: edges.length,
+          byType,
+          truncated,
+          totalAvailable,
+        },
+        nodes,
+        edges,
+        totalAvailable,
+        truncated,
+      });
+    } catch (err) {
+      console.warn('[graph] /api/graph/all failed:', err.message);
+      res.status(500).json({ error: 'graph all query failed', detail: err.message });
+    }
+  });
+
   app.get('/api/graph/memory/:id', async (req, res) => {
     const id = req.params.id;
     if (!UUID_RE.test(id)) {
@@ -540,6 +638,7 @@ module.exports = {
   createGraphRoutes,
   // Exported for tests + reuse:
   fetchProjectGraph,
+  fetchAllGraph,
   fetchNeighborhood,
   fetchStats,
   fetchInferenceStats,
@@ -550,6 +649,7 @@ module.exports = {
   UUID_RE,
   PROJECT_RE,
   MAX_NODES_PER_PROJECT,
+  MAX_NODES_GLOBAL,
   MAX_DEPTH,
   DEFAULT_DEPTH,
 };

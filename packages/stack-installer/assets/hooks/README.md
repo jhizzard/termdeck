@@ -68,23 +68,53 @@ your own:
    has dropped it.
 2. Find the `PROJECT_MAP` array near the top of the file.
 3. Add one entry per project; each entry is `{ pattern, project }`
-   where `pattern` is a regex matched against `cwd`:
+   where `pattern` is a regex matched against `cwd`.
+
+### Order matters: most-specific-first
+
+`detectProject(cwd)` returns the **first** matching entry. If a deep
+project lives under a broader parent dir, the deep pattern must come
+first or the parent will swallow it. This bug bit the TermDeck team in
+Sprint 41 — every cwd under a `ChopinNashville/` parent was getting
+tagged `chopin-nashville` because the parent-dir pattern came before
+each sub-project's specific pattern.
+
+Example showing the right ordering:
 
 ```js
 const PROJECT_MAP = [
-  { pattern: /\/PVB\//i,           project: 'pvb' },
-  { pattern: /\/my-startup\//i,    project: 'my-startup' },
-  { pattern: /chopin-nashville/i,  project: 'chopin-nashville' },
+  // Specific code projects under a common parent — these MUST appear
+  // before the parent-dir catch-all below.
+  { pattern: /\/MyOrg\/SideProjects\/widget-app/i,  project: 'widget-app' },
+  { pattern: /\/MyOrg\/SideProjects\/scheduler/i,   project: 'scheduler' },
+  { pattern: /\/MyOrg\/2026\/festival\/podium/i,    project: 'podium' },
+  { pattern: /\/MyOrg\/2026\/festival/i,            project: 'festival' },
+
+  // Other top-level projects.
+  { pattern: /\/PVB\//i,                            project: 'pvb' },
+
+  // Catch-all for the parent dir — only matches when no specific
+  // project above matched first.
+  { pattern: /\/MyOrg(\/|$)/i,                      project: 'myorg-ops' },
 ];
 ```
 
-First match wins. Iteration order is array order, so put more specific
-patterns first. Anything that doesn't match falls through to
-`'global'`.
+For a worked example of a real production taxonomy (with explicit
+priority ordering, alias documentation, and a structural-invariant
+test), see [`docs/PROJECT-TAXONOMY.md`](https://github.com/jhizzard/termdeck/blob/main/docs/PROJECT-TAXONOMY.md)
+in the TermDeck repo.
 
-The map is local-only — it's never sent to any service. Editing it
-takes effect on the next Claude Code session close (no restart
-needed).
+### Other rules
+
+- The map is local-only — it's never sent to any service. Editing it
+  takes effect on the next Claude Code session close (no restart
+  needed).
+- Anything that doesn't match falls through to `'global'`.
+- Adopt the module-export contract (`module.exports = { detectProject, PROJECT_MAP }`)
+  if you want to write a unit test that exercises your taxonomy. The
+  bundled hook already does this; if you copy-paste a custom hook,
+  preserve the `if (require.main === module)` guard around the stdin
+  reader so `require()` doesn't hang.
 
 ## Coexistence with Joshua's `rag-system` hook
 

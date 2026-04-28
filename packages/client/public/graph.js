@@ -186,6 +186,51 @@
     window.history.replaceState(null, '', url);
   }
 
+  // -------- Stateful UI reset (Sprint 41 T3) ------------------------------
+
+  // Clear the SVG render and tear down the running simulation. Called at the
+  // start of every fetchGraph so a re-fetch from a different mode/project
+  // can't paint over a stale render.
+  function clearGraphSvg() {
+    if (state.sim) {
+      state.sim.stop();
+      state.sim = null;
+    }
+    const r = root();
+    if (r) {
+      while (r.firstChild) r.removeChild(r.firstChild);
+    }
+    state.nodeSel = null;
+    state.edgeSel = null;
+    state.labelSel = null;
+  }
+
+  // Ephemeral toast in the top-right of the graph stage. Used to surface
+  // truncation warnings on the All Projects view. Auto-dismisses; calling
+  // again before dismissal replaces the message and resets the timer.
+  function showToast(msg, durationMs = 6000) {
+    const stageEl = stage();
+    if (!stageEl) return;
+    let el = document.getElementById('graphToast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'graphToast';
+      el.className = 'graph-toast';
+      stageEl.appendChild(el);
+    }
+    el.textContent = msg;
+    el.hidden = false;
+    // Force a reflow so the .show transition fires when toggling rapid-fire.
+    void el.offsetWidth;
+    el.classList.add('show');
+    if (showToast._timer) clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => {
+      el.classList.remove('show');
+      // Hide after the transition completes so it can't catch clicks.
+      setTimeout(() => { el.hidden = true; }, 220);
+    }, durationMs);
+  }
+
   // -------- API ------------------------------------------------------------
 
   async function api(path) {
@@ -208,14 +253,32 @@
   }
 
   async function fetchGraph() {
+    // Sprint 41 T3 — reset all stateful UI before the new fetch starts so a
+    // re-fetch from a different mode/project starts from a clean slate. Fixes
+    // the three-way race where "Loading graph…" + "No memories yet" + a stale
+    // node render all paint over each other after a mode/project switch.
+    hideEmpty();
+    clearGraphSvg();
+    state.nodes = [];
+    state.edges = [];
     setLoading('Loading graph…');
     try {
       let data;
-      if (state.mode === 'memory') {
+      if (state.mode === 'project' && state.project === '__all__') {
+        data = await api('/api/graph/all');
+        if (data.enabled === false) return showDisabled(data);
+        state.nodes = data.nodes || [];
+        state.edges = data.edges || [];
+        if (data.truncated) {
+          showToast(
+            `Showing ${state.nodes.length} most-recent of ${data.totalAvailable} memories — narrow by project to see specific clusters.`,
+          );
+        }
+      } else if (state.mode === 'memory') {
         data = await api(`/api/graph/memory/${encodeURIComponent(state.memoryId)}?depth=${state.depth}`);
         if (data.enabled === false) return showDisabled(data);
-        state.nodes = data.nodes;
-        state.edges = data.edges;
+        state.nodes = data.nodes || [];
+        state.edges = data.edges || [];
         // Use the root memory's project as the view's "current project" for
         // the legend / drawer / fallback color when nodes span projects.
         if (data.root && data.root.project) state.project = data.root.project;
@@ -224,8 +287,8 @@
         state.project = name;
         data = await api(`/api/graph/project/${encodeURIComponent(name)}`);
         if (data.enabled === false) return showDisabled(data);
-        state.nodes = data.nodes;
-        state.edges = data.edges;
+        state.nodes = data.nodes || [];
+        state.edges = data.edges || [];
       }
       writeUrlState();
       hideLoading();
@@ -238,6 +301,9 @@
       renderGraph();
       updateStats();
     } catch (err) {
+      // Even on error, drop the empty-state overlay so the failure message
+      // shows alone instead of stacking on top of "No memories yet".
+      hideEmpty();
       setLoading(`Failed: ${err.message}`);
     }
   }
@@ -256,14 +322,30 @@
   }
   function showEmpty() {
     $('graphEmpty').hidden = false;
-    if (state.mode === 'project') {
-      $('graphEmptyTitle').textContent = `No memories in "${state.project}"`;
+    const allBtn = $('graphEmptyAllProjects');
+    if (state.mode === 'project' && state.project === '__all__') {
+      $('graphEmptyTitle').textContent = 'No memories yet';
+      $('graphEmptyBody').innerHTML =
+        'No <code>memory_items</code> rows in the database. Run a Claude Code session and the session-end hook will populate Mnestra; edges will be inferred on the next nightly cron.';
+      if (allBtn) allBtn.hidden = true;
+    } else if (state.mode === 'project') {
+      $('graphEmptyTitle').textContent = `No memories tagged "${state.project}"`;
+      $('graphEmptyBody').innerHTML =
+        'Your <code>memory_items</code> may be mis-tagged under a parent directory. ' +
+        'Try the All Projects view, or check the actual distribution with ' +
+        '<code>SELECT project, count(*) FROM memory_items GROUP BY project</code>.';
+      if (allBtn) allBtn.hidden = false;
     } else {
       $('graphEmptyTitle').textContent = 'No neighbors yet';
+      $('graphEmptyBody').textContent =
+        'This memory has no edges in memory_relationships. The next graph-inference cron run will infer them if any are warranted.';
+      if (allBtn) allBtn.hidden = true;
     }
   }
   function hideEmpty() {
     $('graphEmpty').hidden = true;
+    const allBtn = $('graphEmptyAllProjects');
+    if (allBtn) allBtn.hidden = true;
   }
   function showDisabled(data) {
     hideLoading();
@@ -610,28 +692,31 @@
     readUrlState();
     await loadConfig();
 
-    // Project picker
+    // Project picker. The "All projects" option is always present so the user
+    // can recover from mis-tagged data (Sprint 41 T3); per-project options are
+    // appended after it from /api/config.
     const sel = $('graphProject');
     sel.innerHTML = '';
-    if (state.projects.length === 0) {
+    sel.disabled = false;
+    const allOpt = document.createElement('option');
+    allOpt.value = '__all__';
+    allOpt.textContent = 'All projects';
+    sel.appendChild(allOpt);
+    for (const p of state.projects) {
       const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '— add a project first —';
+      opt.value = p;
+      opt.textContent = p;
       sel.appendChild(opt);
-      sel.disabled = true;
-    } else {
-      for (const p of state.projects) {
-        const opt = document.createElement('option');
-        opt.value = p;
-        opt.textContent = p;
-        sel.appendChild(opt);
-      }
-      // Pick state.project, or first project from config.
-      if (!state.project && state.mode !== 'memory') {
-        state.project = state.projects[0];
-      }
-      if (state.project) sel.value = state.project;
     }
+    // Pick state.project, or fall back to the first configured project, or to
+    // __all__ when nothing is configured. Memory mode inherits its project
+    // from the root node and skips this resolution.
+    if (state.mode !== 'memory') {
+      if (!state.project) {
+        state.project = state.projects.length > 0 ? state.projects[0] : '__all__';
+      }
+    }
+    if (state.project) sel.value = state.project;
 
     sel.addEventListener('change', () => {
       state.mode = 'project';
@@ -639,6 +724,17 @@
       state.memoryId = null;
       fetchGraph();
     });
+
+    const emptyAllBtn = $('graphEmptyAllProjects');
+    if (emptyAllBtn) {
+      emptyAllBtn.addEventListener('click', () => {
+        state.mode = 'project';
+        state.project = '__all__';
+        state.memoryId = null;
+        sel.value = '__all__';
+        fetchGraph();
+      });
+    }
 
     $('graphSearch').addEventListener('input', (e) => applySearch(e.target.value));
     $('graphReheat').addEventListener('click', () => {

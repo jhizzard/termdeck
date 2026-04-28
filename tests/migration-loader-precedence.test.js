@@ -56,14 +56,15 @@ test('bundled migration directory contains all expected files including 008', ()
     '008_legacy_rag_tables.sql',
     '009_memory_relationship_metadata.sql',
     '010_memory_recall_graph.sql',
-    '011_project_tag_backfill.sql'
+    '011_project_tag_backfill.sql',
+    '012_project_tag_re_taxonomy.sql'
   ]);
 });
 
-test('listMnestraMigrations() returns 11 files in lexical order', () => {
+test('listMnestraMigrations() returns 12 files in lexical order', () => {
   const m = loadMigrations();
   const list = m.listMnestraMigrations();
-  assert.equal(list.length, 11, 'expected 11 mnestra migrations from Sprint 39+');
+  assert.equal(list.length, 12, 'expected 12 mnestra migrations from Sprint 41+');
   const basenames = list.map((p) => path.basename(p));
   // Lexical order is what the SQL runner relies on — pin it.
   assert.deepEqual(basenames, [
@@ -77,7 +78,8 @@ test('listMnestraMigrations() returns 11 files in lexical order', () => {
     '008_legacy_rag_tables.sql',
     '009_memory_relationship_metadata.sql',
     '010_memory_recall_graph.sql',
-    '011_project_tag_backfill.sql'
+    '011_project_tag_backfill.sql',
+    '012_project_tag_re_taxonomy.sql'
   ]);
 });
 
@@ -140,9 +142,9 @@ test('listMnestraMigrations() prefers bundled even when a stale @jhizzard/mnestr
       fakeReachable = true;
     } catch (_e) { /* fake not reachable; the tryNodeModules path won't resolve either */ }
 
-    assert.equal(list.length, 11, fakeReachable
-      ? 'bundled (11) must win over a stale node_modules @jhizzard/mnestra (6)'
-      : 'bundled fallback must still return 11 even when no @jhizzard/mnestra is reachable');
+    assert.equal(list.length, 12, fakeReachable
+      ? 'bundled (12) must win over a stale node_modules @jhizzard/mnestra (6)'
+      : 'bundled fallback must still return 12 even when no @jhizzard/mnestra is reachable');
     // And the resolved paths must be the bundled ones, not the fake's.
     for (const p of list) {
       assert.ok(
