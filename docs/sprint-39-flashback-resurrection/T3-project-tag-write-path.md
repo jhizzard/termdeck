@@ -1,11 +1,12 @@
 # Sprint 39 — T3: Project-tag write-path verification
 
-**Lane goal:** Audit and verify the project-tag flow end-to-end. Answer the open question raised by `tests/flashback-e2e.test.js:526`: "proactive_memory frame.memories is empty even though 5 termdeck-tagged memories match the probe — the bridge is filtering on a different project tag than the session was created with." Document every write path that lands a memory in either `memory_items` (queried by Flashback) or the legacy `mnestra_*` tables, and every read path that filters on a project tag. Find the mismatch.
+**Lane goal:** Audit and verify the project-tag flow end-to-end. Answer the open question raised by `tests/flashback-e2e.test.js:526`. Find the write-path bug AND ship the backfill that re-tags the historical pollution at sprint close. The chopin-nashville tag is currently **96% polluted** — of 1,139 rows tagged `chopin-nashville`, only 49 are legitimately chopin-nashville content; the other 1,090 are TermDeck/Mnestra/Rumen/podium/PVB/dor content that fell through the PROJECT_MAP iteration in Joshua's session-end hook. Sprint 33 fixed the hook forward-only without backfilling; the historical pollution is still in production memory_items today. T3 ships the backfill.
 
 **Target deliverable:**
-1. A documented map of every project-tag write path (where a memory's `project` field gets stamped) and every read path (where a query filters on `project`).
-2. If a mismatch exists between `session.meta.project` and `bridge.queryMnestra`'s project filter: a one-line fix + regression test that pins it.
-3. If no mismatch exists: a FINDING that rules this hypothesis out, redirecting investigation to T2's rcfile-noise hypothesis as the likely root cause.
+1. **Write-path audit:** documented map of every project-tag write path (where a memory's `project` field gets stamped) and every read path (where a query filters on `project`).
+2. **Forward-fix:** if a mismatch exists between `session.meta.project` and `bridge.queryMnestra`'s project filter, a one-line fix + regression test.
+3. **Backfill SQL:** NEW migration `011_project_tag_backfill.sql` that re-tags historical mis-tagged rows. **DO NOT execute live in lane** — write the SQL with `RAISE NOTICE` count probes, transaction-bracketed, idempotent; orchestrator applies at sprint close after reviewing affected counts.
+4. **Backfill heuristic:** content-keyword-based mapping with conservative rules (only re-tag when a keyword strongly indicates a project; leave 'other/uncertain' rows under their current tag). Document the heuristic in the migration header.
 
 ## Why this lane exists
 
@@ -95,12 +96,93 @@ console.log('[mnestra-bridge] queryMnestra calling RPC with project=', options.p
 - **T2 (rcfile audit)** is your alternate hypothesis. Both could be true. Document T3's findings even if you only partially close the question — T1's diag should make the actual production-flow rejection point visible.
 - **T4 (production-flow e2e)** depends on T3's fix landing. The new test asserts memories ARE returned in the proactive_memory frame; if T3's fix is the real fix, T4's test passes.
 
+## Backfill heuristic — current pollution baseline
+
+Probed 2026-04-27 ~20:00 ET against `petvetbid`:
+
+```
+chopin-nashville-tagged rows (1,139 total):
+  701  other/uncertain               — leave alone (no clear keyword signal)
+  272  termdeck/mnestra              — re-tag to 'termdeck' (or split mnestra)
+   60  rumen                         — re-tag to 'rumen'
+   49  chopin-nashville (legitimate) — KEEP under chopin-nashville
+   48  podium                        — re-tag to 'podium'
+    7  pvb                           — re-tag to 'pvb'
+    2  dor/openclaw                  — re-tag to 'dor'
+```
+
+**Rule of thumb:** a row gets re-tagged only if its `content` matches a keyword pattern that's specific to one project. The "other/uncertain" 701 rows stay under chopin-nashville (no signal) — that's deliberately conservative. Joshua can run a deeper LLM-classification backfill in a future sprint if the 701 leftovers prove problematic for graph-aware recall.
+
+**Migration shape (`011_project_tag_backfill.sql`):**
+
+```sql
+-- Sprint 39 T3 — chopin-nashville tag backfill.
+-- 1,090 of 1,139 chopin-nashville rows are mis-tagged due to PROJECT_MAP
+-- iteration order in ~/.claude/hooks/memory-session-end.js (fixed forward in
+-- Sprint 35 / 36, but historical rows never got re-tagged).
+-- Idempotent: WHERE clauses ensure re-running the migration is a no-op.
+
+BEGIN;
+
+-- Audit before
+DO $$
+DECLARE
+  before_count int;
+BEGIN
+  SELECT count(*) INTO before_count FROM memory_items WHERE project = 'chopin-nashville';
+  RAISE NOTICE 'chopin-nashville rows before backfill: %', before_count;
+END $$;
+
+-- Re-tag termdeck/mnestra content (~272 rows)
+UPDATE memory_items SET project = 'termdeck'
+ WHERE project = 'chopin-nashville'
+   AND (content ILIKE '%termdeck%' OR content ILIKE '%mnestra%' OR content ILIKE '%4+1 sprint%');
+
+-- Re-tag rumen content (~60 rows)
+UPDATE memory_items SET project = 'rumen'
+ WHERE project = 'chopin-nashville' AND content ILIKE '%rumen%';
+
+-- Re-tag podium content (~48 rows)
+UPDATE memory_items SET project = 'podium'
+ WHERE project = 'chopin-nashville' AND content ILIKE '%podium%';
+
+-- Re-tag PVB content (~7 rows)
+UPDATE memory_items SET project = 'pvb'
+ WHERE project = 'chopin-nashville'
+   AND (content ILIKE '%PVB%' OR content ILIKE '%pet%vet%bid%' OR content ILIKE '%petvetbid%');
+
+-- Re-tag dor content (~2 rows)
+UPDATE memory_items SET project = 'dor'
+ WHERE project = 'chopin-nashville'
+   AND (content ILIKE '%dor%' OR content ILIKE '%openclaw%');
+
+-- Audit after
+DO $$
+DECLARE
+  after_count int;
+BEGIN
+  SELECT count(*) INTO after_count FROM memory_items WHERE project = 'chopin-nashville';
+  RAISE NOTICE 'chopin-nashville rows after backfill: %', after_count;
+END $$;
+
+COMMIT;
+```
+
+T3 ships this migration in the lane. Orchestrator applies at sprint close after reviewing the RAISE NOTICE counts vs the expected ~49 legitimate-only baseline.
+
+**Out-of-scope safety nets:**
+
+- Lane MUST NOT execute the migration live. Lane writes SQL only.
+- Lane MUST NOT trust content-keyword heuristics blindly — spot-check 5–10 random rows from each re-tag bucket via `SELECT id, content FROM memory_items WHERE project='chopin-nashville' AND content ILIKE '%termdeck%' LIMIT 10` and document any false positives in the FINDING.
+- The 701 "other/uncertain" rows stay under chopin-nashville. A future sprint can run an LLM-classification pass on them if needed.
+
 ## Out of scope
 
 - Don't add the diag instrumentation — T1 owns it.
 - Don't tighten the PATTERNS.error regex — T2 owns it.
 - Don't write the production-flow e2e test — T4 owns it.
-- Don't backfill mis-tagged historical rows in memory_items — that's a data-cleanup pass, separate sprint.
+- LLM-classification backfill of the 701 "other/uncertain" rows — Sprint 40+ candidate.
+- Writes from `mnestra_*` legacy tables (different schema, different write path) — separate cleanup pass.
 - Don't bump the version, edit CHANGELOG, or commit. Orchestrator handles those at close.
 
 ## Sprint contract
