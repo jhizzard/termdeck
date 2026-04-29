@@ -78,8 +78,54 @@ test('Edge Function refresh policy guards on null weight or 7-day staleness', ()
 
 test('Edge Function writes weight = 1 - cosine_distance (similarity, not distance)', () => {
   const src = fs.readFileSync(EDGE_FN_PATH, 'utf8');
-  // The candidate-pair query computes similarity from the cosine-distance op.
-  assert.match(src, /1\s*-\s*\(\s*m1\.embedding\s*<=>\s*m2\.embedding\s*\)/);
+  // The candidate-pair query computes similarity from the cosine-distance
+  // op. Sprint 42 T1 rewrote the join target alias from `m2` to `nbr` (the
+  // LATERAL output), so allow either side of the swap.
+  assert.match(
+    src,
+    /1\s*-\s*\(\s*m1\.embedding\s*<=>\s*(?:m2|nbr)\.embedding\s*\)/,
+  );
+});
+
+// ---- Sprint 42 T1: LATERAL + HNSW structural invariants ------------------
+
+test('Edge Function uses CROSS JOIN LATERAL for HNSW-accelerated top-K (Sprint 42)', () => {
+  const src = fs.readFileSync(EDGE_FN_PATH, 'utf8');
+  // The pre-Sprint-42 naive `JOIN m2 ON m1.id < m2.id AND (... <=> ...) <= cutoff`
+  // shape times out at the 150s Edge Function wall-clock on >5K rows because
+  // HNSW can't accelerate a join-clause cosine constraint. The fix is a
+  // CROSS JOIN LATERAL feeding a per-row top-K subquery — HNSW serves that.
+  assert.match(src, /CROSS\s+JOIN\s+LATERAL/i);
+});
+
+test('Edge Function lateral subquery uses ORDER BY <=> ... LIMIT for HNSW', () => {
+  const src = fs.readFileSync(EDGE_FN_PATH, 'utf8');
+  // The inner LATERAL must `ORDER BY m2.embedding <=> m1.embedding LIMIT K`
+  // — that exact shape is what engages the HNSW index. Without the ORDER BY
+  // <=> + LIMIT pair, the planner falls back to seq-scan + post-filter, the
+  // very pattern Sprint 42 was rewriting away from.
+  assert.match(
+    src,
+    /ORDER\s+BY\s+m2\.embedding\s*<=>\s*m1\.embedding\s+LIMIT/i,
+  );
+});
+
+test('Edge Function canonicalizes pair orientation via LEAST/GREATEST + DISTINCT ON', () => {
+  const src = fs.readFileSync(EDGE_FN_PATH, 'utf8');
+  // Each pair (A, B) may be emitted twice from the LATERAL (once seeded by
+  // A, once by B). LEAST/GREATEST canonicalizes to one orientation and
+  // DISTINCT ON dedupes — preserving the pre-Sprint-42 unique
+  // (source_id, target_id) invariant feeding ON CONFLICT.
+  assert.match(src, /DISTINCT\s+ON\s*\(\s*LEAST\s*\(\s*m1\.id\s*,\s*nbr\.id\s*\)/i);
+  assert.match(src, /GREATEST\s*\(\s*m1\.id\s*,\s*nbr\.id\s*\)/i);
+});
+
+test('Edge Function reads GRAPH_INFERENCE_PER_ROW_K with default 8', () => {
+  const src = fs.readFileSync(EDGE_FN_PATH, 'utf8');
+  // Sprint 42 T1 added the per-row K env knob. 8 is the default; 12 if
+  // recall drops at threshold 0.85.
+  assert.match(src, /GRAPH_INFERENCE_PER_ROW_K/);
+  assert.match(src, /parseIntEnv\(['"]GRAPH_INFERENCE_PER_ROW_K['"],\s*8\)/);
 });
 
 test('Edge Function uses inferred_by = cron-YYYY-MM-DD tag format', () => {

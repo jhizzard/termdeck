@@ -298,6 +298,54 @@ function addProject({ name, path: projectPath, defaultTheme, defaultCommand }) {
   return parsed.projects;
 }
 
+// Remove a project from ~/.termdeck/config.yaml and return the updated projects
+// map. Mirrors addProject for the inverse operation. Throws ENOENT-shaped
+// errors with `code` set so callers can map cleanly to HTTP status. Files on
+// disk at the project's `path` are NEVER touched — this only edits the YAML
+// entry. The user retains all source code.
+function removeProject(name, configPath = CONFIG_PATH) {
+  if (!name || !/^[A-Za-z0-9_.-]+$/.test(name)) {
+    const err = new Error('Project name must be non-empty and contain only letters, digits, . _ or -');
+    err.code = 'BAD_NAME';
+    throw err;
+  }
+
+  const yaml = require('yaml');
+  let parsed = {};
+  if (fs.existsSync(configPath)) {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    try {
+      parsed = yaml.parse(raw) || {};
+    } catch (err) {
+      throw new Error(`config.yaml is not valid YAML — cannot safely rewrite: ${err.message}`);
+    }
+  }
+
+  if (!parsed.projects || typeof parsed.projects !== 'object' || !parsed.projects[name]) {
+    const err = new Error(`Project "${name}" not found in config.yaml`);
+    err.code = 'NOT_FOUND';
+    throw err;
+  }
+
+  delete parsed.projects[name];
+
+  if (fs.existsSync(configPath)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const bak = `${configPath}.${ts}.bak`;
+    try {
+      fs.copyFileSync(configPath, bak);
+    } catch (err) {
+      console.warn('[config] Could not write backup before removing project:', err.message);
+    }
+  }
+
+  const out = yaml.stringify(parsed);
+  fs.writeFileSync(configPath, out, 'utf-8');
+  console.log(`[config] Removed project "${name}" (files on disk untouched)`);
+
+  return parsed.projects;
+}
+
 // Apply a structural patch to ~/.termdeck/config.yaml. Sprint 36 introduces
 // this for the dashboard RAG toggle (PATCH /api/config) but the helper is
 // generic — pass a deep partial of the config tree, every leaf in `patch` that
@@ -394,6 +442,7 @@ function updateConfig(patch, configPath = CONFIG_PATH) {
 module.exports = {
   loadConfig,
   addProject,
+  removeProject,
   updateConfig,
   // exported for tests / introspection
   _parseDotenv: parseDotenv,

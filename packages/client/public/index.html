@@ -135,6 +135,7 @@
       <option value="">no project</option>
     </select>
     <button class="prompt-add-project" id="btnAddProject" title="Add a new project">+</button>
+    <button class="prompt-remove-project" id="btnRemoveProject" title="Remove a project (files on disk are untouched)">−</button>
     <button class="prompt-preview-project" id="btnPreviewProject" title="Preview orchestration scaffolding for the selected project" disabled>preview</button>
     <button class="prompt-launch" id="promptLaunch">launch</button>
   </div>
@@ -165,6 +166,29 @@
       <div class="apm-actions">
         <button class="apm-cancel" id="apmCancel">cancel</button>
         <button class="apm-save" id="apmSave">add project</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remove-project modal (Sprint 42 T4). Hidden by default. -->
+  <div class="remove-project-modal" id="removeProjectModal" role="dialog" aria-modal="true" aria-labelledby="rpmTitle">
+    <div class="remove-project-backdrop"></div>
+    <div class="remove-project-card">
+      <h3 id="rpmTitle">Remove a project</h3>
+      <p class="rpm-help">
+        This unregisters the project from <code>~/.termdeck/config.yaml</code>.
+        <strong>Files on disk are untouched</strong> — your source code, git history,
+        and everything at the project's path stay exactly where they are.
+      </p>
+      <label>
+        <span>Project to remove</span>
+        <select id="rpmSelect"><option value="">— pick a project —</option></select>
+      </label>
+      <div class="rpm-warning" id="rpmWarning" hidden></div>
+      <div class="rpm-status" id="rpmStatus"></div>
+      <div class="rpm-actions">
+        <button class="rpm-cancel" id="rpmCancel">cancel</button>
+        <button class="rpm-confirm" id="rpmConfirm" disabled>remove project</button>
       </div>
     </div>
   </div>

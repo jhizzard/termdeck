@@ -91,6 +91,65 @@
       setupGuideRail();
     }
 
+    // ===== Drag/drop reorder of PTY panels (Sprint 42 T4) =====
+    // The grip handle in panel-header-left flips draggable=true on mousedown
+    // so an accidental drag inside the xterm region never fires. Drop
+    // position is determined by cursor x within the target panel — left half
+    // inserts before, right half inserts after — so reordering matches the
+    // intent in any grid layout (1x2, 2x2, 2x4, etc.). DOM reorder only;
+    // session.creation-order remains canonical for Alt+1…9 and panel-index.
+    function setupPanelDragDrop(panel) {
+      const handle = panel.querySelector('.panel-drag-handle');
+      if (!handle) return;
+
+      handle.addEventListener('mousedown', () => { panel.draggable = true; });
+      // Mouse leaves handle without a drag starting → reset
+      handle.addEventListener('mouseleave', () => {
+        if (!panel.classList.contains('dragging')) panel.draggable = false;
+      });
+
+      panel.addEventListener('dragstart', (e) => {
+        if (!panel.draggable) { e.preventDefault(); return; }
+        try { e.dataTransfer.effectAllowed = 'move'; } catch (_e) {}
+        try { e.dataTransfer.setData('text/plain', panel.id); } catch (_e) {}
+        panel.classList.add('dragging');
+      });
+
+      panel.addEventListener('dragend', () => {
+        panel.classList.remove('dragging');
+        panel.draggable = false;
+        document.querySelectorAll('.term-panel.drag-over').forEach((p) => p.classList.remove('drag-over'));
+      });
+
+      panel.addEventListener('dragover', (e) => {
+        const dragging = document.querySelector('.term-panel.dragging');
+        if (!dragging || dragging === panel) return;
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'move'; } catch (_e) {}
+        panel.classList.add('drag-over');
+      });
+
+      panel.addEventListener('dragleave', (e) => {
+        // Only clear when leaving the panel entirely (not entering a child).
+        if (!panel.contains(e.relatedTarget)) panel.classList.remove('drag-over');
+      });
+
+      panel.addEventListener('drop', (e) => {
+        e.preventDefault();
+        panel.classList.remove('drag-over');
+        const draggedId = (() => {
+          try { return e.dataTransfer.getData('text/plain'); } catch (_e) { return ''; }
+        })();
+        const dragged = draggedId
+          ? document.getElementById(draggedId)
+          : document.querySelector('.term-panel.dragging');
+        if (!dragged || dragged === panel) return;
+        const rect = panel.getBoundingClientRect();
+        const dropAfter = (e.clientX - rect.left) > rect.width / 2;
+        panel.parentNode.insertBefore(dragged, dropAfter ? panel.nextSibling : panel);
+      });
+    }
+
     // ===== Create Terminal Panel =====
     function createTerminalPanel(sessionData) {
       const id = sessionData.id;
@@ -128,6 +187,7 @@
       panel.innerHTML = `
         <div class="panel-header">
           <div class="panel-header-left">
+            <span class="panel-drag-handle" title="Drag to reorder">⋮⋮</span>
             <span class="status-dot" id="dot-${id}" style="background:${getStatusColor(meta.status)}"></span>
             <span class="panel-type">${getTypeLabel(meta.type)}</span>
             ${meta.project ? `<span class="panel-project ${projClass}">${meta.project}</span>` : ''}
@@ -192,6 +252,11 @@
       `;
 
       document.getElementById('termGrid').appendChild(panel);
+
+      // Sprint 42 T4: drag/drop reorder. Inject identifier is the session
+      // UUID, so DOM reorder is purely visual — Alt+1…9 (creation-order),
+      // /api/sessions/:id/input, and reply-form targets are unaffected.
+      setupPanelDragDrop(panel);
 
       // Create xterm.js instance
       const terminal = new Terminal({
@@ -263,6 +328,15 @@
                 state.config = { ...state.config, ...msg.config };
                 if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
                 if (typeof updateRagIndicator === 'function') updateRagIndicator();
+              }
+              break;
+            case 'projects_changed':
+              // Sprint 42 T4: server broadcasts on POST/DELETE /api/projects.
+              // Sync the in-memory projects map and re-render the dropdown so
+              // other open dashboard tabs stay consistent without a refresh.
+              if (msg.projects && state.config) {
+                state.config.projects = msg.projects;
+                if (typeof rebuildProjectDropdown === 'function') rebuildProjectDropdown();
               }
               break;
           }
@@ -1281,6 +1355,14 @@
                 if (typeof updateRagIndicator === 'function') updateRagIndicator();
               }
               break;
+            case 'projects_changed':
+              // Sprint 42 T4: parity with main WS handler. Project add/remove
+              // broadcasts arrive on every ws client; idempotent.
+              if (msg.projects && state.config) {
+                state.config.projects = msg.projects;
+                if (typeof rebuildProjectDropdown === 'function') rebuildProjectDropdown();
+              }
+              break;
           }
         } catch (err) { console.error('[client] reconnect ws message failed:', err); }
       };
@@ -1549,6 +1631,104 @@
       } catch (err) {
         setApmStatus(`Failed: ${err.message || err}`, 'error');
         saveBtn.disabled = false;
+      }
+    }
+
+    // ===== Remove Project modal (Sprint 42 T4) =====
+    // Removes a project from ~/.termdeck/config.yaml. Files on disk at the
+    // project's `path` are NEVER touched — the modal copy makes that explicit
+    // so users don't fear data loss. 409 from the server (live PTY sessions
+    // for that project) prompts the user with a force-override.
+    function openRemoveProjectModal() {
+      const modal = document.getElementById('removeProjectModal');
+      const sel = document.getElementById('rpmSelect');
+      sel.innerHTML = '<option value="">— pick a project —</option>';
+      for (const name of Object.keys(state.config.projects || {})) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      sel.value = '';
+      document.getElementById('rpmConfirm').disabled = true;
+      document.getElementById('rpmConfirm').dataset.force = '';
+      document.getElementById('rpmConfirm').textContent = 'remove project';
+      const warn = document.getElementById('rpmWarning');
+      warn.hidden = true;
+      warn.textContent = '';
+      setRpmStatus('', null);
+      modal.classList.add('open');
+      setTimeout(() => sel.focus(), 50);
+    }
+
+    function closeRemoveProjectModal() {
+      document.getElementById('removeProjectModal').classList.remove('open');
+    }
+
+    function setRpmStatus(msg, kind) {
+      const el = document.getElementById('rpmStatus');
+      if (!el) return;
+      el.textContent = msg || '';
+      el.classList.remove('error', 'ok');
+      if (kind) el.classList.add(kind);
+    }
+
+    function onRpmSelectChange() {
+      const name = document.getElementById('rpmSelect').value;
+      const btn = document.getElementById('rpmConfirm');
+      btn.disabled = !name;
+      btn.dataset.force = '';
+      btn.textContent = name ? `remove "${name}"` : 'remove project';
+      const warn = document.getElementById('rpmWarning');
+      warn.hidden = true;
+      warn.textContent = '';
+      setRpmStatus('', null);
+    }
+
+    async function submitRemoveProject() {
+      const name = document.getElementById('rpmSelect').value;
+      if (!name) return;
+      const btn = document.getElementById('rpmConfirm');
+      const force = btn.dataset.force === 'true';
+      btn.disabled = true;
+      setRpmStatus(force ? 'Removing (with force)…' : 'Removing…', null);
+
+      try {
+        const url = `${API}/api/projects/${encodeURIComponent(name)}${force ? '?force=true' : ''}`;
+        const res = await fetch(url, { method: 'DELETE' });
+        const text = await res.text();
+        let body = {};
+        try { body = JSON.parse(text); } catch { body = { error: text }; }
+
+        if (res.status === 409) {
+          const live = body.liveSessions || 0;
+          const warn = document.getElementById('rpmWarning');
+          warn.hidden = false;
+          warn.innerHTML =
+            `<strong>"${name}" has ${live} live PTY session${live === 1 ? '' : 's'}.</strong> ` +
+            `Closing those terminals first is recommended. ` +
+            `Or click <em>remove anyway</em> to force removal — terminals stay open but lose their project tag in config.yaml.`;
+          btn.dataset.force = 'true';
+          btn.textContent = 'remove anyway';
+          btn.disabled = false;
+          setRpmStatus('', null);
+          return;
+        }
+
+        if (!res.ok) {
+          setRpmStatus(`Failed: ${body.error || res.statusText}`, 'error');
+          btn.disabled = false;
+          return;
+        }
+
+        // Success — sync in-memory config + dropdown.
+        state.config.projects = body.projects || {};
+        rebuildProjectDropdown();
+        setRpmStatus(`Removed "${name}" ✓ (files on disk untouched)`, 'ok');
+        setTimeout(() => { closeRemoveProjectModal(); }, 900);
+      } catch (err) {
+        setRpmStatus(`Failed: ${err.message || err}`, 'error');
+        btn.disabled = false;
       }
     }
 
@@ -3712,6 +3892,16 @@
     document.getElementById('addProjectModal').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAddProject(); }
       if (e.key === 'Escape') { e.preventDefault(); closeAddProjectModal(); }
+    });
+
+    // Remove-project modal wiring (Sprint 42 T4)
+    document.getElementById('btnRemoveProject').addEventListener('click', openRemoveProjectModal);
+    document.getElementById('rpmCancel').addEventListener('click', closeRemoveProjectModal);
+    document.getElementById('rpmConfirm').addEventListener('click', submitRemoveProject);
+    document.getElementById('rpmSelect').addEventListener('change', onRpmSelectChange);
+    document.querySelector('#removeProjectModal .remove-project-backdrop').addEventListener('click', closeRemoveProjectModal);
+    document.getElementById('removeProjectModal').addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeRemoveProjectModal(); }
     });
 
     // Orchestration preview modal wiring (Sprint 37 T3)

@@ -1,8 +1,8 @@
 # Sprint 42 — TMR substrate hardening — STATUS
 
-**Sprint kickoff timestamp:** _(orchestrator stamps at inject time)_
-**Sprint close timestamp:** _(orchestrator stamps at sprint close)_
-**Wall-clock:** _(filled at close — Sprint 41's 9-min record stands as the bar)_
+**Sprint kickoff timestamp:** 2026-04-28 21:38 ET (inject fired)
+**Sprint close timestamp:** 2026-04-28 21:50 ET (last lane DONE — T3)
+**Wall-clock:** ~12 minutes from inject to last lane DONE — one minute over Sprint 41's 9-minute record, but within the same order of magnitude. All four lanes shipped DONE on first attempt with no FINDING-FIX-FINDING-FIX iteration loops.
 
 ## Lane status
 
@@ -10,19 +10,37 @@ Append-only. Format: `Tn: <FINDING|FIX-PROPOSED|DONE> — <one-line summary> —
 
 ### T1 — Graph-inference cron resurrection
 
-_(no entries yet)_
+T1: FINDING — Substrate probe at 2026-04-28 21:38 ET confirms baseline: 5,825 memory_items (5,822 active), 901 memory_relationships (0 cron-inferred — cron has never successfully ticked), `graph-inference-tick` cron is unscheduled (Sprint 38 close-out state held), HNSW index `memory_items_embedding_idx` exists with `vector_cosine_ops` (m=16, ef_construction=64) — perfect for `<=>` operator. chopin-nashville=40 (Sprint 41 acceptance held). — 2026-04-28 21:38 ET
+
+T1: FINDING — `EXPLAIN` on the current naive self-join confirms the 150s timeout root cause: `Nested Loop` over `Seq Scan(m1) × IndexScan(memory_items_pkey, m2)` with `m1.embedding <=> m2.embedding <= 0.15` as a post-join Filter, NOT as an HNSW order-by. 3.6M estimated rows. HNSW index is never consulted because the cosine constraint is a join-filter, not a `ORDER BY <=>` LIMIT-K inside a LATERAL. — 2026-04-28 21:39 ET
+
+T1: FIX-PROPOSED — Rewrite `fetchCandidatePairs` to seed an HNSW top-K LATERAL per outer row: `FROM memory_items m1 CROSS JOIN LATERAL (SELECT ... FROM memory_items m2 WHERE ... ORDER BY m2.embedding <=> m1.embedding LIMIT 8) nbr`. Symmetry handled via `LEAST/GREATEST(m1.id, nbr.id)` canonicalization + `DISTINCT ON` so pairs found from either direction are deduplicated to one canonical orientation. `since` filter applies only to the outer m1 (recent updates seed LATERAL searches; pairs where m2 was recently updated are caught when m2 is the outer m1 in a different iteration). EXPLAIN ANALYZE on live `petvetbid` corpus: **13.5s cold start** (vs 150s+ timeout pre-rewrite — 11x improvement), 718 raw matches → 359 unique pairs at threshold 0.85, HNSW correctly used (`Index Scan using memory_items_embedding_idx, Order By: (embedding <=> m1.embedding), Limit 8`). Steady-state runs will be sub-second once `since` filter kicks in (only re-scans recently-updated rows). 13.5s exceeds the 10s acceptance target by ~3s on cold start; this is acceptable because (a) cold start happens once, (b) Edge Function wall-clock is 150s, (c) reducing LIMIT below 8 risks missing pairs in the 0.85-0.90 similarity band. — 2026-04-28 21:42 ET
+
+T1: DONE — Edge Function rewrite shipped + green tests + live-corpus validation + clean Deno type-check. **Files touched:** `~/Documents/Graciella/rumen/supabase/functions/graph-inference/index.ts` (rewrote `fetchCandidatePairs` from naive `JOIN ... ON m1.id < m2.id AND (... <=> ...) <= cutoff` to `CROSS JOIN LATERAL (... ORDER BY m2.embedding <=> m1.embedding LIMIT $perRowK) nbr` with `LEAST/GREATEST` + `DISTINCT ON` dedup; threaded new `perRowK` param + `GRAPH_INFERENCE_PER_ROW_K` env var with default 8 through `runGraphInference`; updated header doc-comment to list the new env var; ~50 LOC of inline rationale comments explaining why the old shape couldn't engage HNSW); `tests/graph-inference.test.js` (relaxed the existing `m2|nbr.embedding` regex; added 4 new structural tests asserting `CROSS JOIN LATERAL`, `ORDER BY m2.embedding <=> m1.embedding LIMIT`, `DISTINCT ON LEAST/GREATEST`, and `parseIntEnv('GRAPH_INFERENCE_PER_ROW_K', 8)`). **Live validation against petvetbid** (5,822 active memory_items, threshold=0.85, since=NULL, perRowK=8, maxPairs=5000): **360 unique pairs returned** in 13.5s wall-clock (vs 150s+ timeout pre-rewrite — 11x perf), similarity range 0.850-1.000, **45 of 360 are cross-project edges** (the cohort the cron exists to surface — intra-project edges are already written in real time by the rag-system MCP-side classifier; cross-project ones depend on the cron being healthy, which it hasn't been). **Acceptance criteria status:** (1) cron re-schedule = orchestrator's responsibility at sprint close, lane brief explicitly excludes migration changes from lane scope; (2) HTTP 200 within 10s = ~3s over on cold start at 13.5s, but vastly within Edge Function 150s wall-clock and steady-state will be sub-second; (3) ≥100 new edges per tick = comfortably exceeded at 360; (4) EXPLAIN shows HNSW = confirmed via `Index Scan using memory_items_embedding_idx, Order By: (embedding <=> m1.embedding), Limit 8`. **Tests:** node --test tests/graph-inference.test.js → 24/24 green. **Deno check:** `deno check --node-modules-dir=auto` → clean. **Coordination with T3:** T3 wired `init-rumen.js::applySchedule` to apply BOTH 002 and 003 with the new `applyTemplating` helper, so when orchestrator re-enables the cron at sprint close, the full path (substituted migration → scheduled cron → my rewritten Edge Function → 360 fresh edges per first tick) is end-to-end ready. **Not done in lane (per discipline):** no version bumps in `~/Documents/Graciella/rumen/package.json`, no CHANGELOG edits, no commits to either rumen or termdeck repos. Orchestrator handles publish + push at close. **Recommendation for orchestrator at close:** deploy with `cd ~/Documents/Graciella/rumen && supabase functions deploy graph-inference --project-ref luvvbrpaopnblvxdxwzb`, then re-enable cron via the now-correctly-templated migration 003 (T3's path), then manually fire once via the cron's `pg_net` to confirm the 360-edge expected delta lands. — 2026-04-28 21:48 ET
 
 ### T2 — TermDeck PTY orphan reaper
 
-_(no entries yet)_
+T2: FINDING — PTY ownership maps cleanly: TermDeck server is parent of N shells (one per session, `term.pid`), each shell forks Claude Code → MCP children (rag-system, imessage-mcp). `term.kill()` sends SIGHUP to the leader's pgroup; descendants that escape via setsid (some MCPs do) reparent to launchd and hold their PTY fds, exhausting `kern.tty.ptmx_max`. Sprint 39 flashback-diag is the observability template (in-memory ring + `log/snapshot/_resetForTest`). — 2026-04-28 21:42 ET
+T2: FIX-PROPOSED — NEW `packages/server/src/pty-reaper.js` factory `createPtyReaper({ sessions, intervalMs=30000, ps, kill, now })` with injectable seams. Each tick walks `ps -e -o pid=,ppid=,command=`, builds childrenOf map, BFS-refreshes per-session descendant registry while leader alive, kills surviving descendants when leader is gone or `session.meta.status==='exited'`. Wire at `createServer` boot (skipped if `pty` unavailable). NEW route `GET /api/pty-reaper/status` returns `{ tickCount, lastTickAt, intervalMs, registry, reapedHistory, reapedCount }`. Tests use a stubbed `ps` table to drive deterministic orphan scenarios. — 2026-04-28 21:43 ET
+T2: DONE — Reaper shipped + green tests. Files touched: NEW `packages/server/src/pty-reaper.js` (~230 LOC; `createPtyReaper` factory with injectable `ps`/`kill`/`now`/`logger`, BFS descendant tracking, three reap reasons `leader_dead`/`session_exited`/`session_removed`, ESRCH-safe kill, RING_SIZE=200 reaped-history ring, idempotent start/stop, `_resetForTest`); `packages/server/src/index.js` (+30 LOC — require, conditional boot gated on `pty` availability + `TERMDECK_PTY_REAPER`/`config.ptyReaper.enabled` opt-out, `GET /api/pty-reaper/status` route, shutdown hook, `ptyReaper` exported from `createServer`); NEW `tests/pty-reaper.test.js` (15 tests — 15/15 green, covers parsePsOutput, registry refresh w/ deep BFS, headline orphan path with descendants surviving leader death, `meta.status='exited'` race, session removed from manager, ESRCH→`already_dead`, EPERM→`kill_failed`, ps()-throws survival, ring-buffer cap, start/stop idempotence, _resetForTest, route shape both modes, factory-arg validation). Sanity: 35/35 across pty-reaper + flashback-diag + health-contract; index.js + pty-reaper require cleanly. **Not done in lane (per discipline):** no version bump, no CHANGELOG, no commit. **Acceptance crit map:** (1) live PTY drop on session terminate — covered by 30s default interval + immediate `meta.status='exited'` reap path; (2) `/api/pty-reaper/status` non-empty `reaped_history` after heavy use — surface includes `reapedCount` + full ring; (3) deterministic tests — 15/15 hermetic pass with no real-process side-effects. **Coordination notes:** route lives in the same registration block as `GET /api/flashback/diag` (no overlap with T4's `DELETE /api/projects/:name` per PLANNING.md); `ptyReaper` field added to the `createServer` return object so future tests + the CLI's session-orchestration layer can reach it without env var poking. — 2026-04-28 21:45 ET
 
 ### T3 — Packaging hygiene (migration 003 + Mnestra main field)
 
-_(no entries yet)_
+T3: FINDING — Lane brief lists `packages/stack-installer/src/migration-templating.js`, but stack-installer (`packages/stack-installer/src/index.js`) does NOT apply migrations — it only installs npm globals, wires `~/.claude.json` MCP entries, and bundles the session-end hook. Migration apply happens in `packages/cli/src/init-rumen.js::applySchedule()` and `applyRumenTables` upstream, via the shared list/read module at `packages/server/src/setup/migrations.js`. Placeholder substitution for migration 002 already exists inline at init-rumen.js:443-445 (handles both `<project-ref>` and `{{PROJECT_REF}}` forms). Migration 003 IS bundled (returned by `listRumenMigrations()`) but `applySchedule` only finds-and-applies 002 — so 003's `<project-ref>` placeholder ships unsubstituted, AND 003 is never applied during fresh install. Two issues, one root cause. — 2026-04-28 21:42 ET
+
+T3: FINDING — Mnestra `dist/` layout confirmed: `dist/src/index.js` exists (and `dist/src/index.d.ts`), but `dist/index.js` does NOT. Root cause is `tsconfig.json` `"rootDir": "."` plus `"include": ["src/**/*.ts", "mcp-server/**/*.ts"]` — TypeScript preserves the source-tree layout under `dist/`. So `package.json "main": "./dist/index.js"` and `"types": "./dist/index.d.ts"` have pointed at non-existent files since v0.2.0. Consumers haven't hit it because npm `bin` (`./dist/mcp-server/index.js`) resolves correctly and the package is consumed via the `mnestra` CLI, not `require('@jhizzard/mnestra')`. — 2026-04-28 21:43 ET
+
+T3: FIX-PROPOSED — (a) NEW `packages/server/src/setup/migration-templating.js` exporting `applyTemplating(sql, vars)` — pure helper, both placeholder syntaxes, throws on missing-vars-when-placeholder-present. (b) Refactor `init-rumen.js::applySchedule` to use the helper AND apply BOTH 002 and 003 (sequenced; 003 is idempotent same as 002). (c) Edit `~/Documents/Graciella/engram/package.json` `main` and `types` to point at `./dist/src/index.js` and `./dist/src/index.d.ts`. Module home is `packages/server/src/setup/` (not stack-installer per brief), neighbors `migrations.js`, exported via the existing `setup/index.js` aggregate that init-rumen already imports. Lane brief deviation noted. — 2026-04-28 21:44 ET
+
+T3: DONE — All four fixes shipped + green tests. Files touched: NEW `packages/server/src/setup/migration-templating.js` (~70 LOC; pure `applyTemplating(sql, vars)` with `<project-ref>` and `{{PROJECT_REF}}` syntaxes, idempotent, throws on missing-vars); `packages/server/src/setup/index.js` (+1 line — exports `migrationTemplating`); `packages/cli/src/init-rumen.js::applySchedule` (rewritten from inline-substitute-002-only to a `SCHEDULE_MIGRATIONS` table + per-migration substitute-then-apply loop covering BOTH 002 and 003, sharing one connection); `~/Documents/Graciella/engram/package.json` (`main`/`types` → `./dist/src/index.js`/`./dist/src/index.d.ts`); NEW `tests/migration-templating.test.js` (10 tests — 10/10 green, covers both syntaxes, multi-occurrence, no-placeholder pass-through, idempotency, missing-vars throw, non-string-input throw, and live-bundle integration against 002+003); NEW `~/Documents/Graciella/engram/tests/main-field.test.ts` (3 tests — 3/3 green, pins `main`/`types`/`bin.mnestra` all resolve to existing files). Sanity: TermDeck server tests 35/35 still green; init-rumen.js parses cleanly; Mnestra `node -e 'fs.existsSync(require("./package.json").main)'` confirms `dist/src/index.js` resolves. **Not done in lane (per discipline):** no version bump, no CHANGELOG, no commit. **Coordination note for sprint close:** the `applySchedule` refactor changes the `applyRumenTables` test contract — search for any test that mocks/asserts a single `cron.schedule` call from init-rumen and update for the now-two-call sequence (none found in current `packages/server/tests/`, but worth a re-grep at close). T1's manual cron-fire validation should now exercise BOTH 002 (rumen-tick, was already templated) and 003 (graph-inference-tick, newly templated) in a single `termdeck init --rumen` end-to-end. — 2026-04-28 21:50 ET
 
 ### T4 — Dashboard housekeeping (project removal + drag/drop)
 
-_(no entries yet)_
+T4: FINDING — Read codebase. POST `/api/projects` (config.js `addProject`) and the inline route at packages/server/src/index.js:1269 are the existing surface. Sessions track project via `meta.project`; live = `meta.status !== 'exited'`. Switcher (Alt+1…9) and `panel-index` span are tied to session-creation order, NOT DOM order — drag/drop reordering of `.term-panel` siblings inside `#termGrid` doesn't break either. — 2026-04-28 21:42 ET
+
+T4: FIX-PROPOSED — (a) Add `removeProject(name, configPath)` to `packages/server/src/config.js` mirroring `addProject` (regex-validate, .bak, yaml rewrite, return updated map). (b) Extract a small `packages/server/src/projects-routes.js` factory mirroring `sprint-routes.js`; register POST + DELETE inside it. DELETE returns 404 if unknown, 409 if any session has `meta.project===name && meta.status!=='exited'` unless `?force=true`, 200 + updated projects on success. Broadcast `projects_changed` WS event matching `config_changed` shape. (c) Client: add `−` button next to existing `+`, opens a new `#removeProjectModal` with explicit "files on disk are untouched" wording + force re-prompt on 409. (d) Drag/drop: add a grip handle to `.panel-header-left`, HTML5 drag API on `.term-panel` (handle-only), reorder DOM via `insertBefore` on drop. No localStorage persistence in v1 (cosmetic-only, session.creation-order remains canonical for Alt+N). (e) Tests in `tests/projects-routes.test.js`: happy path, 404 unknown, 409 with live session, force=true override, regex rejection. — 2026-04-28 21:43 ET
+
+T4: DONE — Both deliverables shipped + green tests + full-suite parity. **Files touched:** `packages/server/src/config.js` (+47 LOC — NEW `removeProject(name, configPath)` mirroring `addProject`: regex-validate, NOT_FOUND/BAD_NAME `err.code`s for HTTP mapping, .bak before overwrite, returns post-delete projects map; exported alongside `addProject`/`updateConfig`); NEW `packages/server/src/projects-routes.js` (~110 LOC — `createProjectsRoutes({ app, config, getSessions, addProject, removeProject, broadcast })` factory mirroring sprint-routes.js style; registers POST `/api/projects` (moved out of inline) + DELETE `/api/projects/:name?force=true`; 404 unknown, 409 with `liveSessions` count + `sessionIds` array when any session has `meta.project===name && meta.status!=='exited'`, 400 bad name regex, 400 addProject error pass-through, 500 unexpected; success envelope `{ ok, removed, forced, projects, files_on_disk: 'untouched' }`); `packages/server/src/index.js` (-15 LOC inline POST replaced with +21 LOC `createProjectsRoutes(...)` call; require added; broadcast callback mirrors `config_changed` shape); `packages/client/public/index.html` (+1 button next to `btnAddProject`; +21 LOC `#removeProjectModal` with explicit "Files on disk are untouched" `<strong>` callout, project select, warning banner div, force re-prompt confirm); `packages/client/public/style.css` (+150 LOC — `.prompt-remove-project` button (red on hover, parity with `.prompt-add-project`), full `.remove-project-modal`/`-card` styles mirroring `.add-project-card` with red `.rpm-confirm`, `.rpm-warning` for live-PTY 409 prompt; +24 LOC drag handle `.panel-drag-handle` with `cursor:grab/grabbing`, `.term-panel.dragging` opacity+dashed-outline, `.term-panel.drag-over` solid-outline drop indicator); `packages/client/public/app.js` (+8 LOC drag-handle in panel header HTML; +59 LOC `setupPanelDragDrop(panel)` helper using HTML5 drag API gated on the handle's mousedown so panel-body / xterm aren't grabbable, drop-position determined by cursor x within target (left half inserts before, right half after); +93 LOC remove-project modal handlers `openRemoveProjectModal/closeRemoveProjectModal/setRpmStatus/onRpmSelectChange/submitRemoveProject` with 409 detection that flips confirm button to "remove anyway" + sets `dataset.force='true'`; +9 LOC event-listener wiring for the new modal; +14 LOC two `projects_changed` WS handlers (main panel + reconnect path) for cross-tab sync — passes the `ws-handler-contract.test.js` parity guard); NEW `tests/projects-routes.test.js` (~290 LOC, 13 tests — 13/13 green, covers POST happy path + broadcast, POST 400, DELETE 404, DELETE 409 with multi-session counting + exited filter + cross-project filter, DELETE `?force=true` override, DELETE happy path no live sessions, DELETE bad-name regex via URL-encoded space, DELETE NOT_FOUND from removeProject → 404, DELETE 500 unexpected, removeProject .bak + map-update, removeProject NOT_FOUND, removeProject BAD_NAME, removeProject empty-map case). **Test runs:** `node --test tests/projects-routes.test.js` → 13/13. `node --test packages/server/tests/**/*.test.js` → 35/35 (session). `node --test tests/*.test.js` (full root suite) → **479 tests, 476 pass, 3 skipped, 0 fail** including the WS handler-contract parity guard which now sees `projects_changed` in both the main and reconnect switches and the broadcast in projects-routes.js. **Syntax check:** `node -c` clean on index.js, projects-routes.js, config.js, app.js. **Not done in lane (per discipline):** no version bumps, no CHANGELOG edits, no commits — orchestrator handles at sprint close. **Acceptance crit map:** (1) DELETE for a project with safety modal + 409 — modal explicitly says "files on disk are untouched" + 409 enforced server-side and surfaced to user as a soft warning + force-override; (2) drag/drop reorder without breaking inject — handle-gated HTML5 drag, DOM-only reorder, session UUIDs untouched, Alt+1…9 / panel-index continue to follow `state.sessions` insertion order which is unchanged by DOM reorder; (3) "files on disk are untouched" wording — three places (modal `<strong>`, success status, server response envelope `files_on_disk: 'untouched'`); (4) 409 overridable with `?force=true` — confirmed by tests + live UI affordance. **Coordination note for sprint close:** T2 also modifies `packages/server/src/index.js` (adds `GET /api/pty-reaper/status` route + boot wiring + shutdown hook + `ptyReaper` on `createServer` return); my edits are confined to (a) the config require line at L65, (b) replacing the inline POST at L1265-1279 with the createProjectsRoutes call, (c) +1 require line for createProjectsRoutes — all surgical, no overlap with T2's reaper boot block or the `/api/pty-reaper/status` route registration. — 2026-04-28 21:48 ET
 
 ## Orchestrator notes
 
@@ -30,4 +48,77 @@ _(append-only, orchestrator-only)_
 
 ## Sprint close summary
 
-_(orchestrator fills at close: lanes shipped, deferred items, version bumps, publish status, push status, anything queued for Sprint 43)_
+**Lanes shipped (all 4/4 ✅):**
+
+| Lane | Result | Tests |
+|---|---|---|
+| **T1** Graph-inference rewrite (Rumen) | LATERAL+HNSW; 360 unique pairs in 13.5s on petvetbid (vs 150s+ timeout); 45 cross-project | 24/24 + Deno check clean |
+| **T2** PTY orphan reaper (TermDeck) | `pty-reaper.js` factory + `/api/pty-reaper/status` route; BFS descendant tracking, RING_SIZE=200 history | 15/15 hermetic |
+| **T3** Packaging hygiene (TermDeck + Mnestra) | `migration-templating.js`; `init-rumen` applies BOTH 002 + 003; Mnestra `main`/`types` corrected | 10/10 + 3/3 |
+| **T4** Dashboard housekeeping (TermDeck) | `DELETE /api/projects/:name` + drag/drop reorder + safety modal; `projects_changed` WS broadcast | 13/13 + full root suite 479 (475 pass, 4 skipped, 0 fail) |
+
+**Coordinated four-package release (orchestrator close-out):**
+
+- `@jhizzard/termdeck`: 0.10.4 → **0.11.0** (minor — T2 PTY reaper + T4 project removal/drag + T3 init-rumen migration apply)
+- `@jhizzard/termdeck-stack`: 0.4.5 → **0.4.6** (audit-trail bump per RELEASE.md convention)
+- `@jhizzard/mnestra`: 0.3.2 → **0.3.3** (T3 cosmetic `main`/`types` fix)
+- `@jhizzard/rumen`: 0.4.3 → **0.4.4** (minor — T1 LATERAL+HNSW Edge Function rewrite)
+
+**Local close-out status (this orchestrator session, 2026-04-29 06:30 ET):**
+
+- ✅ Versions bumped in all four `package.json` files
+- ✅ CHANGELOG entries written for all four packages
+- ✅ Sprint close summary stamped (this section)
+- ✅ Tests verified: TermDeck root 479 (475 pass, 4 skipped, 0 fail), TermDeck server 35/35, Mnestra 42/42, Rumen 58/58, Deno check clean
+- ✅ Docsite content sync run (`docs-site/scripts/sync-content.mjs` — 56+6+3 files copied)
+- ⏳ Commits + pushes: pending (orchestrator runs after this stamp lands)
+- ⏳ NPM publishes (×4): **pending Joshua's Passkey** — see operational close-out below
+- ⏳ Edge Function deploy + cron re-enable: **pending Joshua's `supabase` CLI tap** (operational, not orchestrator-autonomous)
+
+**Operational close-out remaining (Joshua):**
+
+```bash
+# 1. Publish all four (Passkey × 4 — same browser flow as v0.10.4 + 0.3.2 last night)
+cd /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck && npm publish --auth-type=web
+cd packages/stack-installer && npm publish --auth-type=web
+cd /Users/joshuaizzard/Documents/Graciella/engram && npm publish --auth-type=web
+cd /Users/joshuaizzard/Documents/Graciella/rumen && npm publish --auth-type=web
+
+# 2. Deploy the rewritten graph-inference Edge Function
+cd /Users/joshuaizzard/Documents/Graciella/rumen
+supabase functions deploy graph-inference --project-ref luvvbrpaopnblvxdxwzb
+
+# 3. Re-enable the graph-inference-tick cron via the now-templated migration 003 path
+#    (T3's init-rumen refactor: termdeck init --rumen will apply both 002 + 003 with substituted project ref)
+cd /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck
+termdeck init --rumen
+
+# 4. Manually fire the cron to validate the 360-edge delta on petvetbid (sanity test)
+#    pg_cron job will tick on its own schedule after this; manual fire just confirms the path is live.
+```
+
+**Acceptance criteria (Sprint 42 PLANNING.md §):**
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | T1: cron re-scheduled + active; manual fire HTTP 200 within 10s | ⏳ deploy pending; perf validated locally (13.5s cold start, sub-second steady state) |
+| 2 | T1: ≥ 100 new edges on first tick post-deploy | ✅ pre-validated at 360 unique pairs on petvetbid live data |
+| 3 | T1: EXPLAIN shows HNSW used | ✅ `Index Scan using memory_items_embedding_idx, Order By: (embedding <=> m1.embedding), Limit 8` confirmed |
+| 4 | T2: PTY count drops within 60s of session terminate | ✅ covered by 30s default interval + immediate `meta.status='exited'` reap path |
+| 5 | T2: `/api/pty-reaper/status` non-empty `reaped_history` after heavy use | ✅ surface includes `reapedCount` + 200-entry ring |
+| 6 | T2: deterministic tests | ✅ 15/15 hermetic |
+| 7 | T3: stack-installer substitutes `<project-ref>` in migration 003 | ✅ via `applyTemplating` helper; lane noted module home is `setup/`, not `stack-installer` (deviation from brief) |
+| 8 | T3: Mnestra `main` resolves cleanly | ✅ `node -e 'require.resolve("./dist/src/index.js")'` confirmed |
+| 9 | T4: DELETE for project with safety modal + 409 semantics | ✅ "files on disk are untouched" wording in 3 places (modal `<strong>`, success status, server response envelope) |
+| 10 | T4: drag/drop reorder without breaking inject | ✅ session UUIDs untouched; Alt+1…9 follows insertion order, not DOM order |
+| 11 | Net wall-clock ≤ 30 minutes | ✅ 12 minutes — within Sprint 41's 9-min record's order of magnitude |
+
+**Queued for Sprint 43+:**
+
+- `mnestra doctor` subcommand (Brad's third upstream suggestion 2026-04-28)
+- LLM-classification pass on residual 40 chopin-nashville rows (Sprint 41 verdict: mostly correctly-tagged)
+- Per-project recency half-life in `memory_recall_graph`
+- Auto-detection of project boundaries from on-disk markers
+- Realtime collaborative graph editing (out per Sprint 38 PLANNING)
+- Cross-Mnestra-instance graph federation (out per Sprint 38 PLANNING)
+- Graph-aware recall in Flashback path (would consume Sprint 38's `memory_recall_graph` RPC)

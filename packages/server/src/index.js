@@ -62,11 +62,13 @@ const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler, runPreflight } = require('./preflight');
 const { getFullHealth } = require('./health');
 const { themes, statusColors } = require('./themes');
-const { loadConfig, addProject, updateConfig } = require('./config');
+const { loadConfig, addProject, removeProject, updateConfig } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
 const { createSprintRoutes } = require('./sprint-routes');
 const { createGraphRoutes } = require('./graph-routes');
+const { createProjectsRoutes } = require('./projects-routes');
 const orchestrationPreview = require('./orchestration-preview');
+const { createPtyReaper } = require('./pty-reaper');
 
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
 // helper is decoupled from T2's templates.js / init-project.js; we resolve
@@ -166,6 +168,33 @@ function createServer(config) {
 
   // Initialize session manager
   const sessions = new SessionManager(db);
+
+  // PTY orphan reaper (Sprint 42 T2). Periodically walks the live process
+  // tree, tracks descendants of each session's shell PTY, and SIGTERMs any
+  // that survive the leader's death — closing the kern.tty.ptmx_max leak
+  // path that bit Joshua on 2026-04-28 (forkpty: Device not configured).
+  // Skipped when node-pty is unavailable (no PTYs to reap) and when the
+  // explicit kill switch is set (tests / opt-out).
+  const ptyReaperEnabled = pty
+    && process.env.TERMDECK_PTY_REAPER !== 'off'
+    && config.ptyReaper?.enabled !== false;
+  const ptyReaperIntervalMs = Number.parseInt(
+    process.env.TERMDECK_PTY_REAPER_INTERVAL_MS
+      || config.ptyReaper?.intervalMs
+      || 30000,
+    10
+  );
+  const ptyReaper = ptyReaperEnabled
+    ? createPtyReaper({ sessions, intervalMs: ptyReaperIntervalMs })
+    : null;
+  if (ptyReaper) {
+    ptyReaper.start();
+    console.log(`[pty-reaper] enabled (interval ${ptyReaperIntervalMs}ms)`);
+  } else if (!pty) {
+    console.log('[pty-reaper] disabled (node-pty unavailable)');
+  } else {
+    console.log('[pty-reaper] disabled by config');
+  }
 
   // Initialize RAG + Mnestra bridge
   const rag = new RAGIntegration(config, db);
@@ -1262,20 +1291,29 @@ function createServer(config) {
     res.json(payload);
   });
 
-  // POST /api/projects - add a new project on the fly, persist to config.yaml
-  // Body: { name, path, defaultTheme?, defaultCommand? }
-  // Updates both the on-disk config.yaml and the in-memory config so new
-  // sessions can select the project immediately without a server restart.
-  app.post('/api/projects', (req, res) => {
-    const { name, path: projectPath, defaultTheme, defaultCommand } = req.body || {};
-    try {
-      const updatedProjects = addProject({ name, path: projectPath, defaultTheme, defaultCommand });
-      config.projects = updatedProjects;
-      res.json({ ok: true, projects: updatedProjects });
-    } catch (err) {
-      console.error('[config] addProject failed:', err.message);
-      res.status(400).json({ error: err.message });
-    }
+  // POST /api/projects (add) + DELETE /api/projects/:name (remove) — Sprint 42
+  // T4 extracted both into projects-routes.js so tests can drive them without
+  // bootstrapping the full server. Sessions are passed via getSessions() so
+  // DELETE can enforce the 409 live-PTY guard. Files on disk at the project's
+  // `path` are NEVER touched by remove — only the YAML entry is rewritten.
+  createProjectsRoutes({
+    app,
+    config,
+    getSessions: () => sessions.getAll(),
+    addProject,
+    removeProject,
+    broadcast: (payload) => {
+      try {
+        const wsPayload = JSON.stringify(payload);
+        wss.clients.forEach((client) => {
+          if (client.readyState === 1) {
+            try { client.send(wsPayload); } catch (err) { console.error('[ws] projects_changed send failed:', err); }
+          }
+        });
+      } catch (err) {
+        console.error('[ws] projects_changed broadcast failed:', err);
+      }
+    },
   });
 
   // GET /api/projects/:name/orchestration-preview — Sprint 37 T3.
@@ -1402,6 +1440,20 @@ function createServer(config) {
       limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, flashbackDiag.RING_SIZE) : undefined,
     });
     res.json({ count: events.length, events });
+  });
+
+  // GET /api/pty-reaper/status — Sprint 42 T2 observability surface.
+  // Returns the live registry (per-session PTY pid + tracked descendants) and
+  // the reaped-history ring buffer so heavy-use installs can tell whether the
+  // reaper is firing and what it's killing. Read-only.
+  app.get('/api/pty-reaper/status', (req, res) => {
+    if (!ptyReaper) {
+      return res.json({
+        enabled: false,
+        reason: !pty ? 'node-pty-unavailable' : 'disabled-by-config',
+      });
+    }
+    res.json({ enabled: true, ...ptyReaper.status() });
   });
 
   // ==================== Transcript endpoints (Sprint 6 T3) ====================
@@ -1757,7 +1809,7 @@ function createServer(config) {
     res.sendFile(path.join(clientDir, 'index.html'));
   });
 
-  return { app, server, wss, sessions, rag, db, transcriptWriter };
+  return { app, server, wss, sessions, rag, db, transcriptWriter, ptyReaper };
 }
 
 // ==================== Setup-configure helpers (Sprint 23 T2) ====================
@@ -1975,7 +2027,7 @@ if (require.main === module) {
     }
   }
 
-  const { server, transcriptWriter } = createServer(config);
+  const { server, transcriptWriter, ptyReaper } = createServer(config);
 
   // Graceful shutdown — flush transcript buffer before exit
   let shutdownInProgress = false;
@@ -1983,6 +2035,11 @@ if (require.main === module) {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
     console.log(`\n[server] ${signal} received, shutting down...`);
+    if (ptyReaper) {
+      try { ptyReaper.stop(); } catch (err) {
+        console.error('[pty-reaper] stop failed:', err.message);
+      }
+    }
     if (transcriptWriter) {
       console.log('[transcript] Flushing buffer before exit...');
       try { await transcriptWriter.close(); } catch (err) {

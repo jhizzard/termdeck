@@ -34,6 +34,7 @@ const {
   dotenv,
   supabaseUrl: urlHelper,
   migrations,
+  migrationTemplating,
   pgRunner,
   preconditions
 } = require(SETUP_DIR);
@@ -428,26 +429,53 @@ async function testFunction(projectRef, secrets, dryRun) {
   return true;
 }
 
+// Sprint 42 T3: bundle of cron-schedule migrations whose `<project-ref>`
+// placeholder must be substituted at apply-time. Both are idempotent
+// (cron.unschedule + cron.schedule), so applying in sequence is safe even
+// when one was already installed. Pre-Sprint 42, only 002 was applied —
+// migration 003 (graph-inference-tick) shipped bundled but unsubstituted
+// and unscheduled, which is part of why Sprint 38 close-out left the
+// graph-inference cron disabled.
+const SCHEDULE_MIGRATIONS = [
+  { matcher: /002.*pg_cron/, label: '002_pg_cron_schedule (rumen-tick)' },
+  { matcher: /003.*graph_inference/, label: '003_graph_inference_schedule (graph-inference-tick)' }
+];
+
 async function applySchedule(projectRef, secrets, dryRun) {
-  step('Applying pg_cron schedule (every 15 minutes)...');
+  step('Applying pg_cron schedules (rumen-tick + graph-inference-tick)...');
   if (dryRun) { ok('(dry-run)'); return true; }
 
   const files = migrations.listRumenMigrations();
-  const scheduleFile = files.find((f) => /002.*pg_cron/.test(path.basename(f)));
-  if (!scheduleFile) { fail('bundled 002_pg_cron_schedule.sql is missing'); return false; }
+  const planned = [];
+  for (const { matcher, label } of SCHEDULE_MIGRATIONS) {
+    const file = files.find((f) => matcher.test(path.basename(f)));
+    if (!file) { fail(`bundled ${label} is missing`); return false; }
+    planned.push({ file, label });
+  }
 
-  const raw = migrations.readFile(scheduleFile);
-  // Substitute the project ref into the schedule body. The bundled migration
-  // ships with the placeholder `<project-ref>` per Rumen's deploy docs; we
-  // also accept `{{PROJECT_REF}}` for robustness.
-  const substituted = raw
-    .replace(/<project-ref>/g, projectRef)
-    .replace(/\{\{PROJECT_REF\}\}/g, projectRef);
+  // Substitute the project ref into each schedule body. Both bundled
+  // migrations ship with the `<project-ref>` placeholder per Rumen's
+  // deploy docs; the helper also accepts `{{PROJECT_REF}}` for robustness
+  // and refuses to ship an unsubstituted placeholder to the database.
+  const substituted = [];
+  try {
+    for (const { file, label } of planned) {
+      const raw = migrations.readFile(file);
+      substituted.push({
+        sql: migrationTemplating.applyTemplating(raw, { projectRef }),
+        label
+      });
+    }
+  } catch (err) {
+    fail(err.message);
+    return false;
+  }
 
-  // The shipped migration uses Supabase Vault (`vault.decrypted_secrets`) to
-  // pull the service-role key. If the user hasn't stored the key in Vault the
-  // cron call will fail. We leave that as a post-install step and print a
-  // reminder below.
+  // The shipped migrations use Supabase Vault (`vault.decrypted_secrets`)
+  // to pull the service-role keys (`rumen_service_role_key` for 002 and
+  // `graph_inference_service_role_key` for 003). If a key isn't stored in
+  // Vault the corresponding cron call will fail at runtime. We leave that
+  // as a post-install step and print a reminder below.
 
   let client;
   try {
@@ -457,20 +485,21 @@ async function applySchedule(projectRef, secrets, dryRun) {
     return false;
   }
   try {
-    // Run the substituted SQL directly rather than applying the original file.
-    try {
-      await pgRunner.run(client, substituted);
-      ok();
-      return true;
-    } catch (err) {
-      fail(err.message);
-      process.stderr.write(
-        '\nThe schedule SQL failed — the most common cause is that pg_cron or pg_net\n' +
-        'is not enabled in the Supabase project. Enable them in Dashboard → Database\n' +
-        '→ Extensions, then re-run `termdeck init --rumen --skip-schedule=false`.\n'
-      );
-      return false;
+    for (const { sql, label } of substituted) {
+      try {
+        await pgRunner.run(client, sql);
+      } catch (err) {
+        fail(`${label}: ${err.message}`);
+        process.stderr.write(
+          '\nThe schedule SQL failed — the most common cause is that pg_cron or pg_net\n' +
+          'is not enabled in the Supabase project. Enable them in Dashboard → Database\n' +
+          '→ Extensions, then re-run `termdeck init --rumen --skip-schedule=false`.\n'
+        );
+        return false;
+      }
     }
+    ok();
+    return true;
   } finally {
     try { await client.end(); } catch (_err) { /* ignore */ }
   }
