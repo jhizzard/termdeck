@@ -11,6 +11,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 40 candidate: analyzer broadening — `PATTERNS.error` case-sensitivity gaps documented in T2's audit (uppercase `ERROR:`, lowercase `no such file or directory` / `ENOENT:` shape, HTTP 5xx server log). False-negative gaps; orthogonal to the rcfile-noise false-positive concern Sprint 39 closed.
 - Sprint 40 candidate: LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows that 011_project_tag_backfill.sql deliberately left untouched (no clear single-project keyword signal). Conservative content-keyword backfill is shipped; opt-in semantic backfill is queued.
 
+## [0.10.4] - 2026-04-28
+
+### Fixed — Brad UX hotfix: panel focus, tour-Enter swallow, guide-rail overlap, graph empty-state CSS specificity
+
+Four small client-side patches addressing Brad Heath's 2026-04-28 panel-UX report ("New behavior of panels super confusing. Selected panel always in upper left. Hitting enter from full screen goes to matrix again. Easy to put wrong response into a chat. Did it several times.") plus a graph empty-state regression Joshua surfaced during validation.
+
+- **`focusPanel` now transfers xterm keyboard focus to the focused panel** (`packages/client/public/app.js`). Previously the function only added the `.focused` CSS class — keystrokes continued going to whichever element had DOM focus before (often the launcher input, which submits a NEW terminal on Enter, or the previously-focused panel). Now mirrors the `entry.terminal.focus()` call from `focusSessionById`. Direct cause of "Easy to put wrong response into a chat. Did it several times" — the user's perception of which panel was active diverged from where keystrokes actually landed.
+
+- **Tour Enter/Arrow swallow now respects terminal + input focus** (`packages/client/public/app.js`). The document-level keydown handler (`if (tourState.active) ...`) previously intercepted Enter/ArrowRight/ArrowLeft unconditionally to advance/exit the tour. Now bails early when `e.target` is inside a `.term-panel`, an `<input>`, a `<textarea>`, or any contentEditable element — so terminal Enter (Claude Code submit, shell command submit) and form-input Enter (launch prompt, modal Save) pass through to their actual handlers. The v0.10.0 onboarding tour ("cover v0.10.0 surface") had been re-firing on first-launch post-upgrade and eating Enter keystrokes mid-typing; this patch is the fix.
+
+- **Grid container reserves 38px right padding for the collapsed guide-rail** (`packages/client/public/style.css`). The orchestrator guide-rail is `position: fixed; right: 0; width: 32px` when collapsed (Sprint 37 Phase C); previously the grid extended underneath it, which left the rightmost panel's close (×) button unclickable beneath the guide toggle strip. Now reserves 32px (rail) + 6px (breathing) on the right of `.grid-container` so right-edge panel controls are always reachable. The expanded-guide state already paints its own backdrop+shadow over panels — that's pre-existing behavior unaffected by this padding.
+
+- **Graph empty-state CSS specificity fix — `Loading graph…` no longer paints behind `No memories yet`** (`packages/client/public/style.css`). Sprint 41 T3 fixed the JS race ordering (reset state, hide overlays, then set the right one) but the CSS rule `.graph-loading { display: flex; ... }` above the empty-state block was higher-specificity than the UA default `[hidden] { display: none }` selector. Result: when graph.js called `el.hidden = true` to hide the loading spinner, it had no visual effect — class > attribute. Empty-state then painted on top, producing Joshua's screenshot of both overlays stacked. Added explicit `.graph-loading[hidden], .graph-empty[hidden] { display: none }` rule to override class-level `display: flex`. One-line fix; no JS or HTML changes.
+
+### Notes
+
+- **Brad-side context.** Brad surfaced the first three issues this morning while validating the v0.10.x upgrade after the npm cache trap was cleared. Joshua surfaced the fourth (graph) during browser-side smoke validation of the first three. All four fixes ship together because the iteration cost on a single hotfix release is the same as one — and stack-installer audit-trail bumps are cheaper batched.
+- **No server-side changes.** All four fixes are client-only — `app.js` (two patches) and `style.css` (two patches). Server tests 35/35 still pass; node syntax-check on `app.js` clean.
+- **Stack-installer audit-trail bump** from 0.4.4 → 0.4.5 per RELEASE.md convention (validates against `@jhizzard/termdeck@0.10.4`). No installer code changes.
+
 ## [0.10.3] - 2026-04-28
 
 ### Fixed — Sprint 41: Project taxonomy redesign + chopin-nashville junk-drawer cleanup + graph empty-state UX

@@ -297,7 +297,13 @@
     /* ===== MAIN GRID ===== */
     .grid-container {
       flex: 1;
-      padding: 6px;
+      /* Right padding of 38px reserves the 32px guide-rail collapsed strip
+         (position:fixed; right:0) plus 6px breathing. Without this the
+         rightmost panel's close (×) button sits underneath the guide
+         toggle and becomes unclickable. The expanded-guide state keeps
+         its own backdrop/shadow over panels — that's pre-existing
+         behavior and not affected by this padding. */
+      padding: 6px 38px 6px 6px;
       overflow: hidden;
       display: grid;
       gap: 6px;
@@ -3438,6 +3444,15 @@
       pointer-events: none;
       padding: 24px;
       text-align: center;
+    }
+    /* Sprint 41 T3 fixed the JS race but missed the CSS specificity gotcha:
+       `.graph-loading { display: flex }` above wins over the UA default
+       `[hidden] { display: none }` (class > attribute). Result: setting
+       `el.hidden = true` from JS did nothing visually, and "Loading graph…"
+       kept rendering behind "No memories yet". Explicit override below. */
+    .graph-loading[hidden],
+    .graph-empty[hidden] {
+      display: none;
     }
     .graph-loading-spinner {
       width: 28px;

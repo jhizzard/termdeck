@@ -1228,6 +1228,17 @@
         state.focusedId = id;
       }
 
+      // Transfer xterm keyboard focus to the focused panel — without this,
+      // the CSS class is the only thing that changed and keystrokes still
+      // go to whichever element had DOM focus before (often the launcher
+      // input, which submits a NEW terminal on Enter, or the previously
+      // focused panel — leading to "easy to put wrong response into a
+      // chat" reports). Mirrors the focus transfer in focusSessionById.
+      const entry = state.sessions.get(id);
+      if (entry && entry.terminal) {
+        try { entry.terminal.focus(); } catch (err) { /* ignore */ }
+      }
+
       // Re-fit all visible terminals
       requestAnimationFrame(() => fitAll());
     }
@@ -3759,11 +3770,24 @@
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
-      // Tour has priority: Esc exits, ArrowRight/Enter advances, ArrowLeft back
+      // Tour has priority: Esc exits, ArrowRight/Enter advances, ArrowLeft back.
+      // BUT: never swallow Enter/Arrow keys when the user is typing into a
+      // terminal panel or any input/textarea — otherwise terminal Enter
+      // (Claude Code / shell submit) gets eaten by the tour and the user
+      // ends up advancing tour steps when they meant to send a message.
+      // Brad's 2026-04-28 panel-UX report: "Hitting enter from full screen
+      // goes to matrix again" matched this pathway when the v0.10.0 tour
+      // re-fired post-upgrade.
       if (tourState.active) {
-        if (e.key === 'Escape') { e.preventDefault(); endTour(); return; }
-        if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); nextTourStep(); return; }
-        if (e.key === 'ArrowLeft') { e.preventDefault(); prevTourStep(); return; }
+        const tgt = e.target;
+        const tag = tgt?.tagName || '';
+        const inEditable = tag === 'INPUT' || tag === 'TEXTAREA' || tgt?.isContentEditable;
+        const inTerminal = tgt?.closest && tgt.closest('.term-panel');
+        if (!inEditable && !inTerminal) {
+          if (e.key === 'Escape') { e.preventDefault(); endTour(); return; }
+          if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); nextTourStep(); return; }
+          if (e.key === 'ArrowLeft') { e.preventDefault(); prevTourStep(); return; }
+        }
       }
       // Ctrl+Shift+N → new terminal
       if (e.ctrlKey && e.shiftKey && e.key === 'N') {
