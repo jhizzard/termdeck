@@ -1,8 +1,9 @@
 # Sprint 42 — TMR substrate hardening + graph-inference cron resurrection
 
 **Status:** Planned. Inject when Joshua returns to TMR work after ClaimGuard-AI digression.
-**Target version:** `@jhizzard/termdeck` v0.11.0 (minor — re-enables the graph-inference cron, surfaces a real reliability fix, lifts a known kernel-PTY-exhaustion ceiling). Could land as v1.0.0 if Joshua decides the graph cron + orphan reaper are the two pieces that make the stack production-ready for outside users.
-**Companion bumps anticipated:** `@jhizzard/mnestra@0.3.2` (no API change; only if 003 templating fix moves the substituted-cron migration to the Mnestra repo too — TBD per T3's choice). `@jhizzard/termdeck-stack@0.4.5` audit-trail per convention.
+**Target version:** `@jhizzard/termdeck` v0.11.0 (minor, from current published 0.10.4 — re-enables the graph-inference cron, surfaces a real reliability fix, lifts a known kernel-PTY-exhaustion ceiling). Could land as v1.0.0 if Joshua decides the graph cron + orphan reaper are the two pieces that make the stack production-ready for outside users.
+**Companion bumps anticipated:** `@jhizzard/mnestra@0.3.3` (from current 0.3.2; no API change; only if 003 templating fix moves the substituted-cron migration to the Mnestra repo too — TBD per T3's choice). `@jhizzard/termdeck-stack@0.4.6` (from current 0.4.5; audit-trail per convention).
+**Last-published baselines (2026-04-28 evening):** `termdeck@0.10.4`, `mnestra@0.3.2`, `termdeck-stack@0.4.5`, `rumen@0.4.3`. The 0.10.4 hotfix shipped four client-side fixes (Brad UX panel-focus + tour-Enter swallow + guide-rail x-button overlap + graph empty-state CSS specificity). The 0.3.2 Mnestra ship fixed silent permission-denied via migration 014 + `remember.ts` throw on insert errors (Brad install incident).
 
 ## Why this sprint
 
@@ -81,7 +82,7 @@ If chopin-nashville count drifted upward since Sprint 41 close (was 40), Joshua'
 
 When Joshua signals "starting Sprint 42" after the ClaimGuard-AI work returns to TMR:
 
-1. **Restart TermDeck server first** (latest published v0.10.3 should already be running; if Joshua's been doing dev locally, ensure the latest source is loaded).
+1. **Restart TermDeck server first** (latest published v0.10.4 should already be running; if Joshua's been doing dev locally, ensure the latest source is loaded).
 2. **Open 4 fresh Claude Code panels in TermDeck** (any project; the lanes' boot prompts navigate themselves).
 3. **Open a 5th panel as overnight orchestrator** (paste the Sprint 42 prompt block from the bottom of this doc).
 4. Say "terminals open, inject Sprint 42" — the orchestrator session fires `/tmp/inject-sprint42-prompts.js` with the two-stage submit pattern.
@@ -100,7 +101,7 @@ You are the orchestrator for TermDeck Sprint 42 (TMR substrate hardening + graph
 7. Read the four lane briefs: T1-graph-inference-rewrite.md, T2-pty-orphan-reaper.md, T3-packaging-hygiene.md, T4-dashboard-housekeeping.md.
 8. memory_recall(project="termdeck", query="Sprint 41 close-out chopin-nashville 40 rows project taxonomy MAESTRO chopin-scheduler alias")
 
-Then begin: confirm 4 fresh sessions exist via GET /api/sessions sorted by meta.createdAt. Run the pre-sprint substrate probe (PLANNING.md § "Pre-sprint substrate findings"). If chopin-nashville count drifted >100 since Sprint 41 close, do NOT inject — flag the regression to Joshua first. Otherwise fire the Sprint 42 inject using the two-stage submit pattern. Stay in orchestrator mode until all four lanes report DONE in STATUS.md, then run close-out: apply migration changes (T3 may have stack-installer changes that need npm publish), bump versions (termdeck 0.10.3→0.11.0, mnestra 0.3.1→0.3.2 if T3 touches it, termdeck-stack 0.4.4→0.4.5), update CHANGELOG, draft session-end email, commit + give Joshua publish commands. Do NOT publish to npm; do NOT push if tests have new failures; do NOT enable any new pg_cron job without confirming the LATERAL+HNSW rewrite EXPLAIN plan first.
+Then begin: confirm 4 fresh sessions exist via GET /api/sessions sorted by meta.createdAt. Run the pre-sprint substrate probe (PLANNING.md § "Pre-sprint substrate findings"). If chopin-nashville count drifted >100 since Sprint 41 close, do NOT inject — flag the regression to Joshua first. Otherwise fire the Sprint 42 inject using the two-stage submit pattern. Stay in orchestrator mode until all four lanes report DONE in STATUS.md, then run close-out: apply migration changes (T3 may have stack-installer changes that need npm publish), bump versions (termdeck 0.10.4→0.11.0, mnestra 0.3.2→0.3.3 if T3 touches it, termdeck-stack 0.4.5→0.4.6), update CHANGELOG, draft session-end email, commit + give Joshua publish commands. Do NOT publish to npm; do NOT push if tests have new failures; do NOT enable any new pg_cron job without confirming the LATERAL+HNSW rewrite EXPLAIN plan first.
 ```
 
 ## Anticipated coordination notes
