@@ -911,10 +911,22 @@ function createServer(config) {
               return;
             }
             if (sess.ws && sess.ws.readyState === 1) {
-              const frame = JSON.stringify({ type: 'proactive_memory', hit });
+              // Sprint 43 T2: persist the fire to flashback_events BEFORE
+              // serializing the WS frame so we can include the row id. The
+              // client uses flashback_event_id to POST dismiss/click-through
+              // updates back to the audit dashboard.
+              const flashback_event_id = flashbackDiag.recordFlashback(db, {
+                sessionId: sess.id,
+                project: sess.meta.project || null,
+                error_text: question,
+                hits_count: count,
+                top_hit_id: hit.id || null,
+                top_hit_score: typeof hit.similarity === 'number' ? hit.similarity : null,
+              });
+              const frame = JSON.stringify({ type: 'proactive_memory', hit, flashback_event_id });
               try {
                 sess.ws.send(frame);
-                console.log(`[flashback] proactive_memory sent to session ${sess.id} (source_type=${hit.source_type}, project=${hit.project})`);
+                console.log(`[flashback] proactive_memory sent to session ${sess.id} (source_type=${hit.source_type}, project=${hit.project}, event_id=${flashback_event_id})`);
                 flashbackDiag.log({
                   sessionId: sess.id,
                   event: 'proactive_memory_emit',
@@ -922,6 +934,7 @@ function createServer(config) {
                   frame_size_bytes: Buffer.byteLength(frame, 'utf8'),
                   result_count_in_frame: 1,
                   outcome: 'emitted',
+                  flashback_event_id,
                 });
               } catch (err) {
                 console.error('[flashback] proactive_memory send failed:', err);
@@ -1440,6 +1453,49 @@ function createServer(config) {
       limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, flashbackDiag.RING_SIZE) : undefined,
     });
     res.json({ count: events.length, events });
+  });
+
+  // GET /api/flashback/history - Sprint 43 T2 durable audit dashboard.
+  // Returns the most-recent flashback fires from SQLite (survives restart)
+  // plus the click-through funnel aggregate. The dashboard uses one fetch
+  // for both so it can render the table and the funnel in lockstep.
+  // Optional filters: ?since=<ISO8601>, ?limit=N (default 100, max 500).
+  app.get('/api/flashback/history', (req, res) => {
+    const rawSince = req.query && req.query.since;
+    const since = (typeof rawSince === 'string' && rawSince.length) ? rawSince : undefined;
+    const rawLimit = req.query && req.query.limit;
+    const limit = rawLimit != null ? parseInt(rawLimit, 10) : undefined;
+    const events = flashbackDiag.getRecentFlashbacks(db, {
+      since,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+    });
+    const funnel = flashbackDiag.getFunnelStats(db, { since });
+    res.json({ count: events.length, events, funnel });
+  });
+
+  // POST /api/flashback/:id/dismissed - mark a flashback toast as dismissed.
+  // Called by the client when the user clicks ×, presses Escape, lets the
+  // 30s auto-timer fire, OR clicks "Not relevant" / "Dismiss" in the modal.
+  // Idempotent: subsequent calls are no-ops (first dismiss timestamp wins).
+  app.post('/api/flashback/:id/dismissed', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
+    const updated = flashbackDiag.markDismissed(db, id);
+    res.json({ ok: true, updated });
+  });
+
+  // POST /api/flashback/:id/clicked - mark a flashback toast as clicked-
+  // through (user opened the modal). Click-through is also an implicit
+  // dismiss, so this updates dismissed_at if it's still NULL. Idempotent.
+  app.post('/api/flashback/:id/clicked', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
+    const updated = flashbackDiag.markClickedThrough(db, id);
+    res.json({ ok: true, updated });
   });
 
   // GET /api/pty-reaper/status — Sprint 42 T2 observability surface.

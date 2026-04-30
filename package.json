@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Browser-based terminal multiplexer with metadata overlays, panel flashback memory recall, and AI-aware session management",
   "bin": {
     "termdeck": "./packages/cli/src/index.js"
@@ -29,7 +29,8 @@
     "server": "node packages/server/src/index.js",
     "start": "NODE_ENV=production node packages/cli/src/index.js",
     "test": "node --test packages/server/tests/**/*.test.js",
-    "install:app": "bash install.sh"
+    "install:app": "bash install.sh",
+    "sync-rumen-functions": "bash scripts/sync-rumen-functions.sh"
   },
   "dependencies": {
     "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",

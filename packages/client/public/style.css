@@ -3567,6 +3567,61 @@
       background: rgba(255, 255, 255, 0.08);
     }
 
+    /* Sprint 43 T1 — second toolbar row: hide-isolated / min-degree / window
+       / layout selectors. Mirrors .graph-filters spacing but shifts the
+       background a notch darker so the two rows are visually distinguishable
+       and the edge-type chips above feel like their own band. */
+    .graph-filters-row2 {
+      gap: 14px;
+      padding: 6px 16px;
+      background: rgba(0, 0, 0, 0.18);
+      border-bottom: 1px solid var(--tg-border);
+    }
+    .graph-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-family: var(--tg-mono);
+      color: var(--tg-text-dim);
+    }
+    .graph-control select {
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 3px 6px;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .graph-control select:focus {
+      outline: none;
+      border-color: var(--tg-accent);
+    }
+    .graph-control-toggle {
+      cursor: pointer;
+      user-select: none;
+    }
+    .graph-control-toggle input[type="checkbox"] {
+      accent-color: var(--tg-accent);
+      cursor: pointer;
+    }
+    .graph-control-stat {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+      padding: 2px 8px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+    }
+    .graph-control-stat:not(:empty) {
+      background: rgba(122, 162, 247, 0.10);
+      border-color: rgba(122, 162, 247, 0.35);
+      color: var(--tg-text);
+    }
+
     .graph-stage {
       position: relative;
       flex: 1;

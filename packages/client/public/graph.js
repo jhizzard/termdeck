@@ -76,14 +76,19 @@
 
   // -------- State ----------------------------------------------------------
 
+  const GC = (typeof window !== 'undefined' && window.GraphControls) || null;
+
   const state = {
     mode: 'project', // 'project' | 'memory'
     project: null,
     memoryId: null,
     depth: 2,
-    nodes: [],
-    edges: [],
+    nodes: [],          // raw nodes from /api/graph/* — unfiltered
+    edges: [],          // raw edges from /api/graph/* — unfiltered
+    visibleNodes: [],   // post-filter, what the simulation sees
+    visibleEdges: [],
     activeKinds: new Set(Object.keys(EDGE_COLORS)),
+    controls: GC ? GC.defaultControls() : { hideIsolated: false, minDegree: 0, window: 'all', layout: 'force' },
     selectedNodeId: null,
     hoverNodeId: null,
     searchTerm: '',
@@ -172,6 +177,7 @@
       state.mode = 'project';
       state.project = project;
     }
+    if (GC) state.controls = GC.decodeControls(qs);
   }
 
   function writeUrlState() {
@@ -182,6 +188,7 @@
     } else if (state.project) {
       qs.set('project', state.project);
     }
+    if (GC) GC.encodeControls(qs, state.controls);
     const url = qs.toString() ? `?${qs.toString()}` : window.location.pathname;
     window.history.replaceState(null, '', url);
   }
@@ -259,6 +266,8 @@
     // node render all paint over each other after a mode/project switch.
     hideEmpty();
     clearGraphSvg();
+    state.rawNodes = [];
+    state.rawEdges = [];
     state.nodes = [];
     state.edges = [];
     setLoading('Loading graph…');
@@ -267,18 +276,18 @@
       if (state.mode === 'project' && state.project === '__all__') {
         data = await api('/api/graph/all');
         if (data.enabled === false) return showDisabled(data);
-        state.nodes = data.nodes || [];
-        state.edges = data.edges || [];
+        state.rawNodes = data.nodes || [];
+        state.rawEdges = data.edges || [];
         if (data.truncated) {
           showToast(
-            `Showing ${state.nodes.length} most-recent of ${data.totalAvailable} memories — narrow by project to see specific clusters.`,
+            `Showing ${state.rawNodes.length} most-recent of ${data.totalAvailable} memories — narrow by project to see specific clusters.`,
           );
         }
       } else if (state.mode === 'memory') {
         data = await api(`/api/graph/memory/${encodeURIComponent(state.memoryId)}?depth=${state.depth}`);
         if (data.enabled === false) return showDisabled(data);
-        state.nodes = data.nodes || [];
-        state.edges = data.edges || [];
+        state.rawNodes = data.nodes || [];
+        state.rawEdges = data.edges || [];
         // Use the root memory's project as the view's "current project" for
         // the legend / drawer / fallback color when nodes span projects.
         if (data.root && data.root.project) state.project = data.root.project;
@@ -287,24 +296,51 @@
         state.project = name;
         data = await api(`/api/graph/project/${encodeURIComponent(name)}`);
         if (data.enabled === false) return showDisabled(data);
-        state.nodes = data.nodes || [];
-        state.edges = data.edges || [];
+        state.rawNodes = data.nodes || [];
+        state.rawEdges = data.edges || [];
       }
       writeUrlState();
       hideLoading();
-      if (state.nodes.length === 0) {
+      if (state.rawNodes.length === 0) {
         showEmpty();
         return;
       }
       hideEmpty();
-      renderFilters();
-      renderGraph();
-      updateStats();
+      applyControlsAndRender();
     } catch (err) {
       // Even on error, drop the empty-state overlay so the failure message
       // shows alone instead of stacking on top of "No memories yet".
       hideEmpty();
       setLoading(`Failed: ${err.message}`);
+    }
+  }
+
+  // Sprint 43 T1 — re-derive state.nodes/state.edges from the raw API result
+  // and the four user controls, then drive the existing render pipeline.
+  // Called after every fetch and after any control change.
+  function applyControlsAndRender() {
+    const raw = { nodes: state.rawNodes || [], edges: state.rawEdges || [] };
+    let visible;
+    if (GC) {
+      visible = GC.applyControls(raw.nodes, raw.edges, state.controls);
+    } else {
+      visible = { nodes: raw.nodes.slice(), edges: raw.edges.slice() };
+    }
+    state.nodes = visible.nodes;
+    state.edges = visible.edges;
+    renderFilters();
+    renderGraph();
+    updateStats();
+    updateControlStat(raw.nodes.length, visible.nodes.length);
+  }
+
+  function updateControlStat(total, visible) {
+    const el = document.getElementById('ctlVisibleStat');
+    if (!el) return;
+    if (total === visible) {
+      el.textContent = '';
+    } else {
+      el.textContent = `${visible} of ${total} visible`;
     }
   }
 
@@ -417,6 +453,48 @@
     svg().setAttribute('height', state.height);
   }
 
+  // Sprint 43 T1 — apply layout-specific forces to the simulation.
+  //   force        — forceCenter at midpoint (default).
+  //   hierarchical — forceY from BFS levels over directional edges (supersedes /
+  //                  caused_by / blocks). Roots float top, leaves drift down.
+  //   radial       — forceRadial centered at midpoint, radius from inverse
+  //                  degree (high degree → near center).
+  function applyLayoutForces(sim, nodes, links) {
+    const cx = state.width / 2;
+    const cy = state.height / 2;
+    const layout = (state.controls && state.controls.layout) || 'force';
+
+    sim.force('center', null);
+    sim.force('hier-y', null);
+    sim.force('hier-x', null);
+    sim.force('radial', null);
+
+    if (layout === 'hierarchical' && GC) {
+      const levels = GC.computeHierarchyLevels(state.nodes, state.edges);
+      let maxLevel = 0;
+      for (const v of levels.values()) if (v > maxLevel) maxLevel = v;
+      const denom = Math.max(1, maxLevel);
+      const top = state.height * 0.10;
+      const bottom = state.height * 0.90;
+      sim.force('hier-y', window.d3.forceY((d) => {
+        const lvl = levels.get(d.id) || 0;
+        return top + (lvl / denom) * (bottom - top);
+      }).strength(0.65));
+      sim.force('hier-x', window.d3.forceX(cx).strength(0.04));
+      return;
+    }
+
+    if (layout === 'radial' && GC) {
+      const deg = GC.computeDegrees(state.nodes, state.edges);
+      const rMax = Math.min(state.width, state.height) * 0.42;
+      const radiusFn = GC.radialRadiusFn(deg, rMax);
+      sim.force('radial', window.d3.forceRadial(radiusFn, cx, cy).strength(0.55));
+      return;
+    }
+
+    sim.force('center', window.d3.forceCenter(cx, cy));
+  }
+
   function renderGraph() {
     if (!window.d3) {
       setLoading('D3.js failed to load (CDN blocked?)');
@@ -441,9 +519,10 @@
     const sim = window.d3.forceSimulation(nodes)
       .force('link', window.d3.forceLink(links).id((d) => d.id).distance((l) => 60 + (1 - (l.weight ?? 0.5)) * 40))
       .force('charge', window.d3.forceManyBody().strength(-260))
-      .force('center', window.d3.forceCenter(state.width / 2, state.height / 2))
       .force('collide', window.d3.forceCollide().radius((d) => nodeRadius(d) + 4))
       .alphaDecay(0.02);
+
+    applyLayoutForces(sim, nodes, links);
 
     state.sim = sim;
 
@@ -742,6 +821,41 @@
     });
     $('graphFit').addEventListener('click', () => fitToView());
 
+    // Sprint 43 T1 — graph view-controls. Hydrate input values from state, then
+    // wire change handlers that mutate state.controls + URL + re-render from
+    // the cached raw fetch so toggling is fast (no API round-trip).
+    const ctlHide = $('ctlHideIsolated');
+    const ctlMin = $('ctlMinDegree');
+    const ctlWin = $('ctlWindow');
+    const ctlLay = $('ctlLayout');
+    if (ctlHide) ctlHide.checked = !!state.controls.hideIsolated;
+    if (ctlMin) ctlMin.value = String(state.controls.minDegree || 0);
+    if (ctlWin) ctlWin.value = state.controls.window || 'all';
+    if (ctlLay) ctlLay.value = state.controls.layout || 'force';
+
+    function onControlChange() {
+      state.controls = (GC ? GC.normalizeControls(state.controls) : state.controls);
+      writeUrlState();
+      if ((state.rawNodes || []).length === 0) return;
+      applyControlsAndRender();
+    }
+    if (ctlHide) ctlHide.addEventListener('change', () => {
+      state.controls.hideIsolated = !!ctlHide.checked;
+      onControlChange();
+    });
+    if (ctlMin) ctlMin.addEventListener('change', () => {
+      state.controls.minDegree = parseInt(ctlMin.value, 10) || 0;
+      onControlChange();
+    });
+    if (ctlWin) ctlWin.addEventListener('change', () => {
+      state.controls.window = ctlWin.value;
+      onControlChange();
+    });
+    if (ctlLay) ctlLay.addEventListener('change', () => {
+      state.controls.layout = ctlLay.value;
+      onControlChange();
+    });
+
     $('gdClose').addEventListener('click', closeDrawer);
     $('gdExpand').addEventListener('click', () => {
       if (!state.selectedNodeId) return;
@@ -763,7 +877,9 @@
     window.addEventListener('resize', () => {
       sizeStage();
       if (state.sim) {
-        state.sim.force('center', window.d3.forceCenter(state.width / 2, state.height / 2));
+        // Re-apply layout-specific forces with the new dimensions; this
+        // handles all three layouts (force / hierarchical / radial).
+        applyLayoutForces(state.sim, null, null);
         state.sim.alpha(0.3).restart();
       }
     });

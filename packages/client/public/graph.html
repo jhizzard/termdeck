@@ -42,6 +42,41 @@
 
   <div class="graph-filters" id="graphFilters" role="toolbar" aria-label="Edge type filters"></div>
 
+  <div class="graph-filters graph-filters-row2" id="graphControls" role="toolbar" aria-label="Graph view controls">
+    <label class="graph-control graph-control-toggle" title="Drop nodes with zero edges">
+      <input type="checkbox" id="ctlHideIsolated">
+      <span>hide isolated</span>
+    </label>
+    <label class="graph-control" title="Keep nodes with at least N edges">
+      <span>min degree</span>
+      <select id="ctlMinDegree">
+        <option value="0">all</option>
+        <option value="1">≥ 1</option>
+        <option value="2">≥ 2</option>
+        <option value="3">≥ 3</option>
+        <option value="5">≥ 5</option>
+      </select>
+    </label>
+    <label class="graph-control" title="Keep nodes created within window">
+      <span>window</span>
+      <select id="ctlWindow">
+        <option value="all">all time</option>
+        <option value="7d">last 7 days</option>
+        <option value="30d">last 30 days</option>
+        <option value="90d">last 90 days</option>
+      </select>
+    </label>
+    <label class="graph-control" title="Force algorithm used to position nodes">
+      <span>layout</span>
+      <select id="ctlLayout">
+        <option value="force">force-directed</option>
+        <option value="hierarchical">hierarchical</option>
+        <option value="radial">radial</option>
+      </select>
+    </label>
+    <span class="graph-control-stat" id="ctlVisibleStat" aria-live="polite"></span>
+  </div>
+
   <main class="graph-stage" id="graphStage">
     <div class="graph-loading" id="graphLoading">
       <div class="graph-loading-spinner" aria-hidden="true"></div>
@@ -100,6 +135,7 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="graph-controls.js"></script>
   <script src="graph.js" defer></script>
 </body>
 </html>

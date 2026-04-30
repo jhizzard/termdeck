@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TermDeck · Flashback History</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Sprint 43 T2 — flashback-history page styling. Self-contained so the
+       dashboard ships independently of style.css; uses the existing --tg-*
+       design tokens for theme consistency. */
+    body.fb-page {
+      margin: 0;
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      font-family: var(--tg-sans);
+      min-height: 100vh;
+    }
+    .fb-topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 16px;
+      background: var(--tg-surface);
+      border-bottom: 1px solid var(--tg-border);
+      min-height: 44px;
+    }
+    .fb-tb-back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--tg-text-bright);
+      text-decoration: none;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: var(--tg-radius-sm);
+    }
+    .fb-tb-back:hover { background: var(--tg-surface-hover); }
+    .fb-tb-divider { color: var(--tg-text-dim); }
+    .fb-tb-title { color: var(--tg-text); font-weight: 500; }
+    .fb-tb-spacer { flex: 1; }
+    .fb-tb-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .fb-tb-controls label {
+      font-size: 12px;
+      color: var(--tg-text-dim);
+    }
+    .fb-tb-controls select {
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 5px 8px;
+      font-family: var(--tg-mono);
+      font-size: 12px;
+    }
+    .fb-tb-controls select:focus {
+      outline: none;
+      border-color: var(--tg-accent);
+    }
+    .fb-tb-btn {
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 5px 10px;
+      font-size: 12px;
+      font-family: var(--tg-mono);
+      cursor: pointer;
+    }
+    .fb-tb-btn:hover {
+      background: var(--tg-surface-hover);
+      border-color: var(--tg-border-active);
+    }
+
+    .fb-stage {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+
+    /* Funnel summary card */
+    .fb-funnel {
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius);
+      padding: 18px 20px;
+      margin-bottom: 20px;
+    }
+    .fb-funnel-title {
+      font-size: 12px;
+      color: var(--tg-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 0 0 12px 0;
+      font-weight: 600;
+    }
+    .fb-funnel-bars {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    .fb-funnel-row {
+      display: grid;
+      grid-template-columns: 140px 1fr 80px;
+      align-items: center;
+      gap: 12px;
+    }
+    .fb-funnel-label {
+      font-size: 13px;
+      color: var(--tg-text);
+    }
+    .fb-funnel-bar {
+      position: relative;
+      height: 14px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: 7px;
+      overflow: hidden;
+    }
+    .fb-funnel-bar-fill {
+      position: absolute;
+      inset: 0;
+      width: 0%;
+      transition: width 220ms ease-out;
+    }
+    .fb-funnel-row[data-tier="fires"] .fb-funnel-bar-fill { background: var(--tg-purple); }
+    .fb-funnel-row[data-tier="dismissed"] .fb-funnel-bar-fill { background: var(--tg-amber); }
+    .fb-funnel-row[data-tier="clicked"] .fb-funnel-bar-fill { background: var(--tg-green); }
+    .fb-funnel-count {
+      font-family: var(--tg-mono);
+      font-size: 12px;
+      color: var(--tg-text-bright);
+      text-align: right;
+    }
+    .fb-funnel-pct {
+      font-size: 10px;
+      color: var(--tg-text-dim);
+      margin-left: 4px;
+    }
+
+    /* Zero-state */
+    .fb-zero {
+      background: var(--tg-surface);
+      border: 1px dashed var(--tg-border-active);
+      border-radius: var(--tg-radius);
+      padding: 28px 24px;
+      text-align: center;
+      color: var(--tg-text-dim);
+    }
+    .fb-zero h3 {
+      margin: 0 0 8px 0;
+      color: var(--tg-text-bright);
+      font-size: 15px;
+    }
+    .fb-zero p {
+      margin: 6px 0;
+      max-width: 620px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.5;
+    }
+    .fb-zero code {
+      font-family: var(--tg-mono);
+      background: var(--tg-bg);
+      padding: 1px 6px;
+      border-radius: 3px;
+      color: var(--tg-cyan);
+      font-size: 12px;
+    }
+
+    /* Table */
+    .fb-table-wrap {
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius);
+      overflow: hidden;
+    }
+    .fb-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .fb-table thead {
+      background: var(--tg-bg);
+      border-bottom: 1px solid var(--tg-border);
+    }
+    .fb-table th {
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--tg-text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .fb-table td {
+      padding: 10px 12px;
+      border-top: 1px solid var(--tg-border);
+      vertical-align: top;
+      color: var(--tg-text);
+    }
+    .fb-table tbody tr:hover {
+      background: var(--tg-surface-hover);
+    }
+    .fb-cell-time {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text-dim);
+      white-space: nowrap;
+    }
+    .fb-cell-project {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-cyan);
+      white-space: nowrap;
+    }
+    .fb-cell-error {
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text);
+      max-width: 480px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .fb-cell-hits {
+      font-family: var(--tg-mono);
+      color: var(--tg-text-bright);
+      text-align: right;
+    }
+    .fb-cell-score {
+      font-family: var(--tg-mono);
+      color: var(--tg-text-dim);
+      text-align: right;
+      font-size: 11px;
+    }
+    .fb-cell-status {
+      white-space: nowrap;
+    }
+    .fb-pill {
+      display: inline-block;
+      padding: 2px 7px;
+      font-size: 10px;
+      font-family: var(--tg-mono);
+      border-radius: 999px;
+      border: 1px solid var(--tg-border);
+      background: var(--tg-bg);
+      color: var(--tg-text-dim);
+      margin-right: 4px;
+    }
+    .fb-pill-clicked { color: var(--tg-green); border-color: var(--tg-green); }
+    .fb-pill-dismissed { color: var(--tg-amber); border-color: var(--tg-amber); }
+    .fb-pill-pending { color: var(--tg-purple); border-color: var(--tg-purple); }
+
+    .fb-loading {
+      text-align: center;
+      padding: 40px;
+      color: var(--tg-text-dim);
+      font-size: 13px;
+    }
+    .fb-error-banner {
+      background: rgba(247, 118, 142, 0.08);
+      border: 1px solid var(--tg-red);
+      color: var(--tg-red);
+      padding: 10px 14px;
+      border-radius: var(--tg-radius-sm);
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body class="fb-page">
+
+  <header class="fb-topbar">
+    <a class="fb-tb-back" href="/" title="Back to dashboard" aria-label="Back to dashboard">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      TermDeck
+    </a>
+    <span class="fb-tb-divider">/</span>
+    <span class="fb-tb-title">Flashback History</span>
+    <span class="fb-tb-spacer"></span>
+    <div class="fb-tb-controls">
+      <label for="fbWindow">Window</label>
+      <select id="fbWindow">
+        <option value="1d">last 24 h</option>
+        <option value="7d" selected>last 7 days</option>
+        <option value="30d">last 30 days</option>
+        <option value="all">all time</option>
+      </select>
+      <button type="button" class="fb-tb-btn" id="fbRefresh" title="Reload data">refresh</button>
+    </div>
+  </header>
+
+  <main class="fb-stage">
+    <div id="fbErrorBanner" class="fb-error-banner" hidden></div>
+
+    <section class="fb-funnel" id="fbFunnel" aria-label="Click-through funnel">
+      <h3 class="fb-funnel-title">Click-through funnel</h3>
+      <div class="fb-funnel-bars">
+        <div class="fb-funnel-row" data-tier="fires">
+          <span class="fb-funnel-label">Fires</span>
+          <div class="fb-funnel-bar"><div class="fb-funnel-bar-fill" id="fbBarFires"></div></div>
+          <span class="fb-funnel-count"><span id="fbCountFires">—</span></span>
+        </div>
+        <div class="fb-funnel-row" data-tier="dismissed">
+          <span class="fb-funnel-label">Dismissed</span>
+          <div class="fb-funnel-bar"><div class="fb-funnel-bar-fill" id="fbBarDismissed"></div></div>
+          <span class="fb-funnel-count"><span id="fbCountDismissed">—</span><span class="fb-funnel-pct" id="fbPctDismissed"></span></span>
+        </div>
+        <div class="fb-funnel-row" data-tier="clicked">
+          <span class="fb-funnel-label">Clicked through</span>
+          <div class="fb-funnel-bar"><div class="fb-funnel-bar-fill" id="fbBarClicked"></div></div>
+          <span class="fb-funnel-count"><span id="fbCountClicked">—</span><span class="fb-funnel-pct" id="fbPctClicked"></span></span>
+        </div>
+      </div>
+    </section>
+
+    <div id="fbContent">
+      <div class="fb-loading">Loading flashback history…</div>
+    </div>
+  </main>
+
+  <script src="flashback-history.js"></script>
+</body>
+</html>

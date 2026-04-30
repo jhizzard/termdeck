@@ -18,10 +18,12 @@
 //   2. Derive project ref from SUPABASE_URL; confirm with user
 //   3. supabase link --project-ref <ref>
 //   4. Apply rumen migration 001 via pg
-//   5. supabase functions deploy rumen-tick --no-verify-jwt
+//   5. supabase functions deploy rumen-tick AND graph-inference (Sprint 43 T3)
+//      from a single staging dir with multi-function supabase/config.toml
 //   6. supabase secrets set DATABASE_URL=... ANTHROPIC_API_KEY=... [OPENAI_API_KEY=...]
-//   7. Test the function with a manual POST (fetch)
-//   8. Apply pg_cron schedule migration (002) with project ref substituted
+//   7. Test rumen-tick with a manual POST (graph-inference is cron-only)
+//   8. Apply pg_cron schedule migrations 002 (rumen-tick) AND 003 (graph-inference)
+//      with project ref substituted
 
 const path = require('path');
 const fs = require('fs');
@@ -301,67 +303,98 @@ async function applyRumenTables(secrets, dryRun) {
   }
 }
 
-function deployFunction(rumenVersion, dryRun) {
-  step('Running: supabase functions deploy rumen-tick --no-verify-jwt...');
-  if (dryRun) { ok('(dry-run)'); return true; }
+// Sprint 43 T3: rumen-tick is the only function with a `__RUMEN_VERSION__`
+// placeholder (its `npm:@jhizzard/rumen@<ver>` import is rewritten at deploy
+// time). graph-inference pins its own deps (`npm:postgres@3.4.4`) and is
+// copied verbatim. If a future function adds a placeholder, list it here.
+const FUNCTIONS_WITH_VERSION_PLACEHOLDER = new Set(['rumen-tick']);
 
-  // We need the supabase command to run against a repo layout with
-  // `supabase/functions/rumen-tick/`. The TermDeck install does NOT include
-  // a `supabase/` directory at the project root, so we stage a tiny working
-  // directory under `os.tmpdir()` that mirrors what the CLI expects.
-  const stage = stageRumenFunction(rumenVersion);
-  if (!stage) {
-    fail('could not stage rumen-tick function source');
+function deployFunctions(rumenVersion, dryRun) {
+  const fnNames = migrations.listRumenFunctions();
+  if (fnNames.length === 0) {
+    fail('no Rumen Edge Function source found in bundled setup or @jhizzard/rumen package');
     return false;
   }
 
-  const r = runShell('supabase', ['functions', 'deploy', 'rumen-tick', '--no-verify-jwt'], {
-    cwd: stage
-  });
-  if (!r.ok) { fail(`deploy failed (exit ${r.code})`); return false; }
+  step(`Staging ${fnNames.length} Edge Function(s) (${fnNames.join(', ')})...`);
+  if (dryRun) { ok('(dry-run)'); return true; }
+
+  // Stage all functions in one directory and one config.toml so a single
+  // `supabase functions deploy <name>` invocation per function can share the
+  // project root. This mirrors how a real Supabase repo is laid out.
+  let stage;
+  try {
+    stage = stageRumenFunctions(rumenVersion);
+  } catch (err) {
+    fail(err.message);
+    return false;
+  }
+  if (!stage) {
+    fail('could not stage Rumen Edge Function source');
+    return false;
+  }
   ok();
+
+  for (const name of fnNames) {
+    step(`Running: supabase functions deploy ${name} --no-verify-jwt...`);
+    const r = runShell('supabase', ['functions', 'deploy', name, '--no-verify-jwt'], {
+      cwd: stage
+    });
+    if (!r.ok) {
+      fail(`deploy of ${name} failed (exit ${r.code})`);
+      return false;
+    }
+    ok();
+  }
   return true;
 }
 
-// Create a staging directory containing:
-//   <stage>/supabase/functions/rumen-tick/{index.ts, tsconfig.json}
-// Also write a minimal `supabase/config.toml` so `supabase functions deploy`
-// doesn't complain about a missing project root.
-function stageRumenFunction(rumenVersion) {
+// Create a staging directory containing every bundled Rumen Edge Function:
+//   <stage>/supabase/functions/<name>/{index.ts, tsconfig.json}
+//   <stage>/supabase/config.toml  (one [functions.<name>] block per function)
+//
+// `__RUMEN_VERSION__` is substituted only in functions listed in
+// FUNCTIONS_WITH_VERSION_PLACEHOLDER (currently just rumen-tick). Other
+// files are copied verbatim. Returns the staging dir path or null if no
+// function source could be located.
+function stageRumenFunctions(rumenVersion) {
   if (!rumenVersion || !/^\d+\.\d+\.\d+/.test(rumenVersion)) {
-    throw new Error(`stageRumenFunction: invalid rumenVersion ${JSON.stringify(rumenVersion)}`);
+    throw new Error(`stageRumenFunctions: invalid rumenVersion ${JSON.stringify(rumenVersion)}`);
   }
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-rumen-stage-'));
-  const functionSrc = migrations.rumenFunctionDir();
-  if (!fs.existsSync(functionSrc)) return null;
+  const root = migrations.rumenFunctionsRoot();
+  const fnNames = migrations.listRumenFunctions();
+  if (fnNames.length === 0) return null;
 
-  const dest = path.join(stage, 'supabase', 'functions', 'rumen-tick');
-  fs.mkdirSync(dest, { recursive: true });
-  for (const f of fs.readdirSync(functionSrc)) {
-    const srcPath = path.join(functionSrc, f);
-    const destPath = path.join(dest, f);
-    // Substitute the version placeholder in the Deno entry point. Other files
-    // in the directory (tsconfig.json, etc.) are copied verbatim.
-    if (f === 'index.ts') {
-      const raw = fs.readFileSync(srcPath, 'utf-8');
-      if (!raw.includes('__RUMEN_VERSION__')) {
-        throw new Error(
-          `rumen-tick/index.ts is missing the __RUMEN_VERSION__ placeholder — ` +
-          `has someone reintroduced a hardcoded version?`
-        );
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-rumen-stage-'));
+
+  for (const name of fnNames) {
+    const fnSrc = path.join(root, name);
+    const fnDest = path.join(stage, 'supabase', 'functions', name);
+    fs.mkdirSync(fnDest, { recursive: true });
+    for (const f of fs.readdirSync(fnSrc)) {
+      const srcPath = path.join(fnSrc, f);
+      const destPath = path.join(fnDest, f);
+      if (f === 'index.ts' && FUNCTIONS_WITH_VERSION_PLACEHOLDER.has(name)) {
+        const raw = fs.readFileSync(srcPath, 'utf-8');
+        if (!raw.includes('__RUMEN_VERSION__')) {
+          throw new Error(
+            `${name}/index.ts is missing the __RUMEN_VERSION__ placeholder — ` +
+            `has someone reintroduced a hardcoded version? ` +
+            `Re-run scripts/sync-rumen-functions.sh to repopulate the placeholder.`
+          );
+        }
+        fs.writeFileSync(destPath, raw.replace(/__RUMEN_VERSION__/g, rumenVersion));
+      } else {
+        fs.copyFileSync(srcPath, destPath);
       }
-      fs.writeFileSync(destPath, raw.replace(/__RUMEN_VERSION__/g, rumenVersion));
-    } else {
-      fs.copyFileSync(srcPath, destPath);
     }
   }
 
+  const fnBlocks = fnNames.map((name) => `[functions.${name}]\nverify_jwt = false\n`).join('\n');
   const configToml = `# staged by termdeck init --rumen
 project_id = "termdeck-rumen-stage"
 
-[functions.rumen-tick]
-verify_jwt = false
-`;
+${fnBlocks}`;
   fs.writeFileSync(path.join(stage, 'supabase', 'config.toml'), configToml);
 
   return stage;
@@ -569,7 +602,8 @@ function wireAccessTokenInMcpJson({ token, mcpJsonPath, _testFs } = {}) {
 }
 
 function printNextSteps(projectRef) {
-  const functionUrl = `https://${projectRef}.supabase.co/functions/v1/rumen-tick`;
+  const rumenTickUrl = `https://${projectRef}.supabase.co/functions/v1/rumen-tick`;
+  const graphInferenceUrl = `https://${projectRef}.supabase.co/functions/v1/graph-inference`;
   const now = new Date();
   // Round up to the next 15-minute mark so the hint is accurate.
   const next = new Date(now.getTime());
@@ -577,16 +611,20 @@ function printNextSteps(projectRef) {
   process.stdout.write(`
 Rumen is deployed.
 
-Schedule: every 15 minutes via pg_cron
-First scheduled run: ${next.toISOString().replace(/\.\d+Z$/, 'Z')}
-Edge Function URL: ${functionUrl}
+Edge Functions:
+  rumen-tick        every 15 min — first run: ${next.toISOString().replace(/\.\d+Z$/, 'Z')}
+                    ${rumenTickUrl}
+  graph-inference   daily at 03:00 UTC (Sprint 42 cron)
+                    ${graphInferenceUrl}
 
 Next steps:
-  1. Monitor:  psql "$DATABASE_URL" -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
-  2. Store the service_role key in Supabase Vault as \`rumen_service_role_key\`
-     so the cron call in migrations/002_pg_cron_schedule.sql can authenticate.
+  1. Monitor rumen jobs: psql "$DATABASE_URL" -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
+  2. Store service_role keys in Supabase Vault — required for both cron schedules:
+       rumen_service_role_key            (used by 002_pg_cron_schedule.sql)
+       graph_inference_service_role_key  (used by 003_graph_inference_schedule.sql)
   3. Rumen insights flow back into Mnestra's memory_items via rumen_insights.
-  4. TermDeck's Flashback will surface cross-project patterns automatically.
+  4. graph-inference fills memory_relationships edges nightly (cosine similarity ≥ 0.85).
+  5. TermDeck's Flashback will surface cross-project patterns automatically.
 `);
 }
 
@@ -664,7 +702,7 @@ async function main(argv) {
     process.stderr.write(`  ! falling back to pinned FALLBACK_RUMEN_VERSION=${FALLBACK_RUMEN_VERSION}\n`);
   }
 
-  if (!deployFunction(resolved.version, flags.dryRun)) return 6;
+  if (!deployFunctions(resolved.version, flags.dryRun)) return 6;
   if (!setFunctionSecrets(secrets, flags.dryRun)) return 7;
   if (!(await testFunction(projectRef, secrets, flags.dryRun))) return 8;
   if (!flags.skipSchedule) {
@@ -700,3 +738,6 @@ module.exports = main;
 // pin the access-token detection without spawning a real `supabase` binary.
 module.exports._looksLikeMissingAccessToken = looksLikeMissingAccessToken;
 module.exports._wireAccessTokenInMcpJson = wireAccessTokenInMcpJson;
+// Sprint 43 T3: stage helper exposed so init-rumen-deploy.test.js can pin
+// the multi-function staging contract without shelling out to `supabase`.
+module.exports._stageRumenFunctions = stageRumenFunctions;

@@ -73,16 +73,54 @@ function listRumenMigrations() {
   return tryNodeModules('@jhizzard/rumen');
 }
 
-function rumenFunctionDir() {
-  // Same resolution order.
+// Resolve the parent directory containing the bundled Rumen Edge Function
+// source. Sprint 43 T3: bundled-FIRST (matches listMnestraMigrations and
+// listRumenMigrations since v0.6.8). The npm `@jhizzard/rumen` package's
+// `files` array is `["dist", "migrations", "README.md", "LICENSE",
+// "CHANGELOG.md"]` — it does NOT ship `supabase/functions/`. So the npm
+// fallback only ever matters for someone who has installed `@jhizzard/rumen`
+// from a local checkout (not the published tarball). Bundled-first prevents
+// a stale local rumen install from shadowing the source TermDeck developed
+// and tested against.
+//
+// Returns the directory whose immediate children are the function-name
+// subdirectories (e.g., `rumen-tick/`, `graph-inference/`).
+function rumenFunctionsRoot() {
+  const bundledRoot = path.join(SETUP_DIR, 'rumen', 'functions');
+  if (fs.existsSync(bundledRoot) && fs.readdirSync(bundledRoot).length > 0) {
+    return bundledRoot;
+  }
   try {
     const pkgJsonPath = require.resolve('@jhizzard/rumen/package.json', {
       paths: [process.cwd(), SETUP_DIR]
     });
-    const candidate = path.join(path.dirname(pkgJsonPath), 'supabase', 'functions', 'rumen-tick');
+    const candidate = path.join(path.dirname(pkgJsonPath), 'supabase', 'functions');
     if (fs.existsSync(candidate)) return candidate;
   } catch (_err) { /* fallthrough */ }
-  return path.join(SETUP_DIR, 'rumen', 'functions', 'rumen-tick');
+  return bundledRoot;
+}
+
+// Enumerate the function-name subdirectories under the resolved Rumen
+// functions root. Each entry must contain at least an `index.ts`. Sprint 43
+// T3 bundled both `rumen-tick` and `graph-inference`.
+function listRumenFunctions() {
+  const root = rumenFunctionsRoot();
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root)
+    .filter((name) => {
+      const dir = path.join(root, name);
+      return fs.statSync(dir).isDirectory()
+        && fs.existsSync(path.join(dir, 'index.ts'));
+    })
+    .sort();
+}
+
+// Back-compat: pre-Sprint-43 callers expected a single path resolving to the
+// `rumen-tick/` directory specifically. Delegates to rumenFunctionsRoot()
+// + 'rumen-tick'. Prefer rumenFunctionsRoot() / listRumenFunctions() for new
+// code that needs to operate over multiple functions.
+function rumenFunctionDir() {
+  return path.join(rumenFunctionsRoot(), 'rumen-tick');
 }
 
 function readFile(filepath) {
@@ -92,6 +130,8 @@ function readFile(filepath) {
 module.exports = {
   listMnestraMigrations,
   listRumenMigrations,
+  rumenFunctionsRoot,
+  listRumenFunctions,
   rumenFunctionDir,
   readFile
 };

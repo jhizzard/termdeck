@@ -2,12 +2,50 @@
 
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
+
+// Sprint 43 T2: load a numbered migration .sql file from the repo-root
+// `migrations/` directory if present, falling back to an inline string for
+// packaged npm installs where the `files` allowlist in package.json does not
+// ship `migrations/`. Authoritative source-of-truth is the .sql file; the
+// fallback is kept in lockstep when the schema changes.
+function loadMigrationSql(name, fallback) {
+  const candidates = [
+    path.join(__dirname, '..', '..', '..', 'migrations', name),
+    path.join(__dirname, '..', '..', '..', '..', 'migrations', name),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const sql = fs.readFileSync(candidate, 'utf8');
+      if (sql && sql.trim().length) return sql;
+    } catch (_e) { /* try next */ }
+  }
+  return fallback;
+}
+
+const FLASHBACK_EVENTS_INLINE_SQL = `
+  CREATE TABLE IF NOT EXISTS flashback_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    fired_at        TEXT    NOT NULL,
+    session_id      TEXT    NOT NULL,
+    project         TEXT,
+    error_text      TEXT    NOT NULL,
+    hits_count      INTEGER NOT NULL DEFAULT 0,
+    top_hit_id      TEXT,
+    top_hit_score   REAL,
+    dismissed_at    TEXT,
+    clicked_through INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS flashback_events_fired_at_idx
+    ON flashback_events(fired_at DESC);
+  CREATE INDEX IF NOT EXISTS flashback_events_session_idx
+    ON flashback_events(session_id);
+`;
 
 function initDatabase(Database) {
   const dbPath = path.join(os.homedir(), '.termdeck', 'termdeck.db');
 
   // Ensure directory exists
-  const fs = require('fs');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath);
@@ -113,6 +151,16 @@ function initDatabase(Database) {
     }
   } catch (err) {
     console.warn('[db] projects.default_theme drop migration failed:', err.message);
+  }
+
+  // Sprint 43 T2: flashback_events durable audit table. Schema lives in
+  // migrations/001_flashback_events.sql (repo-root, source-of-truth) with
+  // an inline fallback for packaged installs. Idempotent CREATE so this
+  // replays safely on every server start.
+  try {
+    db.exec(loadMigrationSql('001_flashback_events.sql', FLASHBACK_EVENTS_INLINE_SQL));
+  } catch (err) {
+    console.warn('[db] flashback_events migration failed:', err.message);
   }
 
   return db;

@@ -303,7 +303,7 @@
               updatePanelMeta(id, msg.session.meta);
               break;
             case 'proactive_memory':
-              showProactiveToast(id, msg.hit);
+              showProactiveToast(id, msg.hit, msg.flashback_event_id);
               break;
             case 'exit':
               updatePanelMeta(id, {
@@ -583,7 +583,7 @@
       }
     }
 
-    function showProactiveToast(id, hit) {
+    function showProactiveToast(id, hit, flashbackEventId) {
       const entry = state.sessions.get(id);
       if (!entry || !entry.el) return;
 
@@ -606,16 +606,29 @@
 
       entry.el.appendChild(toast);
 
+      // Sprint 43 T2: track dismiss/click-through against flashback_events.
+      // The id is set server-side in the proactive_memory WS frame; if it's
+      // missing (server-side INSERT failed, or older server) the POSTs are
+      // skipped and the live toast still works — persistence is best-effort.
       const dismiss = () => {
         toast.remove();
         clearTimeout(toast._autoTimer);
+        if (flashbackEventId) {
+          fetch(`${API}/api/flashback/${flashbackEventId}/dismissed`, { method: 'POST' })
+            .catch((err) => console.warn('[flashback] dismiss POST failed:', err.message));
+        }
       };
       toast.querySelector('.t-dismiss').addEventListener('click', (e) => {
         e.stopPropagation();
         dismiss();
       });
       toast.addEventListener('click', () => {
-        dismiss();
+        toast.remove();
+        clearTimeout(toast._autoTimer);
+        if (flashbackEventId) {
+          fetch(`${API}/api/flashback/${flashbackEventId}/clicked`, { method: 'POST' })
+            .catch((err) => console.warn('[flashback] clicked POST failed:', err.message));
+        }
         showFlashbackModal(hit, id);
       });
 
@@ -1334,7 +1347,7 @@
               updatePanelMeta(id, msg.session.meta);
               break;
             case 'proactive_memory':
-              showProactiveToast(id, msg.hit);
+              showProactiveToast(id, msg.hit, msg.flashback_event_id);
               break;
             case 'exit':
               updatePanelMeta(id, { status: 'exited', statusDetail: `Exited (${msg.exitCode})` });

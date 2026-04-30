@@ -34,30 +34,38 @@ Sections used: `### Added`, `### Changed`, `### Fixed`, `### Notes`. The `### No
 
 ## Publish sequence — strict order
 
-1. **Verify the tarball.** From repo root:
+1. **Sync bundled Rumen Edge Functions.** From repo root:
+   ```bash
+   npm run sync-rumen-functions
+   ```
+   This copies the canonical Edge Function source (`rumen-tick`, `graph-inference`) from the sibling `~/Documents/Graciella/rumen` repo into `packages/server/src/setup/rumen/functions/`. The sync is idempotent; it rewrites the `npm:@jhizzard/rumen@<concrete>` import in `rumen-tick/index.ts` back to the `__RUMEN_VERSION__` placeholder and re-injects the TermDeck-only explainer comment. Skip only if you are confident neither Edge Function source has changed since the last release. Override the source with `RUMEN_REPO=/path/to/rumen npm run sync-rumen-functions` if the rumen checkout lives elsewhere.
+
+   Why: `init --rumen` deploys these functions on fresh installs by staging the bundled copy; if the bundle is stale, fresh users get an out-of-date Edge Function. Sprint 43 T3 introduced the bundle + sync step after Sprint 42 close-out hit `Error: entrypoint path does not exist` because graph-inference was never bundled.
+
+2. **Verify the tarball.** From repo root:
    ```bash
    npm pack --dry-run
    ```
-   Check the file list for every required asset. Common gaps: anything under `config/` that the runtime references at install time (e.g., `config/transcript-migration.sql` — confirmed required by `migration-runner.js:33`; must be listed in the root `package.json` `files` array). If the file isn't in the tarball but the code references it, fix the `files` array before publishing.
+   Check the file list for every required asset. Common gaps: anything under `config/` that the runtime references at install time (e.g., `config/transcript-migration.sql` — confirmed required by `migration-runner.js:33`; must be listed in the root `package.json` `files` array). Spot-check that both `packages/server/src/setup/rumen/functions/rumen-tick/index.ts` AND `.../graph-inference/index.ts` are listed — Sprint 43 T3 added graph-inference; if it is missing, the sync step in #1 was skipped or the `files` glob regressed. If a referenced file isn't in the tarball, fix the `files` array before publishing.
 
-2. **Publish termdeck.** From repo root:
+3. **Publish termdeck.** From repo root:
    ```bash
    npm publish --auth-type=web
    ```
    The `--auth-type=web` flag forces the browser-based Passkey flow (npm CLI ≥9.5). **Joshua taps his Passkey.** Publishes `@jhizzard/termdeck@X.Y.Z`. The terminal blocks until auth completes.
 
-3. **Publish stack-installer.** From `packages/stack-installer/`:
+4. **Publish stack-installer.** From `packages/stack-installer/`:
    ```bash
    cd packages/stack-installer && npm publish --auth-type=web
    ```
    Same `--auth-type=web` flag, same Passkey flow. Publishes `@jhizzard/termdeck-stack@A.B.C`.
 
-4. **Push to origin.** After both publishes succeed:
+5. **Push to origin.** After both publishes succeed:
    ```bash
    git push origin main
    ```
 
-If publish at step 2 or 3 fails — **do NOT push.** Either fix the issue and retry the publish, or `npm unpublish` (within 24h of accidental publish) and retry. Never push a commit claiming a version is shipped when it isn't.
+If publish at step 3 or 4 fails — **do NOT push.** Either fix the issue and retry the publish, or `npm unpublish` (within 24h of accidental publish) and retry. Never push a commit claiming a version is shipped when it isn't.
 
 ## Authentication: Passkey, NOT OTP
 
@@ -92,3 +100,4 @@ Then dogfood: `npm install -g @jhizzard/termdeck@latest && termdeck --version` o
 - **Same close-out:** `config/transcript-migration.sql` was not in the root `package.json` `files` array but `migration-runner.js:33` referenced it. The `fs.existsSync` guard hid the gap (silent skip). Brad's 2026-04-27 crash log surfaced it. **Lesson: `npm pack --dry-run` and grep for every file the runtime references before publishing.**
 - **Stack-installer audit-trail bump** is a convention, not a code-changes-required rule. Bump it every release even if its source is untouched, so the published trail matches the rest of the stack.
 - **Passkey vs OTP confusion** has bitten this project at least once (Sprint 35 close-out). Memory has a global preference recording the constraint; CLAUDE.md hard rule references this doc; this doc says it explicitly. Three layers of redundancy because it's a high-friction failure mode.
+- **Sprint 42 close-out (2026-04-29):** `init --rumen` failed with `Error: entrypoint path does not exist (supabase/functions/rumen-tick/index.ts)` because the wizard only deployed `rumen-tick` and the manual `graph-inference` deploy from the sibling rumen repo did not generalize. Sprint 43 T3 bundled both Edge Function sources into TermDeck and added `npm run sync-rumen-functions` to keep them current. **Lesson: any Edge Function shipped by `init --rumen` must live in `packages/server/src/setup/rumen/functions/<name>/` AND be in the npm `files` glob — verify with `npm pack --dry-run` before publishing.**
