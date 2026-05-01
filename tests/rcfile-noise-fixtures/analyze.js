@@ -1,4 +1,6 @@
 // Sprint 39 T2 — analyze captured rcfile fixtures against current PATTERNS.
+// Sprint 45 T4: CLAUDE_ERROR_LINE_START shim removed; the claude-code
+// error pattern is now read off the Claude adapter directly.
 //
 // For each *.clean.txt fixture, simulate the production analyzer behavior:
 //   - The session's _detectErrors() short-circuits to PATTERNS.shellError if
@@ -17,6 +19,8 @@
 const fs = require('fs');
 const path = require('path');
 const { PATTERNS } = require('../../packages/server/src/session.js');
+const claudeAdapter = require('../../packages/server/src/agent-adapters/claude');
+const CLAUDE_ERROR_LINE_START = claudeAdapter.patterns.error;
 
 const fixtures = fs.readdirSync(__dirname)
   .filter(f => f.endsWith('.clean.txt'))
@@ -28,7 +32,7 @@ const verdict = [];
 for (const f of fixtures) {
   const content = fs.readFileSync(path.join(__dirname, f), 'utf8');
   const errorMatch = PATTERNS.error.test(content);
-  const errorLineStartMatch = PATTERNS.errorLineStart.test(content);
+  const errorLineStartMatch = CLAUDE_ERROR_LINE_START.test(content);
   const shellErrorMatch = PATTERNS.shellError.test(content);
 
   // Find the actual lines that triggered each pattern. Reset lastIndex
@@ -39,7 +43,7 @@ for (const f of fixtures) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (PATTERNS.error.test(line)) triggers.push({ line: i + 1, pattern: 'error', text: line });
-    if (PATTERNS.errorLineStart.test(line)) triggers.push({ line: i + 1, pattern: 'errorLineStart', text: line });
+    if (CLAUDE_ERROR_LINE_START.test(line)) triggers.push({ line: i + 1, pattern: 'errorLineStart', text: line });
     if (PATTERNS.shellError.test(line)) triggers.push({ line: i + 1, pattern: 'shellError', text: line });
   }
 

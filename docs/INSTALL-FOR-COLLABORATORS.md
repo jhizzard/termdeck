@@ -5,13 +5,13 @@
 This doc is **version-pinned to the published 2026-05-01 stack**. Re-check pinned versions if you're reading this more than ~30 days after the date below.
 
 **Last updated:** 2026-05-01
-**Pinned versions:** `@jhizzard/termdeck@0.13.0` · `@jhizzard/termdeck-stack@0.4.8` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
+**Pinned versions:** `@jhizzard/termdeck@0.14.0` · `@jhizzard/termdeck-stack@0.4.9` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
 
 ## What you're getting
 
 | Tier | Package | What it does | Install today? |
 |---|---|---|---|
-| 1 | `@jhizzard/termdeck` | Browser-based terminal multiplexer with metadata overlays, panel grid, knowledge-graph viewer, flashback persistence dashboard (v0.12.0+), in-dashboard 4+1 sprint runner | ✅ yes |
+| 1 | `@jhizzard/termdeck` | Browser-based terminal multiplexer with metadata overlays, panel grid, knowledge-graph viewer, flashback persistence dashboard (v0.12.0+), in-dashboard 4+1 sprint runner, **multi-agent panels (Claude / Codex / Gemini / Grok all first-class as of v0.14.0)** | ✅ yes |
 | 2 | `@jhizzard/mnestra` | MCP server giving any AI coding tool persistent memory across sessions (pgvector + Supabase + OpenAI embeddings) | ✅ yes |
 | 3 | `@jhizzard/rumen` | Async learning Edge Function — Extract → Relate → Synthesize → Surface; runs on `pg_cron` daily | ✅ yes (Sprint 43 T3 fixed the fresh-install wizard bug — `init --rumen` now bundles both `rumen-tick` and `graph-inference` Edge Function source in the npm tarball) |
 | Meta | `@jhizzard/termdeck-stack` | One-command installer that wires all three tiers | ✅ yes |
@@ -22,7 +22,7 @@ This doc is **version-pinned to the published 2026-05-01 stack**. Re-check pinne
 
 - **Node.js 18+** (best-tested on 18 / 20 LTS / 22 / 23 / 24)
 - **macOS or Linux.** macOS is the daily-driver platform. Linux works (node-pty supports it, the `Brad`-tier tester runs on Linux), but is less battle-tested. Windows: not supported (node-pty Windows build is unreliable; use WSL2 if Windows is forced).
-- **Claude Code installed and logged in.** TermDeck launches Claude Code sessions inside its panels — without it, panels are empty. (Other agents — Codex / Gemini / Grok — are partially recognized today; full multi-agent ships in Sprint 44–46.)
+- **Claude Code installed and logged in.** TermDeck launches Claude Code sessions inside its panels by default. As of `termdeck@0.14.0`, **Codex / Gemini / Grok are also first-class lane agents** — install whichever CLIs you want available (`codex` from `openai/codex-plugin-cc`; `gemini` from `google-gemini/gemini-cli`; `grok` via `npm i -g grok-dev`). Each agent's instructional file convention is auto-honored: Claude reads `CLAUDE.md`, Codex + Grok read `AGENTS.md`, Gemini reads `GEMINI.md` (the latter two auto-generated from `CLAUDE.md` via `npm run sync:agents`).
 - **A fresh Supabase project** (free tier is fine). You'll need the project URL + service-role key during install.
 - **An OpenAI API key.** Mnestra uses `text-embedding-3-large` (1536d) for memory embeddings.
 - **A C++ toolchain.** `node-pty` and `better-sqlite3` compile native binaries. macOS: `xcode-select --install`. Debian/Ubuntu: `apt install build-essential`.
@@ -115,8 +115,8 @@ npx @jhizzard/termdeck-stack@latest
 If still stuck, verify:
 
 ```bash
-npm view @jhizzard/termdeck version            # expect 0.11.0
-npm view @jhizzard/termdeck-stack version      # expect 0.4.6
+npm view @jhizzard/termdeck version            # expect 0.14.0
+npm view @jhizzard/termdeck-stack version      # expect 0.4.9
 ```
 
 If those return the expected versions but `termdeck --version` doesn't match, your global install is the culprit:
@@ -194,12 +194,13 @@ $PSQL "$DATABASE_URL" -f $(npm root -g)/@jhizzard/mnestra/migrations/014_explici
 
 4. **Read `docs/architecture.md`** to understand how the pieces fit. ~10-minute read; covers the analyzer, flashback, MCP wiring, and the orchestration model.
 
-5. **Optional: install Codex CLI plugin if you want delegate-from-Claude.** The `codex@openai-codex` Claude Code plugin gives Claude Code tools to delegate tasks to Codex. This is a Codex-as-Claude's-tool path; full Codex-as-its-own-panel ships in Sprint 45.
+5. **Run agents directly in their own panels.** As of `termdeck@0.14.0`, type `codex`, `gemini`, or `grok` into the launcher (alongside `claude` / `cc`) — each spawns the agent's native TUI in a panel with adapter-aware status badges, transcript-aware memory ingestion, and registry-driven boot prompts. The legacy `codex@openai-codex` Claude Code plugin (delegate-from-Claude flow) still works for cases where you want Claude to drive Codex as a tool — the two paths coexist.
 
 ## What's queued (FYI, not blockers)
 
-- **Sprint 43** (graph viewer controls, flashback persistence with audit dashboard, init-rumen wizard repair, Telegram MCP) — fully inject-ready at `docs/sprint-43-graph-controls-and-cross-project-surfacing/`. Ships `termdeck@0.12.0`.
-- **Sprint 44–46** (multi-agent substrate trilogy: Codex / Gemini / Grok as first-class lane agents alongside Claude). See `docs/multi-agent-substrate/DESIGN-MEMORIALIZATION-2026-04-29.md` for the full design.
+- **Sprint 46** (mixed 4+1 — per-lane `agent: claude|codex|gemini|grok` field in PLANNING.md frontmatter, per-agent boot-prompt templates, inject script extension, cross-agent STATUS.md merger). Closes the multi-agent substrate trilogy started in Sprint 44. Target version `termdeck@0.15.0` — or `1.0.0` if the multi-agent + cron + observability stack is deemed production-ready. See `docs/multi-agent-substrate/DESIGN-MEMORIALIZATION-2026-04-29.md` for the full trilogy design.
+- **Grok memory-hook SQLite extraction.** Grok stores sessions in SQLite at `~/.grok/grok.db` (STRICT tables, requires SQLite ≥3.37 — `better-sqlite3` prebuilt covers this). Sprint 45 T3 supplied the `parseTranscript` function; the hook layer needs to query the DB and feed the parser. Sprint 46 candidate.
+- **Upstream rumen `createJob.started_at` patch.** Rumen's job-creation INSERT omits `started_at`; TermDeck v0.14.0 ships a `COALESCE(started_at, completed_at)` workaround at the read site so the dashboard is accurate today. Once the upstream 2-line patch lands in `@jhizzard/rumen`, the workaround can simplify back to `ORDER BY started_at DESC` — but no urgency since the workaround is correct under both pre- and post-fix conditions.
 
 ## Verification checklist (paste this back if anything fails)
 
@@ -207,7 +208,7 @@ $PSQL "$DATABASE_URL" -f $(npm root -g)/@jhizzard/mnestra/migrations/014_explici
 [ ] Node.js version (`node --version`):
 [ ] Platform (`uname -s`):
 [ ] Installer ran cleanly (`npx @jhizzard/termdeck-stack@latest`):
-[ ] Versions match expected (`npm view @jhizzard/termdeck version` → 0.11.0):
+[ ] Versions match expected (`npm view @jhizzard/termdeck version` → 0.14.0):
 [ ] TermDeck starts (`termdeck` opens dashboard at http://127.0.0.1:3000):
 [ ] Claude session launches in a panel:
 [ ] memory_remember + memory_recall round-trips successfully:
@@ -221,4 +222,4 @@ $PSQL "$DATABASE_URL" -f $(npm root -g)/@jhizzard/mnestra/migrations/014_explici
 - **Conceptual / "how is X supposed to work" question:** check `docs/architecture.md` first; if not covered, ask.
 - **Sprint planning / roadmap:** `docs/BACKLOG.md` and the sprint-43+ planning docs.
 
-— TermDeck maintainer notes, 2026-04-30
+— TermDeck maintainer notes, 2026-05-01 (Sprint 45 close-out: multi-agent adapters shipped — Codex / Gemini / Grok now first-class)

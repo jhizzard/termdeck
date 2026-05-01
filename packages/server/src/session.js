@@ -15,7 +15,7 @@ const os = require('os');
 const path = require('path');
 const { resolveTheme } = require('./theme-resolver');
 const flashbackDiag = require('./flashback-diag');
-const claudeAdapter = require('./agent-adapters/claude');
+const geminiAdapter = require('./agent-adapters/gemini');
 const { detectAdapter, getAdapterForSessionType } = require('./agent-adapters');
 
 // Strip ANSI escape codes for pattern matching
@@ -29,24 +29,31 @@ function stripAnsi(str) {
 
 // Pattern matchers for detecting terminal type and status.
 //
-// Sprint 44 T3: claudeCode patterns are owned by the Claude adapter at
-// ./agent-adapters/claude.js. This object continues to expose them under
-// the legacy `PATTERNS.claudeCode.*` shape so external callers
-// (tests/rcfile-noise.test.js, tests/analyzer-error-fixtures.test.js, the
-// rcfile-noise analyze.js fixture script) keep working without import
-// changes. Sprint 45 T4 removes this shim — new code should consume the
-// adapter directly via require('./agent-adapters/claude').
+// Sprint 45 T4 removed the Sprint 44 T3 Claude shim (`PATTERNS.claudeCode.*`
+// and `PATTERNS.errorLineStart`). Claude-specific regexes now live exclusively
+// at ./agent-adapters/claude.js — read via `claudeAdapter.patterns.*`. The
+// `_detectErrors` and `_updateStatus` paths route through `getAdapterForSessionType`
+// for any registered adapter.
+//
+// Sprint 45 T2 retains `PATTERNS.geminiCli` as a shim into the Gemini adapter
+// for the one-release deprecation horizon — same pattern Sprint 44 T3 used.
+// What stays in this file:
+//   • geminiCli       — Sprint 45 T2 shim into ./agent-adapters/gemini.js
+//   • pythonServer    — server SUBTYPE detection (no adapter; status-badge only)
+//   • shell           — default fallback (no adapter)
+//   • error           — cross-agent prose-shape primary error fallback (used
+//                       by `_detectErrors` when the active adapter has no
+//                       `patterns.error`, and exported for tests)
+//   • shellError      — cross-agent Unix shell-error shapes (always tried as
+//                       the secondary fallback in `_detectErrors`)
 const PATTERNS = {
-  claudeCode: {
-    prompt: claudeAdapter.patterns.prompt,
-    thinking: claudeAdapter.patterns.thinking,
-    editing: claudeAdapter.patterns.editing,
-    tool: claudeAdapter.patterns.tool,
-    idle: claudeAdapter.patterns.idle
-  },
+  // Sprint 45 T2: geminiCli patterns are owned by the Gemini adapter at
+  // ./agent-adapters/gemini.js. Shim preserves the legacy
+  // `PATTERNS.geminiCli.{prompt,thinking}` shape — same regex objects, so
+  // any external reference equality holds.
   geminiCli: {
-    prompt: /^gemini>\s/m,
-    thinking: /\b(Generating|Working)\b/,
+    prompt: geminiAdapter.patterns.prompt,
+    thinking: geminiAdapter.patterns.thinking,
   },
   pythonServer: {
     uvicorn: /Uvicorn running on/,
@@ -90,17 +97,12 @@ const PATTERNS = {
   // child-process error reporting fire without depending on the line ALSO
   // containing the `No such file or directory` prose phrase.
   error: /(?:^|\n)\s*(?:Error:\s+\S|error:\s+\S|ERROR:\s+\S|Traceback \(most recent call last\):|npm ERR!|error\[E\d+\]:|Uncaught Exception|Fatal:|ENOENT:\s+\S|EACCES:\s+\S|ECONNREFUSED:\s+\S)/m,
-  // Stricter line-anchored variant for Claude Code, whose tool output (grep
-  // results, test logs, file contents) routinely mentions "Error" mid-line
-  // without representing an actual failure of the agent itself.
-  // Sprint 40 T2: added mixed-case `Fatal` (mirrors `fatal` / `FATAL`) and
-  // the `npm ERR!` shape (special-cased outside the alternation because
-  // `!` is not a word character so `\b` after `npm ERR!` doesn't match).
-  // Sprint 44 T3: this regex is now owned by the Claude adapter
-  // (./agent-adapters/claude.js patterns.error). The shim below preserves
-  // the legacy PATTERNS.errorLineStart export — same regex object, so any
-  // existing reference equality (e.g. `=== PATTERNS.errorLineStart`) holds.
-  errorLineStart: claudeAdapter.patterns.error,
+  // Sprint 45 T4: the Claude-specific line-anchored variant
+  // (formerly `PATTERNS.errorLineStart`) is owned by the Claude adapter at
+  // ./agent-adapters/claude.js — read via `claudeAdapter.patterns.error`.
+  // _detectErrors below routes through `getAdapterForSessionType` for
+  // claude-code sessions and falls through to PATTERNS.error / shellError
+  // for non-adapter sessions.
   // Sprint 33: PATTERNS.error misses the most common Unix shell errors —
   // `cat: /foo: No such file or directory`, `bash: foo: command not found`,
   // `rm: cannot remove ...: Permission denied`. These have a colon-prefix
@@ -255,20 +257,17 @@ class Session {
   }
 
   _detectType(data) {
-    // Sprint 44 T3: registry-aware detection. detectAdapter() iterates
-    // AGENT_ADAPTERS in declaration order and returns the first hit by
-    // prompt regex OR command-string match. Sprint 44 lands Claude only
-    // (so this returns the Claude adapter or undefined); Sprint 45 adds
-    // Codex / Gemini / Grok adapters and the gemini fall-through below
-    // moves into gemini.js.
+    // Sprint 44 T3 + Sprint 45: registry-aware detection. detectAdapter()
+    // iterates AGENT_ADAPTERS in declaration order and returns the first
+    // hit by prompt regex OR command-string match. Claude / Codex /
+    // Gemini / Grok all live in the registry now; only python-server
+    // (a non-CLI-agent type) stays here as in-file fall-through.
     const adapter = detectAdapter(data, this.meta.command);
     if (adapter) {
       this.meta.type = adapter.sessionType;
       return;
     }
-    if (PATTERNS.geminiCli.prompt.test(data) || /gemini/i.test(this.meta.command)) {
-      this.meta.type = 'gemini';
-    } else if (
+    if (
       PATTERNS.pythonServer.uvicorn.test(data) ||
       PATTERNS.pythonServer.flask.test(data) ||
       PATTERNS.pythonServer.django.test(data) ||
@@ -282,12 +281,11 @@ class Session {
     const p = PATTERNS;
     const oldStatus = this.meta.status;
 
-    // Sprint 44 T3: claude-code status detection now lives in the Claude
+    // Sprint 44 T3 + Sprint 45: per-agent status detection lives in each
     // adapter's `statusFor(data)` method. Returns { status, statusDetail }
     // on a match, null on no-change — preserves the original switch's
-    // "leave status untouched if no claude pattern fires" semantics.
-    // Other types (gemini, python-server, default shell) stay in-file
-    // until Sprint 45 migrates them.
+    // "leave status untouched if no pattern fires" semantics. Only
+    // non-CLI-agent types (python-server + default shell) stay in-file.
     const adapter = getAdapterForSessionType(this.meta.type);
     if (adapter && typeof adapter.statusFor === 'function') {
       const result = adapter.statusFor(data);
@@ -297,16 +295,6 @@ class Session {
       }
     } else {
       switch (this.meta.type) {
-      case 'gemini':
-        if (p.geminiCli.thinking.test(data)) {
-          this.meta.status = 'thinking';
-          this.meta.statusDetail = 'Gemini is generating...';
-        } else if (p.geminiCli.prompt.test(data)) {
-          this.meta.status = 'idle';
-          this.meta.statusDetail = 'Waiting for input';
-        }
-        break;
-
       case 'python-server':
         if (p.pythonServer.request.test(data)) {
           this.meta.status = 'active';
@@ -409,12 +397,12 @@ class Session {
     // (grep matches, test results, log dumps). Use a line-anchored pattern
     // for that session type so we don't flag content as failure.
     //
-    // Sprint 44 T3: per-agent primary error pattern is now read off the
-    // adapter (`patterns.error` + `patternNames.error`). Falls back to the
-    // generic prose-shape PATTERNS.error when no adapter has claimed the
-    // session type. The Claude adapter's `patterns.error` IS the same regex
-    // object as PATTERNS.errorLineStart (the shim wires them together), so
-    // existing `=== PATTERNS.errorLineStart` reference checks still hold.
+    // Sprint 44 T3 / Sprint 45 T4: per-agent primary error pattern is read
+    // off the adapter (`patterns.error` + `patternNames.error`). Falls back
+    // to the generic prose-shape PATTERNS.error when no adapter has claimed
+    // the session type. (Sprint 44 retained a `PATTERNS.errorLineStart` shim
+    // that pointed at the Claude adapter's regex; Sprint 45 T4 removed the
+    // shim — read `claudeAdapter.patterns.error` directly when needed.)
     const adapter = getAdapterForSessionType(this.meta.type);
     const primaryPattern = adapter && adapter.patterns && adapter.patterns.error
       ? adapter.patterns.error

@@ -13,12 +13,18 @@
 // and Sprint 45 T4 wires the launcher UI through the same registry.
 
 const claude = require('./claude');
+const codex = require('./codex');
+const gemini = require('./gemini');
+const grok = require('./grok');
 
 // Keyed by adapter name (NOT session.meta.type — adapters expose their own
 // `sessionType` field for that mapping). Order is iteration order for the
 // detect loop in session.js, so list more-specific adapters before less.
 const AGENT_ADAPTERS = {
   claude,
+  codex,
+  gemini,
+  grok,
 };
 
 // Convenience accessor — returns the adapter whose `sessionType` matches the

@@ -3,7 +3,7 @@
 // What this locks
 // ───────────────
 // 1. Captured zsh/bash startup transcripts (tests/rcfile-noise-fixtures/*.clean.txt)
-//    must NOT trigger PATTERNS.error, PATTERNS.errorLineStart, or
+//    must NOT trigger PATTERNS.error, CLAUDE_ERROR_LINE_START, or
 //    PATTERNS.shellError — these represent the shell's own pre-prompt output
 //    on a real developer machine. If any of them did trigger, the analyzer
 //    would burn the 30s onErrorDetected rate limit before the user has a
@@ -35,6 +35,12 @@ const fs = require('fs');
 const path = require('path');
 
 const { PATTERNS } = require('../packages/server/src/session.js');
+// Sprint 45 T4: CLAUDE_ERROR_LINE_START shim was removed; the Claude-specific
+// line-anchored error regex now lives at agent-adapters/claude.js. This file
+// imports the adapter directly to keep the rcfile-noise corpus assertions
+// scoped to the claude-code analyzer path.
+const claudeAdapter = require('../packages/server/src/agent-adapters/claude');
+const CLAUDE_ERROR_LINE_START = claudeAdapter.patterns.error;
 
 const FIXTURES_DIR = path.join(__dirname, 'rcfile-noise-fixtures');
 
@@ -56,7 +62,7 @@ function wouldTriggerShell(text) {
 }
 
 function wouldTriggerClaudeCode(text) {
-  return PATTERNS.errorLineStart.test(text) || PATTERNS.shellError.test(text);
+  return CLAUDE_ERROR_LINE_START.test(text) || PATTERNS.shellError.test(text);
 }
 
 // ─── Captured corpus (real zsh/bash startup on Joshua's machine) ──────────
@@ -79,7 +85,7 @@ test('captured rcfile fixtures: zsh startup is silent under the claude-code erro
     assert.equal(
       wouldTriggerClaudeCode(fx.content),
       false,
-      `expected zsh fixture ${fx.name} to NOT trigger PATTERNS.errorLineStart || PATTERNS.shellError. Content:\n${JSON.stringify(fx.content)}`,
+      `expected zsh fixture ${fx.name} to NOT trigger CLAUDE_ERROR_LINE_START || PATTERNS.shellError. Content:\n${JSON.stringify(fx.content)}`,
     );
   }
 });
@@ -223,7 +229,7 @@ test('synthetic rcfile corpus: claude-code error matcher stays silent', () => {
   assert.equal(
     offenders.length,
     0,
-    `expected zero rcfile-noise lines to trigger PATTERNS.errorLineStart || PATTERNS.shellError. Offenders:\n${JSON.stringify(offenders, null, 2)}`,
+    `expected zero rcfile-noise lines to trigger CLAUDE_ERROR_LINE_START || PATTERNS.shellError. Offenders:\n${JSON.stringify(offenders, null, 2)}`,
   );
 });
 
@@ -296,6 +302,6 @@ test('real-error regression: claude-code error matcher still fires on shapes it 
   assert.equal(
     misses.length,
     0,
-    `expected supported claude-code error shapes to trigger PATTERNS.errorLineStart || PATTERNS.shellError. Misses:\n${JSON.stringify(misses, null, 2)}`,
+    `expected supported claude-code error shapes to trigger CLAUDE_ERROR_LINE_START || PATTERNS.shellError. Misses:\n${JSON.stringify(misses, null, 2)}`,
   );
 });

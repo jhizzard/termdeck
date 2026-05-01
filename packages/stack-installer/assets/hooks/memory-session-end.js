@@ -5,12 +5,17 @@
  * Wired into ~/.claude/settings.json under hooks.Stop. Fires on Claude Code Stop event.
  *
  * Behavior:
- *   1. Reads {transcript_path, cwd, session_id} from stdin (Claude Code Stop payload).
+ *   1. Reads {transcript_path, cwd, session_id, sessionType?} from stdin (Claude
+ *      Code Stop payload, or a future server-driven invocation for non-Claude
+ *      agents).
  *   2. Skips small transcripts (< MIN_TRANSCRIPT_BYTES, default 5KB).
  *   3. Validates env vars; logs and exits cleanly if any required key is missing.
  *   4. Detects project from cwd against PROJECT_MAP (else "global"). Extend the
  *      map by editing the array below — see assets/hooks/README.md for guidance.
- *   5. Builds a coarse session summary from the transcript (last ~30 message excerpts).
+ *   5. Dispatches to a transcript parser by sessionType (Sprint 45 T4): Claude
+ *      JSONL, Codex JSONL, Gemini single-JSON, or auto-detect when sessionType
+ *      is absent. Builds a coarse summary from the resulting message list
+ *      (last ~30 message excerpts).
  *   6. Embeds the summary via OpenAI text-embedding-3-small.
  *   7. POSTs ONE row to Supabase /rest/v1/memory_items with source_type='session_summary'.
  *   8. Logs every step to ~/.claude/hooks/memory-hook.log.
@@ -23,6 +28,7 @@
  * Optional:
  *   - TERMDECK_HOOK_DEBUG=1            verbose logging
  *   - TERMDECK_HOOK_MIN_BYTES=5000     transcript size threshold
+ *   - TERMDECK_SESSION_TYPE=...        override sessionType when payload lacks it
  *
  * Fail-soft contract: any error (network, parse, env-var-missing, malformed transcript)
  * logs and exits 0. Never blocks Claude Code session close.
@@ -80,29 +86,202 @@ function readEnv() {
   };
 }
 
-function buildSummary(transcriptPath) {
-  let raw;
-  try { raw = readFileSync(transcriptPath, 'utf8'); }
-  catch (e) { log(`read-transcript-failed: ${e.message}`); return null; }
+// ──────────────────────────────────────────────────────────────────────────
+// Sprint 45 T4 — adapter-pluggable transcript parsers.
+//
+// Each parser takes raw transcript file contents (string) and returns a
+// `{ role: 'user'|'assistant', content: string }[]` array — the shape
+// buildSummary() consumes. Adapters in packages/server/src/agent-adapters/
+// own the canonical parser logic; this file inlines copies because the
+// hook ships standalone to ~/.claude/hooks/ where it can't `require()`
+// from the TermDeck server package. When new agents add adapters, mirror
+// their parseTranscript function body here — keep the two in sync.
+// (Sprint 46 candidate: a sync script that codegens this section from
+// agent-adapters/*.js, analogous to scripts/sync-agent-instructions.js
+// for CLAUDE.md / AGENTS.md / GEMINI.md mirroring.)
+//
+// When sessionType is absent or unknown, parseAutoDetect runs a per-line
+// best-effort that handles Claude JSONL, Codex JSONL, AND Gemini's single
+// JSON-object shape. This is the pre-T4 stop-gap T1+T2 landed inline —
+// preserved as the fallback so existing hook payloads (Claude Code Stop,
+// no sessionType field) continue working for any of the three agents.
+// Once Sprint 46 wires sessionType into payloads, the auto path narrows
+// to a legacy compatibility role.
+// ──────────────────────────────────────────────────────────────────────────
+
+function parseClaudeJsonl(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  const lines = raw.split('\n').filter(Boolean);
+  const messages = [];
+  for (const line of lines) {
+    let msg;
+    try { msg = JSON.parse(line); } catch (_) { continue; }
+    const role = msg && msg.message && msg.message.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    const content = msg.message.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((c) => c && c.type === 'text')
+        .map((c) => c.text || '')
+        .join(' ');
+    }
+    if (text) messages.push({ role, content: text.slice(0, 400) });
+  }
+  return messages;
+}
+
+function parseCodexJsonl(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  const lines = raw.split('\n').filter(Boolean);
+  const messages = [];
+  for (const line of lines) {
+    let msg;
+    try { msg = JSON.parse(line); } catch (_) { continue; }
+    if (!msg || msg.type !== 'response_item') continue;
+    const payload = msg.payload;
+    if (!payload || payload.type !== 'message') continue;
+    const role = payload.role;
+    // Codex's `developer` role carries the sandbox/permissions prelude — skip.
+    if (role !== 'user' && role !== 'assistant') continue;
+    const content = payload.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      // Codex uses `input_text` (user) and `output_text` (assistant); accept
+      // plain `text` for forward-compat with future Codex CLI versions.
+      text = content
+        .filter((c) => c && (c.type === 'input_text' || c.type === 'output_text' || c.type === 'text'))
+        .map((c) => c.text || '')
+        .join(' ');
+    }
+    if (text) messages.push({ role, content: text.slice(0, 400) });
+  }
+  return messages;
+}
+
+function parseGeminiJson(raw) {
+  // Gemini CLI persists each session as a single JSON object (NOT JSONL):
+  //   { sessionId, projectHash, startTime, lastUpdated, kind,
+  //     messages: [{ id, timestamp, type: 'user'|'gemini', content }] }
+  // user content: [{ text }]; gemini content: string. Map type='gemini' →
+  // role='assistant' to match the rest of the dispatch shape.
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  let obj;
+  try { obj = JSON.parse(raw); } catch (_) { return []; }
+  if (!obj || !Array.isArray(obj.messages)) return [];
+  const messages = [];
+  for (const msg of obj.messages) {
+    if (!msg || typeof msg !== 'object') continue;
+    let role;
+    if (msg.type === 'user') role = 'user';
+    else if (msg.type === 'gemini' || msg.type === 'assistant') role = 'assistant';
+    else continue;
+    const content = msg.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((c) => c && typeof c.text === 'string')
+        .map((c) => c.text)
+        .join(' ');
+    }
+    if (text) messages.push({ role, content: text.slice(0, 400) });
+  }
+  return messages;
+}
+
+function parseAutoDetect(raw) {
+  // Fallback when sessionType is absent. Tries Gemini's single-JSON shape
+  // first (cheap to detect — starts with `{` and has a top-level `messages`
+  // array), then falls through to per-line Claude/Codex JSONL detection.
+  // This preserves T1+T2's pre-T4 multi-shape stop-gap so any Claude Code
+  // Stop payload (which doesn't carry sessionType) keeps ingesting whichever
+  // CLI's transcript path landed there.
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    const geminiTry = parseGeminiJson(raw);
+    if (geminiTry.length > 0) return geminiTry;
+  }
 
   const lines = raw.split('\n').filter(Boolean);
   const messages = [];
   for (const line of lines) {
     let msg;
     try { msg = JSON.parse(line); } catch (_) { continue; }
-    const role = msg?.message?.role;
-    if (role !== 'user' && role !== 'assistant') continue;
-    const content = msg.message.content;
+
+    let role;
+    let content;
+    let textBlockType = 'text';
+
+    if (msg && msg.message && (msg.message.role === 'user' || msg.message.role === 'assistant')) {
+      role = msg.message.role;
+      content = msg.message.content;
+    } else if (msg && msg.type === 'response_item' && msg.payload && msg.payload.type === 'message') {
+      role = msg.payload.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      content = msg.payload.content;
+      textBlockType = null; // Codex content blocks use input_text/output_text
+    } else {
+      continue;
+    }
+
     let text = '';
-    if (typeof content === 'string') text = content;
-    else if (Array.isArray(content)) {
-      text = content.filter((c) => c && c.type === 'text').map((c) => c.text).join(' ');
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((c) => c && (
+          textBlockType === null
+            ? (c.type === 'input_text' || c.type === 'output_text' || c.type === 'text')
+            : c.type === textBlockType
+        ))
+        .map((c) => c.text || '')
+        .join(' ');
     }
     if (text) messages.push({ role, content: text.slice(0, 400) });
   }
+  return messages;
+}
+
+const TRANSCRIPT_PARSERS = {
+  'claude-code': parseClaudeJsonl,
+  'codex': parseCodexJsonl,
+  'gemini': parseGeminiJson,
+  // Sprint 45 T3 — grok parser entry goes here once the adapter lands.
+  // Source-of-truth lives in packages/server/src/agent-adapters/grok.js;
+  // mirror that adapter's parseTranscript function body into this dispatch
+  // table at sprint close so the bundled hook can ingest grok transcripts.
+};
+const DEFAULT_SESSION_TYPE = 'auto';
+
+function selectTranscriptParser(sessionType) {
+  if (sessionType && TRANSCRIPT_PARSERS[sessionType]) {
+    return { parser: TRANSCRIPT_PARSERS[sessionType], sessionType };
+  }
+  return { parser: parseAutoDetect, sessionType: 'auto' };
+}
+
+function buildSummary(transcriptPath, sessionType) {
+  let raw;
+  try { raw = readFileSync(transcriptPath, 'utf8'); }
+  catch (e) { log(`read-transcript-failed: ${e.message}`); return null; }
+
+  const { parser, sessionType: resolvedType } = selectTranscriptParser(sessionType);
+  if (sessionType && resolvedType !== sessionType) {
+    debug(`unknown-session-type="${sessionType}", falling back to ${resolvedType}`);
+  }
+
+  const messages = parser(raw);
 
   if (messages.length < 5) {
-    debug(`session-too-short: ${messages.length} messages, skipping`);
+    debug(`session-too-short: ${messages.length} messages (parser=${resolvedType}), skipping`);
     return null;
   }
 
@@ -180,6 +359,16 @@ async function processStdinPayload(input) {
     data.session_id ||
     (transcriptPath ? transcriptPath.split('/').pop().replace('.jsonl', '') : null);
 
+  // Sprint 45 T4: sessionType drives buildSummary's parser dispatch.
+  // Read order: payload (server-driven invocations) → env var (TermDeck
+  // server can set TERMDECK_SESSION_TYPE in the spawned PTY's env) →
+  // 'auto' default (parseAutoDetect handles Claude + Codex + Gemini).
+  const sessionType =
+    data.sessionType ||
+    data.session_type ||
+    process.env.TERMDECK_SESSION_TYPE ||
+    DEFAULT_SESSION_TYPE;
+
   if (!transcriptPath) { log('no-transcript-path: skipping'); return; }
 
   let stat;
@@ -195,9 +384,9 @@ async function processStdinPayload(input) {
   if (!env) return;
 
   const project = detectProject(cwd);
-  debug(`project="${project}", session=${sessionId}`);
+  debug(`project="${project}", session=${sessionId}, sessionType=${sessionType}`);
 
-  const summary = buildSummary(transcriptPath);
+  const summary = buildSummary(transcriptPath, sessionType);
   if (!summary) return;
 
   const embedding = await embedText(summary, env.openaiKey);
@@ -212,7 +401,7 @@ async function processStdinPayload(input) {
     sessionId,
   });
 
-  if (ok) log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length}`);
+  if (ok) log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} sessionType=${sessionType}`);
 }
 
 // Module-export contract for testability. When run as a script (require.main === module),
@@ -234,5 +423,13 @@ if (require.main === module) {
     postMemoryItem,
     processStdinPayload,
     LOG_FILE,
+    // Sprint 45 T4 — adapter-pluggable transcript-parser surface.
+    TRANSCRIPT_PARSERS,
+    DEFAULT_SESSION_TYPE,
+    parseClaudeJsonl,
+    parseCodexJsonl,
+    parseGeminiJson,
+    parseAutoDetect,
+    selectTranscriptParser,
   };
 }

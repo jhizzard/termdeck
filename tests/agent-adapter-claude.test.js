@@ -59,14 +59,17 @@ test('AGENT_ADAPTERS registry exposes the Claude adapter under "claude"', () => 
   assert.equal(getAdapterForSessionType(null), undefined);
 });
 
-test('PATTERNS.claudeCode shim references the adapter regexes (no duplication)', () => {
-  assert.equal(PATTERNS.claudeCode.prompt, claudeAdapter.patterns.prompt);
-  assert.equal(PATTERNS.claudeCode.thinking, claudeAdapter.patterns.thinking);
-  assert.equal(PATTERNS.claudeCode.editing, claudeAdapter.patterns.editing);
-  assert.equal(PATTERNS.claudeCode.tool, claudeAdapter.patterns.tool);
-  assert.equal(PATTERNS.claudeCode.idle, claudeAdapter.patterns.idle);
-  assert.equal(PATTERNS.errorLineStart, claudeAdapter.patterns.error,
-    'errorLineStart must be the same regex object the adapter uses for primary error detection');
+// Sprint 44 T3 retained `PATTERNS.claudeCode.*` and `PATTERNS.errorLineStart`
+// as a one-release shim into the Claude adapter; Sprint 45 T4 removed it.
+// This test now asserts the shim is GONE — i.e. PATTERNS no longer leaks
+// claude-specific keys, and the only path to those regexes is through
+// `claudeAdapter.patterns.*`. If a future change re-introduces a shim,
+// this assertion fires.
+test('Sprint 45 T4: PATTERNS no longer exposes claudeCode or errorLineStart shim entries', () => {
+  assert.equal(PATTERNS.claudeCode, undefined,
+    'PATTERNS.claudeCode shim should be removed in Sprint 45 T4 — read claudeAdapter.patterns directly');
+  assert.equal(PATTERNS.errorLineStart, undefined,
+    'PATTERNS.errorLineStart shim should be removed in Sprint 45 T4 — read claudeAdapter.patterns.error directly');
 });
 
 // ─────────────────────────────────────────────────────────────────────────

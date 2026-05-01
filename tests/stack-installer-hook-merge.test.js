@@ -626,6 +626,66 @@ test('buildSummary skips malformed JSONL lines without crashing', () => {
   } finally { fs.unlinkSync(p); }
 });
 
+// Sprint 45 T2: Gemini transcript format (single JSON object, NOT JSONL).
+// Pins the stop-gap dispatch in buildSummary so a Gemini-shape transcript
+// produces the same summary header + tail as Claude/Codex JSONL formats.
+test('buildSummary handles Gemini single-JSON-object transcript', () => {
+  const messages = [];
+  for (let i = 0; i < 6; i++) {
+    if (i % 2 === 0) {
+      messages.push({
+        id: `id-${i}`,
+        timestamp: '2026-05-01T18:38:38.699Z',
+        type: 'user',
+        content: [{ text: `gem-msg-${i}` }],
+      });
+    } else {
+      messages.push({
+        id: `id-${i}`,
+        timestamp: '2026-05-01T18:38:40.438Z',
+        type: 'gemini',
+        content: `gem-msg-${i}`,
+        thoughts: [],
+        tokens: { input: 100, output: 5, total: 105 },
+        model: 'gemini-3-flash-preview',
+      });
+    }
+  }
+  const transcript = JSON.stringify({
+    sessionId: 'ae971ece-a035-4f37-953d-083b41dcbfcc',
+    projectHash: '07218df2',
+    startTime: '2026-05-01T18:38:38.699Z',
+    lastUpdated: '2026-05-01T18:38:40.438Z',
+    kind: 'main',
+    messages,
+  });
+  const p = freshTmpFile(transcript);
+  try {
+    const summary = buildSummary(p);
+    assert.match(summary, /^Session with 6 messages\./,
+      'Gemini transcript should yield a 6-message summary');
+    assert.match(summary, /\[user\] gem-msg-0/);
+    assert.match(summary, /\[assistant\] gem-msg-5/,
+      'type=gemini → role=assistant in the summary header');
+  } finally { fs.unlinkSync(p); }
+});
+
+test('buildSummary Gemini-detection does NOT swallow Claude JSONL', () => {
+  // A Claude JSONL file's first line starts with `{` and parses as JSON,
+  // but JSON.parse on the WHOLE file fails (multi-line concatenated objects).
+  // Make sure the Gemini short-circuit's try/catch falls through cleanly.
+  const lines = Array.from({ length: 6 }, (_, i) =>
+    JSON.stringify({ message: { role: i % 2 ? 'assistant' : 'user', content: `claude-${i}` } })
+  ).join('\n');
+  const p = freshTmpFile(lines);
+  try {
+    const summary = buildSummary(p);
+    assert.match(summary, /Session with 6 messages\./);
+    assert.match(summary, /claude-0/);
+    assert.match(summary, /claude-5/);
+  } finally { fs.unlinkSync(p); }
+});
+
 test('embedText calls OpenAI with the right shape and returns embedding', withMockedFetch(
   async (url, opts) => {
     assert.equal(url, 'https://api.openai.com/v1/embeddings');

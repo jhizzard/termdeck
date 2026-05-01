@@ -8,7 +8,9 @@ const { WebSocketServer } = require('ws');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const dns = require('dns');
 const { v4: uuidv4 } = require('uuid');
+const { createCachedLookup, createFailureLogger } = require('./rumen-pool-resilience');
 
 // Conditional imports (graceful fallback if not installed yet)
 let pty, Database, pg;
@@ -19,10 +21,18 @@ try { pg = require('pg'); } catch { pg = null; }
 // Module-level singleton Postgres pool for rumen_insights (petvetbid DB).
 // Lazy-initialized on first rumen endpoint hit so startup stays fast and
 // servers without DATABASE_URL never pay the connection cost.
+//
+// DNS-resilience (Sprint 45 side-task): the pool is constructed with a
+// cached `lookup` function that retries DNS failures with jittered
+// exponential backoff and serves stale entries during transient outages.
+// Pool errors / recoveries flow through a recency-graded logger so a
+// flapping host doesn't flood the log.
 let _rumenPool = null;
 let _rumenPoolFailed = false;
 let _rumenPoolFailedAt = 0;
 const RUMEN_POOL_RETRY_MS = 30_000;
+const _rumenLookup = createCachedLookup(dns);
+const _rumenLogger = createFailureLogger(console);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function getRumenPool() {
   if (_rumenPool) return _rumenPool;
@@ -38,14 +48,14 @@ function getRumenPool() {
       connectionString: process.env.DATABASE_URL,
       max: 4,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000
+      connectionTimeoutMillis: 5000,
+      lookup: _rumenLookup,
     });
-    _rumenPool.on('error', (err) => {
-      console.warn('[rumen] pg pool error:', err.message);
-    });
+    _rumenPool.on('error', (err) => _rumenLogger.logFailure(`pg pool error: ${err.message}`));
+    _rumenPool.on('connect', () => _rumenLogger.logRecovery());
     return _rumenPool;
   } catch (err) {
-    console.warn('[rumen] failed to create pg pool:', err.message);
+    _rumenLogger.logFailure(`failed to create pg pool: ${err.message}`);
     _rumenPoolFailed = true;
     _rumenPoolFailedAt = Date.now();
     return null;
@@ -69,6 +79,7 @@ const { createGraphRoutes } = require('./graph-routes');
 const { createProjectsRoutes } = require('./projects-routes');
 const orchestrationPreview = require('./orchestration-preview');
 const { createPtyReaper } = require('./pty-reaper');
+const { AGENT_ADAPTERS } = require('./agent-adapters');
 
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
 // helper is decoupled from T2's templates.js / init-project.js; we resolve
@@ -1244,6 +1255,28 @@ function createServer(config) {
     res.json(t);
   });
 
+  // GET /api/agent-adapters - serializable projection of the multi-agent
+  // registry for the launcher. Sprint 45 T4: replaces the hardcoded
+  // claude/cc/gemini/python branches in app.js with a registry-driven
+  // detector. Each entry exposes only the fields the client needs:
+  //   • name        — adapter id ("claude", "codex", "gemini", "grok")
+  //   • sessionType — meta.type the launcher should set
+  //   • binary      — canonical command name; client matches `^binary\b` (i)
+  //   • costBand    — 'free' | 'pay-per-token' | 'subscription' (Sprint 46
+  //                   surfaces this in PLANNING.md cost annotations)
+  // Functions / RegExps are NOT serialized — match logic lives client-side
+  // and uses the binary as the prefix anchor. Adapter-specific shorthand
+  // (e.g. `cc` → `claude`) is normalized in app.js before this lookup.
+  app.get('/api/agent-adapters', (req, res) => {
+    const list = Object.values(AGENT_ADAPTERS).map((a) => ({
+      name: a.name,
+      sessionType: a.sessionType,
+      binary: a.spawn && a.spawn.binary,
+      costBand: a.costBand,
+    }));
+    res.json(list);
+  });
+
   // Public-shape helper so GET and PATCH return the same envelope.
   function publicConfigPayload() {
     return {
@@ -1650,10 +1683,16 @@ function createServer(config) {
     if (!pool) return res.json({ enabled: false });
 
     try {
+      // Sprint 45 side-task 2 — order by COALESCE(started_at, completed_at) so
+      // jobs whose upstream writer (the @jhizzard/rumen createJob INSERT in the
+      // Edge Function) leaves started_at NULL still surface as "latest" via
+      // their populated completed_at. Pre-fix the query returned a 2026-04-16
+      // job permanently because that was the last row to have started_at
+      // populated — every subsequent insert lands started_at = NULL.
       const jobSql =
         `SELECT id, status, completed_at, sessions_processed, insights_generated
            FROM rumen_jobs
-           ORDER BY started_at DESC
+           ORDER BY COALESCE(started_at, completed_at) DESC NULLS LAST
            LIMIT 1`;
       const insightSql =
         `SELECT

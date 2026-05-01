@@ -10,6 +10,14 @@
       layout: '2x1',
       themes: {},
       config: {},
+      // Sprint 45 T4: serializable projection of the multi-agent registry
+      // (server's AGENT_ADAPTERS). Populated from GET /api/agent-adapters
+      // during init(). The launcher's command-shorthand parser reads this
+      // to detect which adapter (if any) a typed command should map to.
+      // Fallback list is the pre-Sprint-45 default so the launcher still
+      // works if the endpoint 404s on an older server during a rolling
+      // upgrade — Claude only, anchored binary match.
+      agentAdapters: [{ name: 'claude', sessionType: 'claude-code', binary: 'claude', costBand: 'pay-per-token' }],
       focusedId: null
     };
 
@@ -26,6 +34,17 @@
       // Load config
       state.config = await api('GET', '/api/config');
       updateRagIndicator();
+
+      // Sprint 45 T4: fetch the multi-agent adapter registry projection.
+      // Drives the launcher's command-shorthand → sessionType resolution
+      // below in launchTerminal(). Falls back to the bootstrap default
+      // (Claude only) if the endpoint isn't available on this server.
+      try {
+        const adapters = await api('GET', '/api/agent-adapters');
+        if (Array.isArray(adapters) && adapters.length > 0) {
+          state.agentAdapters = adapters;
+        }
+      } catch (_) { /* keep bootstrap fallback */ }
 
       // Populate project dropdown
       const sel = document.getElementById('promptProject');
@@ -2460,29 +2479,54 @@
         return;
       }
 
-      // Parse shorthand commands
+      // Sprint 45 T4: registry-driven shorthand resolution. Pre-Sprint-45
+      // had hardcoded claude/cc/gemini/python branches here; now the type
+      // detection consults state.agentAdapters (loaded from
+      // /api/agent-adapters at init), and only the Claude `cc` alias and
+      // the python-server detection (no adapter exists) stay as
+      // special-cases below. Adapter matching uses an anchored prefix on
+      // the adapter's binary name (`^binary\b`, case-insensitive) which
+      // fits all four Sprint-45 adapters (claude / codex / gemini / grok)
+      // since each binary is uniquely named.
       let resolvedCommand = command;
       let resolvedType = 'shell';
       let resolvedCwd = undefined;
-
       let resolvedProject = project || undefined;
 
-      if (/^claude\b/i.test(command) || /^cc\b/i.test(command)) {
-        resolvedType = 'claude-code';
-        const argMatch = command.match(/(?:claude|cc)\s+(?:code\s+)?(.+)/i);
-        if (argMatch) {
-          const arg = argMatch[1].trim();
-          // Check if arg is a known project name
-          if (state.config.projects && state.config.projects[arg]) {
-            resolvedProject = arg;
-          } else {
-            resolvedCwd = arg;
+      // Claude `cc` alias normalization. Documented Claude shorthand —
+      // does not generalize to other adapters, so it stays in client UX,
+      // not in the server-side adapter contract.
+      let canonical = command;
+      if (/^cc\b/i.test(canonical)) {
+        canonical = canonical.replace(/^cc\b/i, 'claude');
+      }
+
+      const adapter = (state.agentAdapters || []).find((a) =>
+        a && a.binary && new RegExp(`^${a.binary}\\b`, 'i').test(canonical)
+      );
+
+      if (adapter) {
+        resolvedType = adapter.sessionType;
+        // Claude shorthand: `claude <project-or-cwd>` rewrites to `claude`
+        // and routes the trailing arg into either the project dropdown
+        // (if it's a known project name) or the cwd parameter. Other
+        // adapters' arg-parsing — codex sub-commands, gemini -p flag,
+        // grok --model — pass through unchanged via resolvedCommand.
+        if (adapter.name === 'claude') {
+          const argMatch = canonical.match(/^claude\s+(?:code\s+)?(.+)/i);
+          if (argMatch) {
+            const arg = argMatch[1].trim();
+            if (state.config.projects && state.config.projects[arg]) {
+              resolvedProject = arg;
+            } else {
+              resolvedCwd = arg;
+            }
           }
+          resolvedCommand = adapter.binary;
         }
-        resolvedCommand = 'claude';
-      } else if (/^gemini\b/i.test(command)) {
-        resolvedType = 'gemini';
-      } else if (/^python3?\b.*(?:runserver|uvicorn|flask|gunicorn)/i.test(command)) {
+      } else if (/^python3?\b.*(?:runserver|uvicorn|flask|gunicorn)/i.test(canonical)) {
+        // python-server is a server SUBTYPE for status badges, not an
+        // agent adapter. No registry entry for it; detection stays here.
         resolvedType = 'python-server';
       }
 
