@@ -49,7 +49,7 @@ Pre-sprint substrate (orchestrator probed at sprint kickoff):
 - All four CLI binaries on PATH: claude, codex, gemini, grok (verified Sprint 44 close)
 - API keys loaded: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY (if set), GROK_API_KEY (verified 2026-05-01)
 - rumen-tick cron */15 * * * * active=true; graph-inference-tick 0 3 * * * active=true (per Sprint 43/44 close)
-- Telegram channel live (@JoshTermDeckBot, allowlist policy, paired user 6943410589)
+- Telegram channel live (@JoshTermDeckBot, allowlist policy, paired user <chat-id-redacted>)
 - Sprint 44 baselines: termdeck@0.13.0, mnestra@0.3.3, termdeck-stack@0.4.8, rumen@0.4.4 (all live on npm)
 
 Then begin. Stay in your lane. Post FINDING / FIX-PROPOSED / DONE in STATUS.md (append-only, with timestamps). Don't bump versions, don't touch CHANGELOG, don't commit. Orchestrator handles all close-out + side-tasks (DNS-resilience fix, Rumen-tick stale-job investigation, INSTALL-FOR-COLLABORATORS.md refresh).`;

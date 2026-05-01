@@ -22,7 +22,7 @@ Feature name inside TermDeck: **Flashback** — proactive memory recall when a p
 
 - [x] All three npm packages published and installable via `npx @jhizzard/termdeck`
 - [x] All three GitHub repos public with READMEs
-- [x] Supabase project `petvetbid` (ref `luvvbrpaopnblvxdxwzb`) backing Mnestra + Rumen
+- [x] Supabase project `petvetbid` (ref `<project-ref>`) backing Mnestra + Rumen
 - [x] Rumen `pg_cron` firing every 15 minutes — closed loop confirmed 2026-04-15 19:47 UTC
 - [x] Mnestra corpus: ~3,527 memories in the author's developer store
 - [ ] Docs site `https://termdeck-docs.vercel.app` deployed and linked from the `help` button (verify before posting — owned by T2)

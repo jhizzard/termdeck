@@ -157,7 +157,7 @@ mcp__memory__memory_remember(
 )
 ```
 
-Mirrors the Brad WhatsApp memory entry pattern (chat ID + bot username + permanent authorization). Once stored, no orchestrator session needs to re-look-up the chat ID before sending — analogous to how Brad's `+15127508576` is already a permanent fact.
+Mirrors the Brad WhatsApp memory entry pattern (chat ID + bot username + permanent authorization). Once stored, no orchestrator session needs to re-look-up the chat ID before sending — analogous to how Brad's `<phone-redacted>` is already a permanent fact.
 
 ## Round-trip test (raw API — sanity check before/after the plugin path)
 

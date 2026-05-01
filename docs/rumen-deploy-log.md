@@ -3,7 +3,7 @@
 **Sprint:** 3 / Terminal 1 / T1.2
 **Date:** 2026-04-14
 **Status:** 🛑 **BLOCKED** on Supabase credentials + required manual dashboard steps. See "Blockers" section.
-**Project:** `luvvbrpaopnblvxdxwzb` (inferred from `~/.termdeck/secrets.env` → `SUPABASE_URL`)
+**Project:** `<project-ref>` (inferred from `~/.termdeck/secrets.env` → `SUPABASE_URL`)
 
 > **Naming note:** Narrative uses **Mnestra** — the final name for the memory store after a three-stage Sprint 3 rename chain (Engram 🔴 → Mnemos 🔴 → Ingram ❌ → Mnestra 🟢). As of commit `30d04f2` the source code is fully renamed: `packages/server/src/mnestra-bridge/`, runtime log prefix `[mnestra-bridge]`, config field names `mnestraMode` / `mnestraWebhookUrl`, and the client Flashback toast at `packages/client/public/index.html:1904` renders `Mnestra — possible match`. Underlying SQL (`memory_items`, `memory_sessions`, `memory_hybrid_search`) was always naming-agnostic, so no DB changes are required.
 
@@ -50,11 +50,11 @@ $ supabase --version
 2.75.0
 ```
 
-### Step 2 — `supabase link --project-ref luvvbrpaopnblvxdxwzb` ❌ BLOCKED
+### Step 2 — `supabase link --project-ref <project-ref>` ❌ BLOCKED
 
 ```
 $ cd /Users/joshuaizzard/Documents/Graciella/rumen
-$ supabase link --project-ref luvvbrpaopnblvxdxwzb
+$ supabase link --project-ref <project-ref>
 Unexpected error retrieving remote project status: {"message":"Unauthorized"}
 ```
 
@@ -75,13 +75,13 @@ Attempted `psql` anyway just to sanity-check the `.env` credentials before plann
 
 ```
 $ psql "$DIRECT_URL" -c "SELECT 1;"
-psql: error: FATAL:  password authentication failed for user "postgres.luvvbrpaopnblvxdxwzb"
+psql: error: FATAL:  password authentication failed for user "postgres.<project-ref>"
 
 $ psql "$(echo $DATABASE_URL | sed 's/?.*//')" -c "SELECT 1;"
 psql: error: FATAL:  Tenant or user not found
 ```
 
-**Diagnosis:** both Rumen URLs in `/Users/joshuaizzard/Documents/Graciella/rumen/.env` are stale. The Shared Pooler rejects the user, and the direct-host URL has a mis-shaped user (`postgres.luvvbrpaopnblvxdxwzb` is the pooler user format, not the direct user format — `postgres` without the suffix is what the direct host expects). Even after normalizing the username, the password itself appears not to match.
+**Diagnosis:** both Rumen URLs in `/Users/joshuaizzard/Documents/Graciella/rumen/.env` are stale. The Shared Pooler rejects the user, and the direct-host URL has a mis-shaped user (`postgres.<project-ref>` is the pooler user format, not the direct user format — `postgres` without the suffix is what the direct host expects). Even after normalizing the username, the password itself appears not to match.
 
 **Conclusion:** Josh needs to refresh Rumen's `.env` with the current connection strings (see Blockers → Fix 2 below).
 
@@ -158,7 +158,7 @@ psql: error: FATAL: password authentication failed       (direct)
 
 **Fix — Josh to run:**
 
-1. Open https://supabase.com/dashboard/project/luvvbrpaopnblvxdxwzb/settings/database in a browser.
+1. Open https://supabase.com/dashboard/project/<project-ref>/settings/database in a browser.
 2. Under "Connection string":
    - Copy the **Shared Pooler** IPv4-compatible URL (NOT the Dedicated Pooler — it's IPv6-only and fails silently from serverless runtimes). This goes in `DATABASE_URL`.
    - Copy the **Session Mode** (port 5432) direct URL. This goes in `DIRECT_URL`.
@@ -171,7 +171,7 @@ psql: error: FATAL: password authentication failed       (direct)
 
 These cannot be automated via CLI even with working auth:
 
-1. **Enable `pg_cron` extension** — https://supabase.com/dashboard/project/luvvbrpaopnblvxdxwzb/database/extensions → search `pg_cron` → toggle on.
+1. **Enable `pg_cron` extension** — https://supabase.com/dashboard/project/<project-ref>/database/extensions → search `pg_cron` → toggle on.
 2. **Enable `pg_net` extension** — same page → search `pg_net` → toggle on.
 3. **Insert a vault secret** `rumen_service_role_key` containing the service-role JWT:
    ```sql
@@ -204,13 +204,13 @@ Given that the CLI path is multiply blocked, the **fastest path to green** is to
 
 ### A. Deploy the edge function via dashboard upload
 
-1. Log in to https://supabase.com/dashboard/project/luvvbrpaopnblvxdxwzb/functions .
+1. Log in to https://supabase.com/dashboard/project/<project-ref>/functions .
 2. Click "New Function", name it `rumen-tick`.
 3. Copy-paste the contents of `/Users/joshuaizzard/Documents/Graciella/rumen/supabase/functions/rumen-tick/index.ts` into the editor.
 4. **Before saving**, change line 23 from `npm:@jhizzard/rumen@0.1.0` to `npm:@jhizzard/rumen@0.2.0` so the deployed code runs the synthesize phase.
 5. Toggle **"Verify JWT"** OFF so pg_cron can invoke it with the vault-stored service-role bearer.
 6. Click "Deploy Function".
-7. Copy the resulting URL — it will be `https://luvvbrpaopnblvxdxwzb.supabase.co/functions/v1/rumen-tick`.
+7. Copy the resulting URL — it will be `https://<project-ref>.supabase.co/functions/v1/rumen-tick`.
 
 ### B. Set function secrets via dashboard
 
@@ -226,7 +226,7 @@ Same page → "Manage secrets" → add:
 Use the **anon** key (not service_role — anon is enough because Verify JWT is off):
 
 ```sh
-curl -i -X POST "https://luvvbrpaopnblvxdxwzb.supabase.co/functions/v1/rumen-tick" \
+curl -i -X POST "https://<project-ref>.supabase.co/functions/v1/rumen-tick" \
   -H "Authorization: Bearer <anon-key>" \
   -H "Content-Type: application/json" \
   -d '{}'
@@ -249,7 +249,7 @@ Expected: `HTTP 200` with a JSON body like:
 Then verify a new row landed in `rumen_jobs`:
 
 ```sh
-curl -s "https://luvvbrpaopnblvxdxwzb.supabase.co/rest/v1/rumen_jobs?select=id,triggered_by,status,started_at&order=started_at.desc&limit=3" \
+curl -s "https://<project-ref>.supabase.co/rest/v1/rumen_jobs?select=id,triggered_by,status,started_at&order=started_at.desc&limit=3" \
   -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
 ```
 
@@ -257,10 +257,10 @@ Expected: a row with `triggered_by` = `schedule` (because the function defaults 
 
 ### D. Enable extensions and apply migration 002 via the SQL editor
 
-1. Go to https://supabase.com/dashboard/project/luvvbrpaopnblvxdxwzb/database/extensions
+1. Go to https://supabase.com/dashboard/project/<project-ref>/database/extensions
 2. Search `pg_cron`, toggle on.
 3. Search `pg_net`, toggle on.
-4. Go to https://supabase.com/dashboard/project/luvvbrpaopnblvxdxwzb/sql/new
+4. Go to https://supabase.com/dashboard/project/<project-ref>/sql/new
 5. First, insert the vault secret:
    ```sql
    INSERT INTO vault.secrets (name, secret)
@@ -277,7 +277,7 @@ Expected: a row with `triggered_by` = `schedule` (because the function defaults 
      '*/15 * * * *',
      $$
        SELECT net.http_post(
-         url     := 'https://luvvbrpaopnblvxdxwzb.supabase.co/functions/v1/rumen-tick',
+         url     := 'https://<project-ref>.supabase.co/functions/v1/rumen-tick',
          headers := jsonb_build_object(
            'Content-Type',  'application/json',
            'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'rumen_service_role_key')
@@ -295,7 +295,7 @@ Expected: a row with `triggered_by` = `schedule` (because the function defaults 
 ### E. Wait 15–30 minutes and verify
 
 ```sh
-curl -s "https://luvvbrpaopnblvxdxwzb.supabase.co/rest/v1/rumen_jobs?select=id,triggered_by,status,started_at&order=started_at.desc&limit=5" \
+curl -s "https://<project-ref>.supabase.co/rest/v1/rumen_jobs?select=id,triggered_by,status,started_at&order=started_at.desc&limit=5" \
   -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
 ```
 
@@ -304,7 +304,7 @@ Expected: 1–2 new rows with `triggered_by = schedule`.
 ### F. Inspect insights
 
 ```sh
-curl -s "https://luvvbrpaopnblvxdxwzb.supabase.co/rest/v1/rumen_insights?select=insight_text,confidence,projects&order=created_at.desc&limit=5" \
+curl -s "https://<project-ref>.supabase.co/rest/v1/rumen_insights?select=insight_text,confidence,projects&order=created_at.desc&limit=5" \
   -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
 ```
 

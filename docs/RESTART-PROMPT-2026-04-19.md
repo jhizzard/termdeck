@@ -75,7 +75,7 @@ Sibling repos:
 - Mnestra: `~/Documents/Graciella/engram` (folder predates rename)
 - Rumen: `~/Documents/Graciella/rumen`
 - DOR: `~/Documents/DOR` (Rust binary at target/release/dor, port 8741)
-- Supabase project: **petvetbid** (ref `luvvbrpaopnblvxdxwzb`)
+- Supabase project: **petvetbid** (ref `<project-ref>`)
 
 ## 4+1 orchestration pattern
 

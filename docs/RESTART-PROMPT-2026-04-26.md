@@ -131,7 +131,7 @@ This is a TMR skill edit, not a TermDeck code change. Lives at `~/.claude/plans/
 - Global CLAUDE.md (always loaded, has the 4+1 inject convention): `~/.claude/CLAUDE.md`
 - Prior restart prompts: `docs/RESTART-PROMPT-2026-04-19.md`, `docs/RESTART-PROMPT-2026-04-18.md` (both predate v0.5–v0.7 work; treat as historical context only)
 - Live npm registry: `npm view @jhizzard/termdeck version` (currently 0.7.2)
-- Memory store: `petvetbid` Supabase, project ref `luvvbrpaopnblvxdxwzb`. Mnestra has ~4,889 memory_items; chopin-nashville is now 827 (down from 1,219 after Sprint 34 backfill).
+- Memory store: `petvetbid` Supabase, project ref `<project-ref>`. Mnestra has ~4,889 memory_items; chopin-nashville is now 827 (down from 1,219 after Sprint 34 backfill).
 
 ## When you start tomorrow
 

@@ -9,7 +9,7 @@ This document is the canonical hand-off for the next Claude Code session that wi
 - **`@jhizzard/termdeck@0.10.0`** (commit `b7353cc`, on github.com/jhizzard/termdeck) — Sprint 38 close.
 - **`@jhizzard/mnestra@0.3.0`** (commit `52492c1`, on github.com/jhizzard/mnestra) — three new graph MCP tools + `memory_recall_graph`.
 - **`@jhizzard/termdeck-stack@0.4.2`** — audit-trail patch bump.
-- **Rumen graph-inference Edge Function** (commit `0a211d8`, on github.com/jhizzard/rumen) — `npm:postgres@3.4.4` swap from `npm:pg` (BOOT_ERROR fix). Function deployed to project `luvvbrpaopnblvxdxwzb`.
+- **Rumen graph-inference Edge Function** (commit `0a211d8`, on github.com/jhizzard/rumen) — `npm:postgres@3.4.4` swap from `npm:pg` (BOOT_ERROR fix). Function deployed to project `<project-ref>`.
 - **petvetbid Supabase migrations 009 + 010 + rumen 003** — applied. 778 edges preserved.
 - **`graph_inference_service_role_key`** vault entry provisioned (cloned from `rumen_service_role_key`).
 - **graph-inference-tick pg_cron** — UNSCHEDULED (manually disabled because the pairwise self-join times out on a 5,500-row corpus before the 150s Edge Function wall-clock; the SQL needs a LATERAL+HNSW rewrite — task #19).
@@ -91,7 +91,7 @@ Joshua flashback-blind in daily flow ~9 days (since Sprint 21 close 2026-04-18).
 - **Time zone:** US Eastern. Run `date` before any time-indicative phrasing.
 - **Substrate:** petvetbid Supabase Pro tier $25/mo. Sprint 38 added zero recurring cost. Don't use scary "tens of millions of operations" framing without immediately quantifying as CPU-cycles vs dollars (memory entry recorded).
 - **He'll be asleep.** No copy-paste prompts. No "should I..." questions for routine decisions. Apply enforcement-level fixes when failures converge (memory entries `feedback_orchestrator_discipline.md` + `feedback_orchestrator_enforcement.md`). Mid-sprint nudge T1/T2/T3/T4 if any panel goes stale 7+ minutes between turns. Auto-poke any panel that drops to `status: 'active'` with no input-box text after the inject.
-- **Brad communicates via WhatsApp** at `+15127508576`. Don't use iMessage tools for him.
+- **Brad communicates via WhatsApp** at `<phone-redacted>`. Don't use iMessage tools for him.
 
 ### Switching projects context
 

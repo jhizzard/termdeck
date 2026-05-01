@@ -70,7 +70,7 @@ Secrets and config:
 Sibling repos (all under `github.com/jhizzard/`):
 - Mnestra: `~/Documents/Graciella/engram` (folder name predates rename).
 - Rumen: `~/Documents/Graciella/rumen`.
-- Supabase project backing both: **petvetbid** (ref `luvvbrpaopnblvxdxwzb`).
+- Supabase project backing both: **petvetbid** (ref `<project-ref>`).
 
 ## Common commands
 

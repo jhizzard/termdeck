@@ -46,5 +46,5 @@ Currently `deployFunction` only deploys `rumen-tick`. Sprint 42 T1's `graph-infe
 ## Pre-sprint context
 
 - Sprint 42 T3 fixed the migration 003 templating (init-rumen now applies BOTH 002 and 003). This lane fixes the parallel Edge Function deploy gap.
-- Joshua's manual workaround at Sprint 42 close: `cd ~/Documents/Graciella/rumen && supabase functions deploy graph-inference --project-ref luvvbrpaopnblvxdxwzb`. Worked because Joshua has the rumen repo locally; doesn't generalize.
+- Joshua's manual workaround at Sprint 42 close: `cd ~/Documents/Graciella/rumen && supabase functions deploy graph-inference --project-ref <project-ref>`. Worked because Joshua has the rumen repo locally; doesn't generalize.
 - The `rumen-tick` Edge Function (Sprint 27 era) and `graph-inference` Edge Function (Sprint 38 / Sprint 42 rewrite) both live in `~/Documents/Graciella/rumen/supabase/functions/`. Both need to deploy as part of `init --rumen`.

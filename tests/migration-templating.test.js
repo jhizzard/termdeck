@@ -84,8 +84,8 @@ test('bundled migration 002 has a project-ref placeholder and templates cleanly'
   // Body (cron-call URL) MUST have the placeholder — the comment block above
   // it also mentions <project-ref>, so a substring check is enough.
   assert.match(raw, /<project-ref>/);
-  const out = applyTemplating(raw, { projectRef: 'luvvbrpaopnblvxdxwzb' });
-  assert.match(out, /https:\/\/luvvbrpaopnblvxdxwzb\.supabase\.co\/functions\/v1\/rumen-tick/);
+  const out = applyTemplating(raw, { projectRef: 'xxxxxxxxxxxxxxxxxxxx' });
+  assert.match(out, /https:\/\/xxxxxxxxxxxxxxxxxxxx\.supabase\.co\/functions\/v1\/rumen-tick/);
   assert.doesNotMatch(out, /<project-ref>/);
 });
 
@@ -93,7 +93,7 @@ test('bundled migration 003 has a project-ref placeholder and templates cleanly'
   const file = path.join(MIGRATIONS_DIR, '003_graph_inference_schedule.sql');
   const raw = fs.readFileSync(file, 'utf8');
   assert.match(raw, /<project-ref>/);
-  const out = applyTemplating(raw, { projectRef: 'luvvbrpaopnblvxdxwzb' });
-  assert.match(out, /https:\/\/luvvbrpaopnblvxdxwzb\.supabase\.co\/functions\/v1\/graph-inference/);
+  const out = applyTemplating(raw, { projectRef: 'xxxxxxxxxxxxxxxxxxxx' });
+  assert.match(out, /https:\/\/xxxxxxxxxxxxxxxxxxxx\.supabase\.co\/functions\/v1\/graph-inference/);
   assert.doesNotMatch(out, /<project-ref>/);
 });

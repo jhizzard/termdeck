@@ -35,7 +35,7 @@ Every item below is verifiable today, with a file path or a query result cited. 
 
 - **MCP server** (stdio) and HTTP webhook server (`mnestra serve` subcommand, port 37778) in the `mnestra` repo. Sprint 2 F3.1 added the CLI entry.
 - **Hybrid search** over `memory_items` via the `memory_hybrid_search` SQL function (pgvector + tsvector). Works with Claude Code, Cursor, Windsurf, Cline, Continue.
-- **Production store:** ~3,527 memory items in the `petvetbid` Supabase project (ref `luvvbrpaopnblvxdxwzb`). Verified today by Rumen extracting 111 sessions' worth of signal out of it.
+- **Production store:** ~3,527 memory items in the `petvetbid` Supabase project (ref `<project-ref>`). Verified today by Rumen extracting 111 sessions' worth of signal out of it.
 - **`memory_status_aggregation()` RPC** (migration 006) — returns accurate GROUP BY totals server-side, bypassing the PostgREST 1000-row cap that was silently truncating status reports pre-Sprint 2.
 - **Flashback trigger path** — `packages/server/src/mnestra-bridge/` in the termdeck repo is the server-side client that queries Mnestra on `errored` transitions. The toast renders in `packages/client/public/index.html:1904` as `Mnestra — possible match`.
 - **25+ unit tests** green on the Sprint 2 tip.

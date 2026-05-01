@@ -1,6 +1,6 @@
 # Rumen Unblock Procedure
 
-Context: Rumen is the async learning layer on top of Mnestra. It runs as a Supabase Edge Function triggered every 15 minutes by pg_cron. This doc captures the full unblock procedure after a cold start, hardened with lessons from the 2026-04-15 production deploy against the **petvetbid** Supabase project (ref `luvvbrpaopnblvxdxwzb`) — Mnestra's tables live inside that project; there is no separate "mnestra" project in the dashboard.
+Context: Rumen is the async learning layer on top of Mnestra. It runs as a Supabase Edge Function triggered every 15 minutes by pg_cron. This doc captures the full unblock procedure after a cold start, hardened with lessons from the 2026-04-15 production deploy against the **petvetbid** Supabase project (ref `<project-ref>`) — Mnestra's tables live inside that project; there is no separate "mnestra" project in the dashboard.
 
 First successful deploy: 2026-04-15 18:45 UTC, job_id `295052b3-2328-45df-866b-fca59dfc3713`.
 

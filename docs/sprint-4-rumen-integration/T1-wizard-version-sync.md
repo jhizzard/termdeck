@@ -41,7 +41,7 @@ After your work, the init-rumen wizard should:
 1. Run `node packages/cli/src/index.js init --rumen` against the existing petvetbid project. It should re-deploy the Edge Function using the latest npm-published rumen version (currently 0.3.4).
 2. Hit the function with a manual POST:
    ```bash
-   curl -X POST https://luvvbrpaopnblvxdxwzb.supabase.co/functions/v1/rumen-tick \
+   curl -X POST https://<project-ref>.supabase.co/functions/v1/rumen-tick \
      -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
    ```
    Should return `{"ok":true, ...}`.

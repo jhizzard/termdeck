@@ -92,7 +92,7 @@ SELECT cron.schedule(
   '0 3 * * *',  -- 3 AM UTC daily
   $$
     SELECT net.http_post(
-      url := 'https://luvvbrpaopnblvxdxwzb.supabase.co/functions/v1/graph-inference',
+      url := 'https://<project-ref>.supabase.co/functions/v1/graph-inference',
       headers := jsonb_build_object('Authorization', 'Bearer ' || current_setting('app.settings.service_role_key'))
     );
   $$

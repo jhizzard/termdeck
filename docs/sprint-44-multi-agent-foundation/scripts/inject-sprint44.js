@@ -56,7 +56,7 @@ Pre-sprint substrate (orchestrator probed at sprint kickoff):
 - rumen-tick cron active (*/15 * * * *) — 304 rumen_insights in store
 - graph-inference-tick cron active (0 3 * * * UTC) — 368 cron-inferred edges
 - chopin-nashville: 40 (Sprint 41 acceptance held)
-- Telegram channel live (@JoshTermDeckBot, allowlist policy active, paired user ID 6943410589)
+- Telegram channel live (@JoshTermDeckBot, allowlist policy active, paired user ID <chat-id-redacted>)
 
 Then begin. Stay in your lane. Post FINDING / FIX-PROPOSED / DONE in STATUS.md (append-only, with timestamps). Don't bump versions, don't touch CHANGELOG, don't commit. Orchestrator handles all close-out.`;
 }

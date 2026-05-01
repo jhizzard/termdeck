@@ -37,7 +37,7 @@ Context heading into this session — what last session shipped and what's pendi
 
 - Sprint 44 docs are FULLY INJECT-READY at docs/sprint-44-multi-agent-foundation/: PLANNING.md, T1-T4 lane briefs, STATUS.md template, scripts/inject-sprint44.js, ORCHESTRATOR-BOOT.md (paste-ready for claude-tg session), and this RESTART-PROMPT.
 
-- Telegram channel is LIVE: bot @JoshTermDeckBot, paired user ID 6943410589, allowlist policy active. Listener requires a `claude-tg` (= `claude --channels plugin:telegram@claude-plugins-official`) session — `/reload-plugins` does NOT activate it. Memory entry at ~/.claude/projects/.../memory/reference_telegram_channel.md.
+- Telegram channel is LIVE: bot @JoshTermDeckBot, paired user ID <chat-id-redacted>, allowlist policy active. Listener requires a `claude-tg` (= `claude --channels plugin:telegram@claude-plugins-official`) session — `/reload-plugins` does NOT activate it. Memory entry at ~/.claude/projects/.../memory/reference_telegram_channel.md.
 
 - Three concerns Joshua flagged at end of Sprint 43:
   (a) "No flashbacks visible" — explanation: ~/.termdeck/termdeck.db hasn't been re-init'd against the v0.12.0 source, so flashback_events table doesn't exist locally yet. Resolution: restart the TermDeck server on local v0.12.0 source → migration 001_flashback_events.sql runs automatically → table exists → future fires log to it. He may also genuinely not have hit error-pattern thresholds during Sprint 43 lanes (clean execution = no fires).

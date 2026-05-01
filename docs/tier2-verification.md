@@ -3,7 +3,7 @@
 **Sprint:** 3 / Terminal 1
 **Date:** 2026-04-14 / 2026-04-15
 **Machine:** Josh's iMac (darwin 22.6.0)
-**Production Supabase:** `https://luvvbrpaopnblvxdxwzb.supabase.co` (Mnestra memory store, ~3,451 memories)
+**Production Supabase:** `https://<project-ref>.supabase.co` (Mnestra memory store, ~3,451 memories)
 
 > **Rename chain context:** This document survived a three-stage name churn during Sprint 3 — the memory store was called **Engram** when I drafted the original walkthrough, got mechanically renamed to **Mnemos**, then again to **Ingram**, and finally landed on **Mnestra** after Ingram was rejected for a sponsor conflict with Ingram Industries. As of the final sweep, source code is at `packages/server/src/mnestra-bridge/` with runtime log prefix `[mnestra-bridge]`, the client Flashback toast renders `Mnestra — possible match` at `packages/client/public/index.html:1904`, and `@jhizzard/mnestra@0.2.0` + `@jhizzard/termdeck@0.2.3` are live on npm with the earlier `engram`/`mnemos` packages deprecated with redirects. Underlying SQL (`memory_items`, `memory_sessions`, `memory_hybrid_search`) was always naming-agnostic, so the rename required zero DB changes.
 

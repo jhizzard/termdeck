@@ -16,7 +16,7 @@
  *   8. Logs every step to ~/.claude/hooks/memory-hook.log.
  *
  * Required env vars (validated at entry):
- *   - SUPABASE_URL              e.g. https://luvvbrpaopnblvxdxwzb.supabase.co
+ *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
  *   - SUPABASE_SERVICE_KEY      service-role key (NOT the anon key — needs INSERT on memory_items)
  *   - OPENAI_API_KEY            sk-... for text-embedding-3-small
  *
