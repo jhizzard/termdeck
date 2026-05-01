@@ -2,21 +2,21 @@
 
 **Audience:** experienced engineers (e.g. SWE leads, senior engineers) who want the full TermDeck + Mnestra stack running today, with eyes-open awareness of known issues and pending fixes. **Not** for first-time terminal users — for that, see [`GETTING-STARTED.md`](./GETTING-STARTED.md). For end-user install paths with hand-holding, see [`INSTALL.md`](./INSTALL.md).
 
-This doc is **version-pinned to the published 2026-04-29 stack**. Re-check pinned versions if you're reading this more than ~30 days after the date below.
+This doc is **version-pinned to the published 2026-05-01 stack**. Re-check pinned versions if you're reading this more than ~30 days after the date below.
 
-**Last updated:** 2026-04-30
-**Pinned versions:** `@jhizzard/termdeck@0.11.0` · `@jhizzard/termdeck-stack@0.4.6` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4` (Rumen tier deferred — see § Known issues)
+**Last updated:** 2026-05-01
+**Pinned versions:** `@jhizzard/termdeck@0.13.0` · `@jhizzard/termdeck-stack@0.4.8` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
 
 ## What you're getting
 
 | Tier | Package | What it does | Install today? |
 |---|---|---|---|
-| 1 | `@jhizzard/termdeck` | Browser-based terminal multiplexer with metadata overlays, panel grid, knowledge-graph viewer, in-dashboard 4+1 sprint runner | ✅ yes |
+| 1 | `@jhizzard/termdeck` | Browser-based terminal multiplexer with metadata overlays, panel grid, knowledge-graph viewer, flashback persistence dashboard (v0.12.0+), in-dashboard 4+1 sprint runner | ✅ yes |
 | 2 | `@jhizzard/mnestra` | MCP server giving any AI coding tool persistent memory across sessions (pgvector + Supabase + OpenAI embeddings) | ✅ yes |
-| 3 | `@jhizzard/rumen` | Async learning Edge Function — Extract → Relate → Synthesize → Surface; runs on `pg_cron` daily | ⚠️ **defer** — `init --rumen` wizard has a known fresh-install bug; fix queued for Sprint 43 T3 |
-| Meta | `@jhizzard/termdeck-stack` | One-command installer that wires Tiers 1–2 (and 3 when its wizard works) | ✅ yes — but stop before the Rumen step |
+| 3 | `@jhizzard/rumen` | Async learning Edge Function — Extract → Relate → Synthesize → Surface; runs on `pg_cron` daily | ✅ yes (Sprint 43 T3 fixed the fresh-install wizard bug — `init --rumen` now bundles both `rumen-tick` and `graph-inference` Edge Function source in the npm tarball) |
+| Meta | `@jhizzard/termdeck-stack` | One-command installer that wires all three tiers | ✅ yes |
 
-**For your use case (collaborator install, not contributor):** Tier 1 + Tier 2 today. Tier 3 when Sprint 43 T3 ships. The substrate-level Tier 3 (graph-inference cron) IS already running on the maintainer's instance against shared `petvetbid` Supabase — but that's the maintainer's data, not yours; for your install, Tier 3 is the cron-driven graph-edge-inference layer, which is the only piece blocked.
+**For your use case (collaborator install, not contributor):** all three tiers today. The Rumen tier was deferred in earlier versions of this doc due to a wizard bug; that bug is fixed as of `termdeck@0.12.0` (shipped 2026-04-30). Sprint 43 T3 bundled the Edge Function source directly inside the TermDeck npm package, so fresh users no longer need a sibling Rumen repo.
 
 ## Prerequisites
 
@@ -93,20 +93,11 @@ If `memory_remember` returns `Memory skipped: ...` instead of `Memory inserted: 
 
 ## Known issues + workarounds
 
-### 1. `termdeck init --rumen` is broken on fresh installs (DEFER until Sprint 43 T3 ships)
+### 1. `termdeck init --rumen` (FIXED in v0.12.0+)
 
-**Symptom:** the wizard runs through migrations + key prompts cleanly, then fails at:
+Earlier versions of this doc told you to defer the Rumen step due to a fresh-install bug at `packages/server/src/setup/migrations.js:76` (`rumenFunctionDir()` returned a path that the npm package didn't actually ship). **Sprint 43 T3 fixed this** — the npm tarball now bundles `packages/server/src/setup/rumen/functions/{rumen-tick,graph-inference}/index.ts`, and `init --rumen` deploys both Edge Functions in one staging dir with a multi-function `config.toml`. **`termdeck@0.12.0` and later ship this fix.** No workaround needed.
 
-```
-Bundling Function: rumen-tick
-Error: entrypoint path does not exist (supabase/functions/rumen-tick/index.ts)
-```
-
-**Root cause:** `packages/server/src/setup/migrations.js:76` `rumenFunctionDir()` looks for the Edge Function source via `require.resolve('@jhizzard/rumen/package.json')`. The npm package's `files` array is `["dist", "migrations", "README.md", "LICENSE", "CHANGELOG.md"]` — it doesn't ship `supabase/functions/`. Fallback path is empty too.
-
-**Workaround for today:** skip the Rumen step. You don't need it for daily use — Tier 1 + Tier 2 give you full TermDeck + persistent memory. Rumen is the cron-driven graph-edge-inference layer; it's nice-to-have, not load-bearing.
-
-**Fix forecast:** Sprint 43 T3 (planned, not yet fired). Fix lands in `termdeck@0.12.0`. See `docs/sprint-43-graph-controls-and-cross-project-surfacing/T3-init-rumen-wizard-repair.md` for the design.
+If you DO still see the old error (`Error: entrypoint path does not exist (supabase/functions/rumen-tick/index.ts)`), check `npm view @jhizzard/termdeck version` — you may be on a stale install. `npm i -g @jhizzard/termdeck@latest` to refresh.
 
 ### 2. npm cache trap (Brad's incident, 2026-04-28)
 
