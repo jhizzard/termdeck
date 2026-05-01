@@ -81,3 +81,69 @@ Each opt-in runs the install and prompts for the relevant API key. Skipped agent
 - Sprint 45 PLANNING.md: out-of-scope items deferred to Sprint 46 are listed there
 - Sprint 45 T4 lane brief: refactors the launcher to drive from the registry — Sprint 46 T3 builds on that foundation by adding per-agent buttons that read from the registry
 - AGENT-RUNTIMES.md: canonical reference for which agents are supported + their auth conventions; Sprint 46 T3/T4 surface this in UI
+
+---
+
+## Sprint 46 close-out side-tasks (queued 2026-05-01 by Joshua)
+
+### A. Private "everything" backup repo
+
+**Joshua's ask:** "I need to have a private way of saving everything to the cloud. Maybe a backup 'everything' repo that is private and hosted on Github."
+
+**Recommended architecture: separate `~/.termdeck-private/` directory + private GitHub remote.**
+
+Cleanest separation. Sensitive operational docs (full RESTART-PROMPTs with personal context, chat IDs, phone numbers, internal financials, full-fidelity sprint debriefs) live there. Public TermDeck repo references private docs by name only ("see RESTART-PROMPT-2026-05-01 in the private archive").
+
+Setup runbook:
+
+```bash
+# 1. Create private directory + git repo
+mkdir -p ~/.termdeck-private
+cd ~/.termdeck-private
+git init -b main
+
+# 2. Create private GitHub repo (one-time, via gh CLI or web UI)
+gh repo create jhizzard/termdeck-private --private --source=. --remote=origin
+
+# 3. Initial structure
+mkdir -p archive/{restart-prompts,sprint-debriefs,credentials-context,personal-context}
+echo "# TermDeck Private Archive — sensitive ops not for public consumption" > README.md
+
+# 4. Pre-fill with the unredacted versions of recently-redacted docs
+# (run from the public repo as source-of-truth; preserve real values privately)
+cp /path/to/public/docs/RESTART-PROMPT-*.md ~/.termdeck-private/archive/restart-prompts/
+# manually re-insert the redacted values from your password manager / memory_recall
+
+# 5. Commit + push
+git add .
+git commit -m "initial archive — pre-Sprint-46 baseline"
+git push origin main
+```
+
+Alternative architectures rejected:
+
+- **Two-remote setup on the same repo** (`origin`=public, `private`=private). Brittle; gitignored files don't sync to either remote without elaborate hooks.
+- **`docs/private/` directory in the public repo, gitignored.** Doesn't get backed up to GitHub at all (defeats the cloud-backup ask).
+- **Encrypted blobs in the public repo.** Adds key-management overhead for low payoff; private repo is simpler.
+
+**Recommendation: option A (separate directory + private repo).** Sprint 46 close-out task: bootstrap the private repo + migrate the unredacted versions of the docs touched by the 2026-05-01 redaction commit (`13d588e`).
+
+### B. CHANGELOG.md redaction at Sprint 46 close
+
+The 2026-05-01 forward-only redaction commit deliberately skipped `CHANGELOG.md` because the orchestrator was actively editing it during Sprint 45 close-out. After Sprint 45 (and Sprint 46) are both closed, run the same `sed` redactions against CHANGELOG so the same convention applies historically. CHANGELOG entries are historical records, but the project refs they contain are the same kind of identifier we redacted everywhere else. The audit will resurface those as "still in CHANGELOG" until this is done.
+
+```bash
+sed -i '' \
+  -e 's/luvvbrpaopnblvxdxwzb/<project-ref>/g' \
+  -e 's/rrzkceirgciiqgeefvbe/<project-ref-brad>/g' \
+  -e 's/+15127508576/<phone-redacted>/g' \
+  -e 's/15127508576/<phone-redacted>/g' \
+  -e 's/6943410589/<chat-id-redacted>/g' \
+  CHANGELOG.md
+```
+
+Run this in the Sprint 46 close-out commit (alongside the v0.15.0 entry). One-line task; no review burden.
+
+### C. INSTALL-FOR-COLLABORATORS.md post-Sprint-45-publish refresh
+
+Sprint 45 ships `termdeck@0.14.0`. The "DEFER Rumen tier" guidance was already flipped at Sprint 44 close, but the version pin needs to update. Sprint 46 close-out task: pin `INSTALL-FOR-COLLABORATORS.md` to `v0.15.0` versions (Sprint 46's target) + mention the new agent-launcher buttons + Install-or-Connect modal as user-facing capabilities.
