@@ -53,6 +53,16 @@ test('GET /api/transcripts/recent returns { sessions: [...] } with session_id + 
   for (const session of body.sessions) {
     assert.equal(typeof session.session_id, 'string', 'session.session_id is a string');
     assert.ok(Array.isArray(session.chunks), 'session.chunks is an array');
+    // Sprint 46 T3: client renderer (renderRecentTranscripts) reads
+    // chunk.content per row to synthesize a preview; lock the field name in.
+    if (session.chunks.length > 0) {
+      const chunk = session.chunks[0];
+      assert.equal(typeof chunk.content, 'string', 'chunk.content is a string');
+      // chunk_index is BIGINT in pg → returned as string; renderer doesn't sort
+      // by it client-side, but contract should pin presence so a future server
+      // refactor doesn't drop it.
+      assert.ok('chunk_index' in chunk, 'chunk has chunk_index field');
+    }
   }
 });
 
@@ -67,6 +77,16 @@ test('GET /api/transcripts/search returns { results: [...] }', async (t) => {
   const body = await res.json();
   assert.ok(body && typeof body === 'object', 'body is an object');
   assert.ok(Array.isArray(body.results), 'results is an array');
+
+  // Sprint 46 T3: client renderer (renderSearchResults) shows session shortId,
+  // result content, and a time chip from created_at. Pin the field names so
+  // a future server-side refactor renaming `created_at` → `timestamp` etc.
+  // doesn't silently break the time chip again.
+  for (const result of body.results) {
+    assert.equal(typeof result.session_id, 'string', 'result.session_id is a string');
+    assert.equal(typeof result.content, 'string', 'result.content is a string');
+    assert.ok('created_at' in result, 'result has created_at field');
+  }
 });
 
 test('GET /api/transcripts/:sessionId returns { content, lines, chunks } for valid id', async (t) => {

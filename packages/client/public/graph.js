@@ -552,7 +552,7 @@
       .attr('stroke-width', 1.2)
       .attr('filter', 'url(#nodeGlow)')
       .style('cursor', 'pointer')
-      .on('mouseenter', (event, d) => onNodeHover(d.id))
+      .on('mouseenter', (event, d) => { onNodeHover(d.id); showNodeTooltip(event, d); })
       .on('mouseleave', () => onNodeHover(null))
       .on('click', (event, d) => onNodeClick(d))
       .call(window.d3.drag()
@@ -737,6 +737,28 @@
     tip.innerHTML = meta.join(' · ');
     tip.hidden = false;
     moveTooltip(event);
+  }
+
+  // Sprint 46 T1 — node hover tooltip. Shows project (color-coded) + a short
+  // content snippet so the user can scan the graph without having to open the
+  // drawer for every node. Click still opens the full detail drawer.
+  function showNodeTooltip(event, node) {
+    const tip = $('graphTooltip');
+    if (!tip || !node) return;
+    const proj = node.project || 'global';
+    const text = escapeHtml(truncate(node.label || node.snippet || '(no content)', 80));
+    const meta = node.source_type ? `<span style="opacity:0.7">${escapeHtml(node.source_type)}</span>` : '';
+    tip.innerHTML = `<strong style="color:${hashHue(proj)}">${escapeHtml(proj)}</strong> ${meta} · ${text}`;
+    tip.hidden = false;
+    moveTooltip(event);
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
   function moveTooltip(event) {
     const tip = $('graphTooltip');

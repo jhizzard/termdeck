@@ -2479,56 +2479,20 @@
         return;
       }
 
-      // Sprint 45 T4: registry-driven shorthand resolution. Pre-Sprint-45
-      // had hardcoded claude/cc/gemini/python branches here; now the type
-      // detection consults state.agentAdapters (loaded from
-      // /api/agent-adapters at init), and only the Claude `cc` alias and
-      // the python-server detection (no adapter exists) stay as
-      // special-cases below. Adapter matching uses an anchored prefix on
-      // the adapter's binary name (`^binary\b`, case-insensitive) which
-      // fits all four Sprint-45 adapters (claude / codex / gemini / grok)
-      // since each binary is uniquely named.
-      let resolvedCommand = command;
-      let resolvedType = 'shell';
-      let resolvedCwd = undefined;
-      let resolvedProject = project || undefined;
-
-      // Claude `cc` alias normalization. Documented Claude shorthand —
-      // does not generalize to other adapters, so it stays in client UX,
-      // not in the server-side adapter contract.
-      let canonical = command;
-      if (/^cc\b/i.test(canonical)) {
-        canonical = canonical.replace(/^cc\b/i, 'claude');
-      }
-
-      const adapter = (state.agentAdapters || []).find((a) =>
-        a && a.binary && new RegExp(`^${a.binary}\\b`, 'i').test(canonical)
-      );
-
-      if (adapter) {
-        resolvedType = adapter.sessionType;
-        // Claude shorthand: `claude <project-or-cwd>` rewrites to `claude`
-        // and routes the trailing arg into either the project dropdown
-        // (if it's a known project name) or the cwd parameter. Other
-        // adapters' arg-parsing — codex sub-commands, gemini -p flag,
-        // grok --model — pass through unchanged via resolvedCommand.
-        if (adapter.name === 'claude') {
-          const argMatch = canonical.match(/^claude\s+(?:code\s+)?(.+)/i);
-          if (argMatch) {
-            const arg = argMatch[1].trim();
-            if (state.config.projects && state.config.projects[arg]) {
-              resolvedProject = arg;
-            } else {
-              resolvedCwd = arg;
-            }
-          }
-          resolvedCommand = adapter.binary;
-        }
-      } else if (/^python3?\b.*(?:runserver|uvicorn|flask|gunicorn)/i.test(canonical)) {
-        // python-server is a server SUBTYPE for status badges, not an
-        // agent adapter. No registry entry for it; detection stays here.
-        resolvedType = 'python-server';
-      }
+      // Sprint 45 T4 + Sprint 46 T4: resolver extracted to
+      // packages/client/public/launcher-resolver.js so the same routing
+      // logic runs in the browser AND under `node --test` (see
+      // tests/launcher-resolver.test.js for the contract pin). Sprint 46
+      // T4 also extended the python-server preemptive regex to recognize
+      // `http.server` so the python topbar quick-launch button is typed
+      // correctly from the first frame.
+      const { resolvedCommand, resolvedType, resolvedCwd, resolvedProject } =
+        LauncherResolver.resolve(
+          command,
+          project,
+          state.agentAdapters,
+          state.config.projects
+        );
 
       const session = await api('POST', '/api/sessions', {
         command: resolvedCommand,
@@ -4493,18 +4457,28 @@
       for (const sess of data.sessions) {
         const id = sess.sessionId || sess.session_id || 'unknown';
         const shortId = id.slice(0, 8);
-        const type = sess.type || 'shell';
+        // Server (/api/transcripts/recent) returns { sessions: [{ session_id, chunks: [...] }] }
+        // with chunks already grouped per session in DESC created_at order. Type/project
+        // metadata isn't on the transcripts table — fall back to optional fields if any
+        // future server enrichment ships them.
+        const chunks = Array.isArray(sess.chunks) ? sess.chunks : [];
+        const type = sess.type || (chunks.length ? 'session' : 'shell');
         const project = sess.project || '';
-        const lines = sess.lines || sess.preview || [];
-        const lineCount = sess.totalLines || lines.length;
+        const totalChunks = sess.totalLines || chunks.length;
+        // Build preview from the most-recent chunks. Server returns DESC order, so
+        // the first 6 entries are the newest — reverse for natural top-down reading.
+        const previewChunks = chunks.slice(0, 6).reverse();
+        const previewText = sess.preview
+          ? (Array.isArray(sess.preview) ? sess.preview.join('\n') : String(sess.preview))
+          : previewChunks.map(c => (c && typeof c.content === 'string') ? c.content : '').join('');
         html += `<div class="transcript-session" data-session-id="${escapeHtml(id)}">
           <div class="ts-header">
             <span class="ts-id">${escapeHtml(shortId)}</span>
             <span class="ts-type">${escapeHtml(type)}</span>
             ${project ? `<span class="ts-project">${escapeHtml(project)}</span>` : ''}
-            <span class="ts-lines">${lineCount} lines</span>
+            <span class="ts-lines">${totalChunks} chunks</span>
           </div>
-          <pre class="ts-preview">${escapeHtml(lines.slice(-6).join('\n'))}</pre>
+          <pre class="ts-preview">${escapeHtml(previewText)}</pre>
         </div>`;
       }
       body.innerHTML = html;
@@ -4544,7 +4518,11 @@
         const id = result.sessionId || result.session_id || 'unknown';
         const shortId = id.slice(0, 8);
         const line = result.line || result.content || '';
-        const ts = result.timestamp ? new Date(result.timestamp).toLocaleTimeString() : '';
+        // Server (/api/transcripts/search) sends `created_at`; legacy `timestamp` kept
+        // as a fallback in case a future enrichment swaps the field name.
+        const tsSource = result.timestamp || result.created_at || '';
+        const tsDate = tsSource ? new Date(tsSource) : null;
+        const ts = (tsDate && !isNaN(tsDate.getTime())) ? tsDate.toLocaleTimeString() : '';
         html += `<div class="transcript-result" data-session-id="${escapeHtml(id)}">
           <div class="tr-meta">
             <span class="tr-session">${escapeHtml(shortId)}</span>

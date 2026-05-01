@@ -4,8 +4,8 @@
 
 This doc is **version-pinned to the published 2026-05-01 stack**. Re-check pinned versions if you're reading this more than ~30 days after the date below.
 
-**Last updated:** 2026-05-01
-**Pinned versions:** `@jhizzard/termdeck@0.14.0` · `@jhizzard/termdeck-stack@0.4.9` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
+**Last updated:** 2026-05-01 (Sprint 46 close)
+**Pinned versions:** `@jhizzard/termdeck@0.15.0` · `@jhizzard/termdeck-stack@0.4.10` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
 
 ## What you're getting
 
@@ -115,8 +115,8 @@ npx @jhizzard/termdeck-stack@latest
 If still stuck, verify:
 
 ```bash
-npm view @jhizzard/termdeck version            # expect 0.14.0
-npm view @jhizzard/termdeck-stack version      # expect 0.4.9
+npm view @jhizzard/termdeck version            # expect 0.15.0
+npm view @jhizzard/termdeck-stack version      # expect 0.4.10
 ```
 
 If those return the expected versions but `termdeck --version` doesn't match, your global install is the culprit:
@@ -166,7 +166,17 @@ PSQL=/Applications/Postgres.app/Contents/Versions/latest/bin/psql  # adjust for 
 $PSQL "$DATABASE_URL" -f $(npm root -g)/@jhizzard/mnestra/migrations/014_explicit_grants.sql
 ```
 
-### 5. Auto mode requires Opus on Pro tier (Brad's 2026-04-28 question)
+### 5. Flashback funnel undercount when `aiQueryAvailable=true` (Sprint 46 T2 finding)
+
+**Symptom:** if you've enabled the RAG-driven proactive memory feature (set `config.rag.openaiApiKey` + Supabase URL in `~/.termdeck/config.yaml`), the flashback history dashboard's funnel may show fewer dismiss/click-through events than fires.
+
+**Cause:** TermDeck has two parallel flashback paths. The server-side path at `packages/server/src/index.js:880-955` always inserts into `flashback_events` before WS-emitting the toast — funnel-accurate. The client-side path at `app.js:562` (`triggerProactiveMemoryQuery`) is gated on `aiQueryAvailable=true` and, when active, fires its own toast WITHOUT a `flashback_event_id`. If the client-side toast wins the visual race against the server-side toast for the same `meta.status==='errored'` event, the user dismisses the client-side toast and the dismiss POST is skipped (no event id to target). Result: dismiss/click counts trail fires.
+
+**Fix shipped:** none in v0.15.0 (Sprint 47+ candidate). With `aiQueryAvailable=false` (default — `config.rag` unset), this never fires. The server-side path is the only producer and the funnel is accurate.
+
+**Workaround if you've enabled `aiQueryAvailable`:** treat the funnel's dismiss/click numbers as a lower bound. Track engagement against fires count for actual feature-success measurement. Sprint 47 will either delete the dead client-side path or wire it to `recordFlashback` so both producers share the audit trail.
+
+### 6. Auto mode requires Opus on Pro tier (Brad's 2026-04-28 question)
 
 **Symptom:** Claude Code's auto mode is unavailable when `/model` is set to Sonnet on the standard Pro plan.
 
@@ -208,7 +218,7 @@ $PSQL "$DATABASE_URL" -f $(npm root -g)/@jhizzard/mnestra/migrations/014_explici
 [ ] Node.js version (`node --version`):
 [ ] Platform (`uname -s`):
 [ ] Installer ran cleanly (`npx @jhizzard/termdeck-stack@latest`):
-[ ] Versions match expected (`npm view @jhizzard/termdeck version` → 0.14.0):
+[ ] Versions match expected (`npm view @jhizzard/termdeck version` → 0.15.0):
 [ ] TermDeck starts (`termdeck` opens dashboard at http://127.0.0.1:3000):
 [ ] Claude session launches in a panel:
 [ ] memory_remember + memory_recall round-trips successfully:
@@ -222,4 +232,4 @@ $PSQL "$DATABASE_URL" -f $(npm root -g)/@jhizzard/mnestra/migrations/014_explici
 - **Conceptual / "how is X supposed to work" question:** check `docs/architecture.md` first; if not covered, ask.
 - **Sprint planning / roadmap:** `docs/BACKLOG.md` and the sprint-43+ planning docs.
 
-— TermDeck maintainer notes, 2026-05-01 (Sprint 45 close-out: multi-agent adapters shipped — Codex / Gemini / Grok now first-class)
+— TermDeck maintainer notes, 2026-05-01 (Sprint 46 close-out: dashboard functionality audit — 5 silent-regression bugs caught + fixed across graph viewer / transcripts panel / quick-launchers; flashback dashboard verified clean. Dashboard now in known-clean state for outside users.)
