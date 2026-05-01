@@ -159,3 +159,17 @@ test('bootPromptTemplate returns a non-empty multi-line string', () => {
     assert.ok(out.includes('\n'), `${adapter.name}: bootPromptTemplate must be multi-line`);
   }
 });
+
+// Sprint 47 T3 — every adapter must declare an `acceptsPaste` boolean so the
+// inject helper can dispatch between bracketed-paste and chunked-stdin
+// fallback without a hardcoded per-agent switch. Default-true is the safe
+// path; setting false triggers chunkedFallback in sprint-inject.js.
+test('every adapter declares acceptsPaste as a boolean', () => {
+  for (const adapter of adapters()) {
+    assert.equal(
+      typeof adapter.acceptsPaste,
+      'boolean',
+      `${adapter.name}: acceptsPaste must be a boolean (got ${typeof adapter.acceptsPaste})`,
+    );
+  }
+});

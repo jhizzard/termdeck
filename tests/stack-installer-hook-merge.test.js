@@ -525,20 +525,20 @@ test('detectProject matches when entries are added at runtime',
 
 test('readEnv returns null + logs when SUPABASE_URL missing', withEnv({
   SUPABASE_URL: null,
-  SUPABASE_SERVICE_KEY: 'k', OPENAI_API_KEY: 'sk-x',
+  SUPABASE_SERVICE_ROLE_KEY: 'k', OPENAI_API_KEY: 'sk-x',
 }, () => {
   assert.equal(readEnv(), null);
 }));
 
 test('readEnv returns null when all three missing', withEnv({
-  SUPABASE_URL: null, SUPABASE_SERVICE_KEY: null, OPENAI_API_KEY: null,
+  SUPABASE_URL: null, SUPABASE_SERVICE_ROLE_KEY: null, OPENAI_API_KEY: null,
 }, () => {
   assert.equal(readEnv(), null);
 }));
 
 test('readEnv returns trimmed config with all three present', withEnv({
   SUPABASE_URL: 'https://abc.supabase.co/',
-  SUPABASE_SERVICE_KEY: 'service-key-value',
+  SUPABASE_SERVICE_ROLE_KEY: 'service-key-value',
   OPENAI_API_KEY: 'sk-test',
 }, () => {
   const env = readEnv();
@@ -808,7 +808,7 @@ test('processStdinPayload end-to-end: env present + good transcript → embed + 
 
   const setEnv = withEnv({
     SUPABASE_URL: 'https://abc.supabase.co',
-    SUPABASE_SERVICE_KEY: 'svc',
+    SUPABASE_SERVICE_ROLE_KEY: 'svc',
     OPENAI_API_KEY: 'sk-x',
   }, withMockedFetch(fetchMock, async () => {
     await processStdinPayload(JSON.stringify({
@@ -838,7 +838,7 @@ test('processStdinPayload skips when env vars missing (no fetch call)', async ()
   const orig = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('should not fetch'); };
   const setEnv = withEnv({
-    SUPABASE_URL: null, SUPABASE_SERVICE_KEY: null, OPENAI_API_KEY: null,
+    SUPABASE_URL: null, SUPABASE_SERVICE_ROLE_KEY: null, OPENAI_API_KEY: null,
   }, async () => {
     await processStdinPayload(JSON.stringify({
       transcript_path: transcriptPath, cwd: '/Users/x/dir',

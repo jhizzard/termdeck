@@ -194,6 +194,9 @@ const codexAdapter = {
   parseTranscript,
   bootPromptTemplate,
   costBand: 'pay-per-token',
+  // Sprint 47 T3 — Codex's Ratatui TUI accepts bracketed-paste per the
+  // Sprint 45 T1 audit; safe to use the two-stage submit pattern unchanged.
+  acceptsPaste: true,
 };
 
 module.exports = codexAdapter;

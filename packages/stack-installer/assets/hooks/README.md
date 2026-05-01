@@ -18,7 +18,7 @@ The hook:
 
 1. Skips transcripts smaller than 5 KB (no signal in tiny sessions —
    override via `TERMDECK_HOOK_MIN_BYTES`).
-2. Validates env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
+2. Validates env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
    `OPENAI_API_KEY`); if any are missing, logs the missing list and
    exits cleanly without blocking the session close.
 3. Detects the project from `cwd` against a built-in regex table; falls
@@ -44,7 +44,7 @@ The hook needs three env vars at run time:
 | Var | What | How to set |
 |---|---|---|
 | `SUPABASE_URL` | Your Supabase project URL (e.g. `https://abc.supabase.co`) | `~/.termdeck/secrets.env` (Tier 2) |
-| `SUPABASE_SERVICE_KEY` | Service-role key with INSERT on `memory_items`. **Not the anon key.** | `~/.termdeck/secrets.env` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service-role key with INSERT on `memory_items`. **Not the anon key.** | `~/.termdeck/secrets.env` |
 | `OPENAI_API_KEY` | OpenAI key for embedding inference | `~/.termdeck/secrets.env` or your shell |
 
 Claude Code propagates the parent shell's environment into hook

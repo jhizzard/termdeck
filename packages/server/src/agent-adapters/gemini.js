@@ -153,6 +153,9 @@ const geminiAdapter = {
   parseTranscript,
   bootPromptTemplate,
   costBand: 'pay-per-token',
+  // Sprint 47 T3 — Gemini's CLI is paste-friendly per the single-JSON-object
+  // session shape captured in Sprint 45 T2; bracketed-paste injects cleanly.
+  acceptsPaste: true,
 };
 
 module.exports = geminiAdapter;

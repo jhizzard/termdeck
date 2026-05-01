@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Browser-based terminal multiplexer with metadata overlays, panel flashback memory recall, and AI-aware session management",
   "bin": {
     "termdeck": "./packages/cli/src/index.js"
@@ -15,6 +15,7 @@
     "config/secrets.env.example",
     "config/transcript-migration.sql",
     "docs/orchestrator-guide.md",
+    "docs/multi-agent-substrate/boot-prompts/*.md",
     "LICENSE",
     "README.md"
   ],

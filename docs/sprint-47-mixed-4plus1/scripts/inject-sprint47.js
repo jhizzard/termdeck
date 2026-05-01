@@ -1,18 +1,43 @@
 #!/usr/bin/env node
 /**
- * Sprint 47 four-lane inject — two-stage submit pattern.
+ * Sprint 47 four-lane inject — two-stage submit pattern with per-lane
+ * agent dispatch (Sprint 47 T3 mixed-agent infrastructure).
  *
- * Stage 1: POST bracketed-paste payload (\x1b[200~ ... \x1b[201~) to each
- *          of T1/T2/T3/T4 with ~250ms gaps. NO trailing \r.
- * Stage 2: Sleep 400ms, then POST \r alone to each panel with ~250ms gaps.
+ * Stage 1: per-lane payload — bracketed-paste OR chunked-stdin fallback,
+ *          selected from the adapter registry's `acceptsPaste` field.
+ *          Lanes whose adapter accepts paste get one PTY write
+ *          (`\x1b[200~ ... \x1b[201~`); chunked lanes get N writes
+ *          (line + `\r` per chunk) with a small inter-chunk delay.
+ *          ~250ms gap between lanes either way.
+ * Stage 2: Sleep 400ms, then POST `\r` alone to each paste-mode panel
+ *          with ~250ms gaps. Chunked-mode panels self-submitted on
+ *          their last line — skipped to avoid a duplicate empty submit.
  *
- * Identical mechanism to inject-sprint46.js — only the lane topics differ.
- * Sprint 47 itself runs all four lanes on Claude (the lane briefs assume
- * Claude); the mixed-agent infrastructure those lanes ship is what enables
- * Sprint 48+ to declare `agent: codex` on a lane and have it route correctly.
+ * Sprint 47's own lanes all run on Claude (lane briefs assume Claude),
+ * so every payload here is bracketed-paste. The mixed-agent dispatch
+ * structure is what Sprint 48+ clones to declare e.g. `agent: 'codex'`
+ * on a lane and have the payload shape route correctly.
+ *
+ * Canonical clone target — copy this file when starting a new sprint.
  */
 
 const http = require('http');
+const path = require('path');
+
+// Source-of-truth adapter registry from the server package. Keeps the
+// standalone script's dispatch logic in lock-step with the in-server
+// `injectSprintPrompts` helper — both consult the same `acceptsPaste`
+// boolean per agent.
+const { AGENT_ADAPTERS } = require(path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'packages',
+  'server',
+  'src',
+  'agent-adapters',
+));
 
 const BASE = 'http://127.0.0.1:3000';
 const SESSIONS = process.env.SPRINT47_SESSION_IDS
@@ -24,11 +49,17 @@ if (!SESSIONS || SESSIONS.length !== 4) {
   process.exit(1);
 }
 
+// LANES: declare per-lane agent assignment. Sprint 47 itself runs all
+// lanes on Claude (lane briefs assume Claude); Sprint 48+ may set e.g.
+// `agent: 'codex'` to have a Codex CLI panel pick up that lane.
+//
+// Valid agent names: 'claude' | 'codex' | 'gemini' | 'grok' (must match a
+// key in AGENT_ADAPTERS).
 const LANES = [
-  { tag: 'T1', file: 'T1-frontmatter-parser.md',     project: 'termdeck', topic: 'Sprint 47 frontmatter parser PLANNING.md YAML lane agent validation adapter registry getLaneAgent mixed 4+1 infrastructure' },
-  { tag: 'T2', file: 'T2-boot-prompt-templates.md',  project: 'termdeck', topic: 'Sprint 47 per-agent boot-prompt templates docs/multi-agent-substrate/boot-prompts Mustache placeholders resolveBootPrompt CLAUDE.md AGENTS.md GEMINI.md per-agent memory tool framing' },
-  { tag: 'T3', file: 'T3-inject-mixed-agent.md',     project: 'termdeck', topic: 'Sprint 47 sprint-inject extension mixed-agent dispatch acceptsPaste adapter contract chunkedFallback bracketed paste two-stage submit' },
-  { tag: 'T4', file: 'T4-status-merger.md',          project: 'termdeck', topic: 'Sprint 47 cross-agent STATUS merger normalize FINDING FIX-PROPOSED DONE Claude Codex Gemini Grok emoji bullet free-form prose status-merger.js' },
+  { tag: 'T1', agent: 'claude', file: 'T1-frontmatter-parser.md',     project: 'termdeck', topic: 'Sprint 47 frontmatter parser PLANNING.md YAML lane agent validation adapter registry getLaneAgent mixed 4+1 infrastructure' },
+  { tag: 'T2', agent: 'claude', file: 'T2-boot-prompt-templates.md',  project: 'termdeck', topic: 'Sprint 47 per-agent boot-prompt templates docs/multi-agent-substrate/boot-prompts Mustache placeholders resolveBootPrompt CLAUDE.md AGENTS.md GEMINI.md per-agent memory tool framing' },
+  { tag: 'T3', agent: 'claude', file: 'T3-inject-mixed-agent.md',     project: 'termdeck', topic: 'Sprint 47 sprint-inject extension mixed-agent dispatch acceptsPaste adapter contract chunkedFallback bracketed paste two-stage submit' },
+  { tag: 'T4', agent: 'claude', file: 'T4-status-merger.md',          project: 'termdeck', topic: 'Sprint 47 cross-agent STATUS merger normalize FINDING FIX-PROPOSED DONE Claude Codex Gemini Grok emoji bullet free-form prose status-merger.js' },
 ];
 
 function buildPrompt({ tag, file, project, topic }) {
@@ -52,6 +83,19 @@ Pre-sprint substrate (orchestrator probed at sprint kickoff):
 - rumen-tick + graph-inference-tick crons active
 
 Then begin. Stay in your lane. Post FINDING / FIX-PROPOSED / DONE in STATUS.md (append-only, with timestamps). Don't bump versions, don't touch CHANGELOG, don't commit. Orchestrator handles all close-out + side-tasks (Sprint 46 deferral pickups, INSTALL refresh, mixed-agent smoke test, v1.0.0 decision).`;
+}
+
+// Resolve per-lane inject shape from the adapter registry. Mirrors
+// `buildPayload` in packages/server/src/sprint-inject.js — keep them in
+// sync (the in-server helper is the source of truth for in-dashboard
+// inject; this is the same logic for the orchestrator-CLI path).
+function buildPayload(prompt, agent) {
+  const adapter = agent ? AGENT_ADAPTERS[agent] : null;
+  const acceptsPaste = adapter ? adapter.acceptsPaste !== false : true;
+  if (acceptsPaste) {
+    return { kind: 'paste', bytes: `\x1b[200~${prompt}\x1b[201~` };
+  }
+  return { kind: 'chunked', lines: prompt.split('\n') };
 }
 
 function postInput(sessionId, text) {
@@ -117,48 +161,73 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const t0 = Date.now();
   console.log(`[inject] Sprint 47 — ${SESSIONS.length} sessions, two-stage submit, started ${new Date().toISOString()}\n`);
 
-  console.log('[stage 1] paste payloads (no submit)\n');
-  for (let i = 0; i < 4; i++) {
-    const sid = SESSIONS[i];
-    const lane = LANES[i];
-    const prompt = buildPrompt(lane);
-    const payload = `\x1b[200~${prompt}\x1b[201~`;
-    try {
-      const r = await postInput(sid, payload);
-      console.log(`  ${lane.tag} (${sid.slice(0, 8)}) paste: ${r.statusCode} ${r.body}`);
-    } catch (e) {
-      console.error(`  ${lane.tag} (${sid.slice(0, 8)}) PASTE FAILED: ${e.message}`);
+  // Pre-resolve per-lane dispatch so the verify pass knows which lanes
+  // self-submitted (chunked) vs. need a stage-2 lone CR (paste).
+  const dispatched = LANES.map((lane, i) => ({
+    sid: SESSIONS[i],
+    lane,
+    prompt: buildPrompt(lane),
+    payload: buildPayload(buildPrompt(lane), lane.agent),
+  }));
+
+  console.log('[stage 1] per-lane payload (paste / chunked fallback)\n');
+  for (let i = 0; i < dispatched.length; i++) {
+    const { sid, lane, payload } = dispatched[i];
+    if (payload.kind === 'paste') {
+      try {
+        const r = await postInput(sid, payload.bytes);
+        console.log(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/paste]: ${r.statusCode} ${r.body}`);
+      } catch (e) {
+        console.error(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/paste] FAILED: ${e.message}`);
+      }
+    } else {
+      // chunked: write each line + \r with a 20ms inter-chunk delay
+      let totalChunks = 0;
+      for (let j = 0; j < payload.lines.length; j++) {
+        try {
+          await postInput(sid, payload.lines[j] + '\r');
+          totalChunks += 1;
+        } catch (e) {
+          console.error(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/chunked] line ${j + 1} FAILED: ${e.message}`);
+          break;
+        }
+        if (j < payload.lines.length - 1) await sleep(20);
+      }
+      console.log(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/chunked]: ${totalChunks}/${payload.lines.length} chunks`);
     }
-    if (i < 3) await sleep(250);
+    if (i < dispatched.length - 1) await sleep(250);
   }
 
   console.log('\n[settle] sleeping 400ms before submit-stage\n');
   await sleep(400);
 
-  console.log('[stage 2] submit \\r alone\n');
-  for (let i = 0; i < 4; i++) {
-    const sid = SESSIONS[i];
-    const lane = LANES[i];
+  console.log('[stage 2] submit \\r alone (paste-mode lanes only)\n');
+  for (let i = 0; i < dispatched.length; i++) {
+    const { sid, lane, payload } = dispatched[i];
+    if (payload.kind === 'chunked') {
+      console.log(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/chunked]: skipped (already submitted on last chunk)`);
+      if (i < dispatched.length - 1) await sleep(250);
+      continue;
+    }
     try {
       const r = await postInput(sid, '\r');
-      console.log(`  ${lane.tag} (${sid.slice(0, 8)}) submit: ${r.statusCode} ${r.body}`);
+      console.log(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/paste] submit: ${r.statusCode} ${r.body}`);
     } catch (e) {
-      console.error(`  ${lane.tag} (${sid.slice(0, 8)}) SUBMIT FAILED: ${e.message}`);
+      console.error(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}/paste] SUBMIT FAILED: ${e.message}`);
     }
-    if (i < 3) await sleep(250);
+    if (i < dispatched.length - 1) await sleep(250);
   }
 
   console.log('\n[verify] sleeping 8s then checking each panel status\n');
   await sleep(8000);
   let stuck = [];
-  for (let i = 0; i < 4; i++) {
-    const sid = SESSIONS[i];
-    const lane = LANES[i];
+  for (let i = 0; i < dispatched.length; i++) {
+    const { sid, lane } = dispatched[i];
     try {
       const buf = await getBuffer(sid);
       const status = buf.status || buf.session?.meta?.status || 'unknown';
       const detail = buf.statusDetail || buf.session?.meta?.statusDetail || '';
-      console.log(`  ${lane.tag} (${sid.slice(0, 8)}): status=${status} detail="${detail}"`);
+      console.log(`  ${lane.tag} (${sid.slice(0, 8)}) [${lane.agent}]: status=${status} detail="${detail}"`);
       if (status === 'idle' || (status === 'active' && (!detail || detail === 'Idle'))) stuck.push({ sid, lane });
     } catch (e) {
       console.error(`  ${lane.tag} (${sid.slice(0, 8)}) BUFFER CHECK FAILED: ${e.message}`);

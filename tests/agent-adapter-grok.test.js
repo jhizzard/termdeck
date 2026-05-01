@@ -113,6 +113,36 @@ test('detectAdapter: matches Grok by TUI placeholder', () => {
   assert.equal(adapter, grokAdapter);
 });
 
+// Sprint 47 orchestrator side-task: the TUI rotates empty-state placeholders
+// ("What are we building?", "Bring me a problem", etc.). Original Sprint 45
+// pattern only matched "Message Grok…" so panels stayed type=shell when the
+// rotated placeholder was visible. PROMPT now also accepts the model-mode
+// footer line which renders on every frame.
+test('detectAdapter: matches Grok by model-mode footer (Reasoning)', () => {
+  const adapter = detectAdapter('Grok 4.20 Reasoning 100% 2M @ files shift+enter new line tab modes', '');
+  assert.equal(adapter, grokAdapter);
+});
+
+test('detectAdapter: matches Grok by model-mode footer (Heavy)', () => {
+  const adapter = detectAdapter('Grok 4.20 Heavy', '');
+  assert.equal(adapter, grokAdapter);
+});
+
+test('detectAdapter: matches Grok by model-mode footer (Code mode)', () => {
+  const adapter = detectAdapter('Grok 4.20 Code', '');
+  assert.equal(adapter, grokAdapter);
+});
+
+test('detectAdapter: matches Grok against rotated placeholder + footer combo', () => {
+  // Real TUI output observed 2026-05-01: rotated placeholder "What are we
+  // building?" with the model-mode footer below. Only the footer string
+  // matches PROMPT — confirming the regex no longer depends on a single
+  // stable placeholder.
+  const buf = `\n\n      Grok\n\n  Agent  What are we building?\n\n  Grok 4.20 Reasoning 100% 2M @ files shift+enter new line tab modes\n`;
+  const adapter = detectAdapter(buf, 'zsh');
+  assert.equal(adapter, grokAdapter);
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // statusFor — based on grok-dev@1.1.5 dist/ui/app.js shimmer-text strings
 // observed at lane time. See grok.js header comment for the source map.

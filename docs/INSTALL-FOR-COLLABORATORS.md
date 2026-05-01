@@ -4,8 +4,10 @@
 
 This doc is **version-pinned to the published 2026-05-01 stack**. Re-check pinned versions if you're reading this more than ~30 days after the date below.
 
-**Last updated:** 2026-05-01 (Sprint 46 close)
-**Pinned versions:** `@jhizzard/termdeck@0.15.0` · `@jhizzard/termdeck-stack@0.4.10` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
+**Last updated:** 2026-05-01 (Sprint 47 close — mixed 4+1 infrastructure)
+**Pinned versions:** `@jhizzard/termdeck@0.16.0` · `@jhizzard/termdeck-stack@0.4.11` · `@jhizzard/mnestra@0.3.3` · `@jhizzard/rumen@0.4.4`
+
+> **0.4.11 fixes a 4+ day Mnestra ingestion gap.** Pre-0.4.11 stack-installer hooks read the wrong env-var name (`SUPABASE_SERVICE_KEY` instead of `SUPABASE_SERVICE_ROLE_KEY`). The hook silently no-op'd at fire time, so no session-summary memories landed in Mnestra. Re-install via `npx @jhizzard/termdeck-stack@latest` to pick up the corrected hook. If you've been running 0.4.10 or earlier and are missing recent session memories, this is why.
 
 ## What you're getting
 

@@ -153,6 +153,10 @@ const claudeAdapter = {
   parseTranscript,
   bootPromptTemplate,
   costBand: 'pay-per-token',
+  // Sprint 47 T3 — Claude Code's input box accepts bracketed-paste cleanly.
+  // The two-stage submit pattern (paste then \r alone) is the canonical inject
+  // shape for this adapter; chunked-fallback is unnecessary.
+  acceptsPaste: true,
 };
 
 module.exports = claudeAdapter;

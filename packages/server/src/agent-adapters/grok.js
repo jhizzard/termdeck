@@ -53,10 +53,16 @@ const { chooseModel } = require('./grok-models');
 // than false positives (badge flapping or spurious 'errored' status).
 // ──────────────────────────────────────────────────────────────────────────
 
-// Prompt indicator — the TUI's empty-state placeholder. Weak signal but the
-// only stable string that appears reliably in TUI output. Sprint 46 T4 may
-// refine if a more precise marker is observed.
-const PROMPT = /Message Grok[….]/;
+// Prompt indicator — Sprint 45 T3 anchored on the empty-state placeholder
+// "Message Grok…" assuming it was the only stable string in TUI output.
+// That assumption was wrong: the TUI rotates placeholders ("What are we
+// building?", "Bring me a problem", etc.). Sprint 47 orchestrator side-task
+// extends to also match the model-mode footer line ("Grok 4.20 Reasoning",
+// "Grok 4.20 Heavy", "Grok 4.20 Code", "Grok 4.20 Auto", "Grok 4.20
+// Planning") which renders on every frame regardless of which placeholder
+// the TUI surfaced. Version number digits stay open-ended so future Grok
+// versions don't regress detection.
+const PROMPT = /Message Grok[….]|Grok\s+\d+(?:\.\d+)?\s+(?:Reasoning|Heavy|Code|Auto|Planning)/;
 
 // Thinking — Grok's three known "isProcessing" shimmer states. Hits any of
 // the literal labels. The trailing variants on "Generating" / "Answering"
@@ -248,6 +254,12 @@ const grokAdapter = {
   parseTranscript,
   bootPromptTemplate,
   costBand: 'subscription',
+  // Sprint 47 T3 — Grok's Bun+OpenTUI input box hasn't been empirically
+  // pasted-against yet (Sprint 45 T3 prep notes flagged this for verification).
+  // Default to true so the helper uses the bracketed-paste fast path; if a
+  // lane-time test shows the OpenTUI input handler eats the paste markers,
+  // flip this to false and the inject helper falls back to chunked stdin.
+  acceptsPaste: true,
 };
 
 module.exports = grokAdapter;

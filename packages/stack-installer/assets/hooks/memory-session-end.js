@@ -22,7 +22,7 @@
  *
  * Required env vars (validated at entry):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
- *   - SUPABASE_SERVICE_KEY      service-role key (NOT the anon key — needs INSERT on memory_items)
+ *   - SUPABASE_SERVICE_ROLE_KEY      service-role key (NOT the anon key — needs INSERT on memory_items)
  *   - OPENAI_API_KEY            sk-... for text-embedding-3-small
  *
  * Optional:
@@ -73,7 +73,7 @@ function detectProject(cwd) {
 }
 
 function readEnv() {
-  const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'OPENAI_API_KEY'];
+  const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length) {
     log(`env-var-missing: ${missing.join(', ')} — set these in ~/.termdeck/secrets.env or your shell to enable Mnestra ingestion. Skipping.`);
@@ -81,7 +81,7 @@ function readEnv() {
   }
   return {
     supabaseUrl: process.env.SUPABASE_URL.replace(/\/$/, ''),
-    supabaseKey: process.env.SUPABASE_SERVICE_KEY,
+    supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
     openaiKey: process.env.OPENAI_API_KEY,
   };
 }
