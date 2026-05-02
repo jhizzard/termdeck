@@ -64,6 +64,23 @@ Same checks as Sprint 49 plus:
 - `node -e "const r=require('@jhizzard/mnestra/dist/mcp-server/index.js')"` — sanity-check mnestra package shape before T2 cross-repo edit.
 - `npm view @jhizzard/termdeck version` → expect 0.18.0; T4 bumps to 1.0.0 if all criteria hold.
 - `select source_agent, count(*) from memory_items group by 1` — pre-T2 baseline (expect all NULL).
+- **Verify Codex transcript format actually matches `parseCodexJsonl` in `packages/stack-installer/assets/hooks/memory-session-end.js`.** Sprint 49 close-out 2026-05-02 14:58 ET surfaced a real mismatch: `~/.codex/history.jsonl` is a flat command-history shape, NOT a `{message: {role, content}}`-shaped chat JSONL like Claude's. Manual hook fire returned `session-too-short: 0 messages (parser=codex)` against a 10KB file from a real Codex sprint-lane session. T1 lane needs to either: (a) confirm Codex DOES produce a chat-shaped JSONL somewhere else (e.g. `~/.codex/sessions/<uuid>.jsonl` rather than the flat `history.jsonl`), update the adapter's `resolveTranscriptPath` to point there, OR (b) update `parseCodexJsonl` to handle the actual flat history-jsonl shape. Probably (a). Substrate-probe should `find ~/.codex -name '*.jsonl'` to enumerate candidates. **Without this, T1 lane ships but Codex /exits still write zero rows** — the whole point of the deliverable.
+
+## Sprint 49 rescue findings (memory captured manually before panels were force-killed)
+
+Sprint 49 ran 14:08-14:20 ET. All four panels were stuck in a non-responsive state at close (couldn't /exit via either keyboard input OR API-injected `/exit\r` — the `exit` command wasn't draining from the PTY input buffer). Recovery sequence performed by orchestrator at 14:30-14:58 ET:
+
+1. **Located the actual transcript files** for each lane via filesystem search:
+   - T1 Codex: `~/.codex/history.jsonl` (10KB, flat command-history shape — incompatible with the bundled hook's parser; see substrate-probe note above)
+   - T2 Gemini: `~/.gemini/tmp/termdeck/chats/session-2026-05-02T18-06-337fb47e.json` (507KB single-JSON object — compatible with `parseGeminiJson`)
+   - T3 Grok: `~/.grok/grok.db` (SQLite, plus `grok.db-wal` 1MB pending writes — needs SQLite extraction, no parser today)
+   - T4 Claude: `~/.claude/projects/<dir-hash>/bffdc36a-5454-41be-a470-5e468eb563be.jsonl` (944KB — chat-shaped JSONL, compatible with `parseClaudeJsonl`)
+
+2. **Manually fired the SessionEnd hook** with each transcript path + appropriate `sessionType`. Outcomes: T4 Claude ingested 3897 bytes summary ✓, T2 Gemini ingested 5819 bytes summary ✓, T1 Codex parser found 0 messages (format mismatch — preserved as substrate-probe finding above), T3 Grok skipped (no SQLite parser yet).
+
+3. **Force-killed stuck panels.** SIGTERM worked on Claude (PID 45586, exit code 143). zsh shells (Codex/Gemini/Grok parents — agents had already exited and zsh ignored SIGTERM). SIGKILL (-9) cleaned them.
+
+**Net outcome:** 9 → 12 `session_summary` rows. T4 Claude actually has 2 rows (one from manual fire, one from natural SessionEnd at SIGTERM). T2 Gemini has 1 row. **T1 Codex and T3 Grok lane outcomes are NOT in Mnestra** — they are preserved in git (commit `d8b7652`: code changes, STATUS posts, lane briefs) but cannot be recalled via `memory_recall`. Sprint 50 T1 fixes both gaps; Sprint 50 T1 substrate probe should validate the fix retroactively by re-running the same recovery flow against archived transcripts and confirming all four ingest cleanly.
 
 ## Notes
 
