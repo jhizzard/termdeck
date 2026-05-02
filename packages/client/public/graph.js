@@ -410,6 +410,7 @@
     const keys = Object.keys(EDGE_COLORS).filter((k) => present.has(k));
     if (keys.length === 0) {
       wrap.style.display = 'none';
+      updatePresetButtons();
       return;
     }
     wrap.style.display = '';
@@ -429,10 +430,27 @@
         if (state.activeKinds.has(k)) state.activeKinds.delete(k);
         else state.activeKinds.add(k);
         chip.classList.toggle('active');
+        updatePresetButtons();
         applyFilter();
       });
       wrap.appendChild(chip);
     }
+    updatePresetButtons();
+  }
+
+  function isAllKindsActive() {
+    return state.activeKinds.size === Object.keys(EDGE_COLORS).length;
+  }
+
+  function isNoKindsActive() {
+    return state.activeKinds.size === 0;
+  }
+
+  function updatePresetButtons() {
+    const allBtn = $('presetAll');
+    const noneBtn = $('presetNone');
+    if (allBtn) allBtn.disabled = isAllKindsActive();
+    if (noneBtn) noneBtn.disabled = isNoKindsActive();
   }
 
   function applyFilter() {
@@ -842,6 +860,25 @@
       if (state.sim) state.sim.alpha(0.6).restart();
     });
     $('graphFit').addEventListener('click', () => fitToView());
+
+    // Sprint 49 T3 — chip filter presets (All/None). Wire once; renderFilters()
+    // keeps their disabled state in sync with activeKinds boundary conditions.
+    const presetAll = $('presetAll');
+    const presetNone = $('presetNone');
+    if (presetAll) {
+      presetAll.addEventListener('click', () => {
+        state.activeKinds = new Set(Object.keys(EDGE_COLORS));
+        renderFilters();
+        applyFilter();
+      });
+    }
+    if (presetNone) {
+      presetNone.addEventListener('click', () => {
+        state.activeKinds = new Set();
+        renderFilters();
+        applyFilter();
+      });
+    }
 
     // Sprint 43 T1 — graph view-controls. Hydrate input values from state, then
     // wire change handlers that mutate state.controls + URL + re-render from

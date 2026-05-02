@@ -4,6 +4,13 @@
     const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const WS_BASE = `${WS_PROTOCOL}//${window.location.host}/ws`;
 
+    // ===== Utilities =====
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     // State
     const state = {
       sessions: new Map(),   // id → { session, terminal, ws, fitAddon, el }
@@ -2654,12 +2661,6 @@
       }
     }
 
-    function escapeHtml(str) {
-      const div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
-    }
-
     function updateGlobalStats(sessions) {
       let active = 0, thinking = 0, idle = 0;
       for (const s of sessions) {
@@ -4255,12 +4256,6 @@
         </div>`;
       }
       dropdown.innerHTML = html;
-    }
-
-    function escapeHtml(str) {
-      const div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
     }
 
     function toggleHealthDropdown() {

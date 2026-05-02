@@ -3567,6 +3567,37 @@
       background: rgba(255, 255, 255, 0.08);
     }
 
+    /* Sprint 49 T3 — graph chip filter presets (Surface 2 from Sprint 46 audit).
+       Subtle variant of .gf-chip: smaller, no dot/count, secondary tint,
+       disabled state for boundary (all/none already active). Placed above
+       the chip row. */
+    .graph-presets {
+      display: flex;
+      gap: 6px;
+      padding: 8px 16px 4px;
+      background: var(--tg-surface);
+      border-bottom: 1px solid var(--tg-border);
+      flex-shrink: 0;
+    }
+    .gf-preset {
+      padding: 2px 10px;
+      font-size: 10px;
+      font-family: var(--tg-mono);
+      color: var(--tg-text-dim);
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 150ms;
+      opacity: 0.7;
+    }
+    .gf-preset:hover { opacity: 1; background: var(--tg-surface-hover); }
+    .gf-preset:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      background: transparent;
+    }
+
     /* Sprint 43 T1 — second toolbar row: hide-isolated / min-degree / window
        / layout selectors. Mirrors .graph-filters spacing but shifts the
        background a notch darker so the two rows are visually distinguishable

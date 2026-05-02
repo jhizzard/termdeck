@@ -31,6 +31,18 @@ Three sub-goals, one sprint:
 4. **No regressions.** Sprint 48's 326+ green tests stay green. Sprint 47.5's 4-row-baseline `session_summary` count grows by exactly 4 (one per lane closing).
 5. **v1.0.0 decision.** If acceptance #1 + #2 + #3 all hold and at least one non-Claude lane shipped meaningful real work (not a vacuous DONE), orchestrator releases `@jhizzard/termdeck@1.0.0`. Otherwise `0.18.0` and v1.0.0 ships at Sprint 50.
 
+## Gate-blocker UX gaps (surfaced 2026-05-02 14:08 ET at Sprint 49 inject)
+
+These two issues block the v1.0.0 inflection — the dogfood means nothing if outside users can't open Codex / Gemini / Grok without knowing the binary names + can't see in the UI which agent each panel is running.
+
+1. **Launcher buttons missing for Codex / Gemini / Grok.** The panel chooser only has a one-click Claude button. Other agents are opened as a generic "shell" + the user manually types `codex` / `gemini` / `grok`. Add adapter-driven launcher buttons that read from `AGENT_ADAPTERS` (4 entries today, all four expose `spawn.binary`). Each adapter declares its display name + spawn shape; the panel chooser grid renders one button per registered adapter. Sized at ~80 LOC (server route → JSON, client renders button per adapter, click handler POSTs to existing panel-create API with `command: <binary>`). Belongs in T3 or as a side-task.
+
+2. **Panel labels show "shell" instead of agent name** even when `meta.type` is `grok` / `claude-code` / `codex` / `gemini`. The dashboard reads the launch command, not the resolved adapter. Server returns the correct `meta.type` via `/api/sessions`; the front-end label (the `data-session-type` attribute or whatever the panel template uses) is reading from the wrong field. Sized at ~10-LOC client fix.
+
+3. **Status spinner freezes mid-work even when API heartbeat is healthy** (Joshua flagged 2026-05-02 14:17 ET during T4 Claude lane). The animation next to `Unravelling` / `Claude is reasoning...` etc. is one of the few visual signals a human has that the agent is alive. When it stops mid-thought, the user reasonably concludes the panel is stuck — and may interrupt a still-working agent. **Verified via API at the same moment Joshua reported visual freeze:** server reports `status=thinking, age=0s` continuously, so the agent is fine — the spinner CSS animation just isn't being kept alive by the client-side update loop. Probably a CSS `@keyframes` that runs from a `class` toggle which only re-adds when the status string changes; if the status string stays `thinking` for many seconds, the animation completes its first cycle and stops. Fix: animation should be `infinite`, OR the panel should refresh-trigger it on every `lastActivity` update. Sized at ~5-LOC CSS / client fix.
+
+Sprint 49 includes these IF time budget allows after T1-T3 lane work + T4 auto-wire+publish; otherwise they roll into Sprint 50 as the v1.0.0-blocker hotfix. Document the fix path in either case.
+
 ## Carry-overs from Sprint 48
 
 - **`docs/INSTALL-FOR-COLLABORATORS.md` refresh** — Sprint 48 deferred this to close-out; Sprint 49 should refresh the doc to lead with `npm i -g @jhizzard/termdeck-stack && termdeck-stack start` instead of clone-and-`./scripts/start.sh`.

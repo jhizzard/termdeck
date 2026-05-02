@@ -24,6 +24,10 @@
     root.LauncherResolver = factory();
   }
 })(typeof self !== 'undefined' ? self : this, function () {
+  function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   function resolve(command, project, agentAdapters, projects) {
     let resolvedCommand = command;
     let resolvedType = 'shell';
@@ -36,7 +40,7 @@
     }
 
     const adapter = (agentAdapters || []).find((a) =>
-      a && a.binary && new RegExp(`^${a.binary}\\b`, 'i').test(canonical)
+      a && a.binary && new RegExp(`^${escapeRegex(a.binary)}\\b`, 'i').test(canonical)
     );
 
     if (adapter) {

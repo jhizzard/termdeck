@@ -13,10 +13,13 @@
 // Vanilla JS, no framework — matches the rest of public/.
 
 (() => {
-  const API = window.location.origin;
+const API = window.location.origin;
+const PAGE_SIZE = 25;
 
-  const els = {
-    windowSel: document.getElementById('fbWindow'),
+let _allEvents = [];
+let _currentPage = 1;
+
+const els = {    windowSel: document.getElementById('fbWindow'),
     refreshBtn: document.getElementById('fbRefresh'),
     errorBanner: document.getElementById('fbErrorBanner'),
     content: document.getElementById('fbContent'),
@@ -154,8 +157,12 @@
     `;
   }
 
-  function renderTable(events) {
-    const rows = events.map((e) => {
+  function renderTable(events, page = 1) {
+    const totalPages = Math.ceil(events.length / PAGE_SIZE) || 1;
+    const start = (page - 1) * PAGE_SIZE;
+    const slice = events.slice(start, start + PAGE_SIZE);
+
+    const rows = slice.map((e) => {
       const projectCell = e.project
         ? `<span class="fb-cell-project">${escapeHtml(e.project)}</span>`
         : `<span class="fb-cell-project" style="color:var(--tg-text-dim)">—</span>`;
@@ -183,7 +190,7 @@
       `;
     }).join('');
 
-    els.content.innerHTML = `
+    let html = `
       <div class="fb-table-wrap">
         <table class="fb-table">
           <thead>
@@ -200,6 +207,36 @@
         </table>
       </div>
     `;
+
+    if (events.length > PAGE_SIZE) {
+      html += `
+        <div class="fb-pagination">
+          <button type="button" class="fb-pag-btn" id="fbPrev" ${page <= 1 ? 'disabled' : ''}>&larr; Prev</button>
+          <span class="fb-pag-info">Page ${page} of ${totalPages}</span>
+          <button type="button" class="fb-pag-btn" id="fbNext" ${page >= totalPages ? 'disabled' : ''}>Next &rarr;</button>
+        </div>
+      `;
+    }
+
+    els.content.innerHTML = html;
+
+    // Wire pagination buttons
+    const prevBtn = document.getElementById('fbPrev');
+    const nextBtn = document.getElementById('fbNext');
+    if (prevBtn) {
+      prevBtn.onclick = () => {
+        _currentPage--;
+        localStorage.setItem('fbHistoryPage', String(_currentPage));
+        renderTable(_allEvents, _currentPage);
+      };
+    }
+    if (nextBtn) {
+      nextBtn.onclick = () => {
+        _currentPage++;
+        localStorage.setItem('fbHistoryPage', String(_currentPage));
+        renderTable(_allEvents, _currentPage);
+      };
+    }
   }
 
   function showError(msg) {
@@ -211,7 +248,7 @@
     els.errorBanner.textContent = '';
   }
 
-  async function refresh() {
+  async function refresh(resetPage = true) {
     clearError();
     els.content.innerHTML = `<div class="fb-loading">Loading flashback history…</div>`;
 
@@ -219,7 +256,7 @@
     const since = sinceFromWindow(winKey);
     const qs = new URLSearchParams();
     if (since) qs.set('since', since);
-    qs.set('limit', '200');
+    qs.set('limit', '500'); // Sprint 49: raised from 200 for better pagination scale
 
     let data;
     try {
@@ -235,24 +272,34 @@
       return;
     }
 
+    _allEvents = data.events || [];
     renderFunnel(data.funnel || { fires: 0, dismissed: 0, clicked_through: 0 });
 
-    if (!Array.isArray(data.events) || data.events.length === 0) {
+    if (_allEvents.length === 0) {
       renderZeroState(winKey);
       return;
     }
 
-    renderTable(data.events);
+    if (resetPage) {
+      _currentPage = 1;
+      localStorage.setItem('fbHistoryPage', '1');
+    } else {
+      _currentPage = parseInt(localStorage.getItem('fbHistoryPage') || '1', 10);
+      const maxPage = Math.ceil(_allEvents.length / PAGE_SIZE) || 1;
+      if (_currentPage > maxPage) _currentPage = 1;
+    }
+
+    renderTable(_allEvents, _currentPage);
   }
 
   // Wire controls
   els.windowSel.addEventListener('change', () => {
     writeStateToUrl();
-    refresh();
+    refresh(true);
   });
-  els.refreshBtn.addEventListener('click', () => refresh());
+  els.refreshBtn.addEventListener('click', () => refresh(true));
 
   // Boot
   loadStateFromUrl();
-  refresh();
+  refresh(false);
 })();

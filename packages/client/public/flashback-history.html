@@ -271,6 +271,41 @@
       margin-bottom: 16px;
       font-size: 13px;
     }
+
+    /* Pagination (Sprint 49 T2) */
+    .fb-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 16px;
+      margin-top: 8px;
+    }
+    .fb-pag-info {
+      font-size: 12px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+    }
+    .fb-pag-btn {
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      border: 1px solid var(--tg-border);
+      border-radius: var(--tg-radius-sm);
+      padding: 4px 10px;
+      font-size: 12px;
+      font-family: var(--tg-mono);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .fb-pag-btn:hover:not(:disabled) {
+      background: var(--tg-surface-hover);
+      border-color: var(--tg-border-active);
+      color: var(--tg-text-bright);
+    }
+    .fb-pag-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body class="fb-page">

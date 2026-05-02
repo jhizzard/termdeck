@@ -136,6 +136,15 @@ test('hyphenated wrapper names DO match (codex-mock → codex; intentional)', ()
   assert.equal(r.resolvedType, 'codex');
 });
 
+test('binary with regex characters: matches safely (Sprint 49 T2 fix)', () => {
+  const customAdapters = [
+    { name: 'dots', sessionType: 'dots-agent', binary: 'my.bot' }
+  ];
+  // Should match 'my.bot' literally, not 'myabot'
+  assert.equal(resolve('my.bot', undefined, customAdapters, PROJECTS).resolvedType, 'dots-agent');
+  assert.equal(resolve('myabot', undefined, customAdapters, PROJECTS).resolvedType, 'shell');
+});
+
 // ── Bare commands fall to shell ──
 
 test('vim falls to shell', () => {

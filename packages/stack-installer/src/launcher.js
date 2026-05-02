@@ -154,6 +154,87 @@ function ensureFirstRunConfig(_fs = fs) {
   return true;
 }
 
+// Sprint 49 T4 — walk up from the resolved `termdeck` binary to find the
+// installed `@jhizzard/termdeck` package root and require its agent-adapter
+// registry + mcp-autowire helper. The installer is a zero-dep package (no
+// `dependencies` field in package.json) so we cannot require these by package
+// name; instead we resolve by absolute path. Works for both global installs
+// (`/usr/local/lib/node_modules/@jhizzard/termdeck/...`) and dev checkouts
+// where the binary symlinks back into the source tree. Returns null when the
+// adapter tree isn't reachable — caller skips auto-wire with a warning.
+function loadTermdeckExports(termdeckBinary, _fs = fs) {
+  if (!termdeckBinary) return null;
+  let realPath;
+  try { realPath = _fs.realpathSync(termdeckBinary); }
+  catch (_) { return null; }
+  let dir = path.dirname(realPath);
+  for (let i = 0; i < 10; i++) {
+    const pkgPath = path.join(dir, 'package.json');
+    if (_fs.existsSync(pkgPath)) {
+      let pkg;
+      try { pkg = JSON.parse(_fs.readFileSync(pkgPath, 'utf8')); }
+      catch (_) { pkg = null; }
+      if (pkg && pkg.name === '@jhizzard/termdeck') {
+        const adaptersPath = path.join(dir, 'packages/server/src/agent-adapters');
+        const autowirePath = path.join(dir, 'packages/server/src/mcp-autowire.js');
+        if (_fs.existsSync(adaptersPath) && _fs.existsSync(autowirePath)) {
+          try {
+            const adaptersMod = require(adaptersPath);
+            const autowireMod = require(autowirePath);
+            return {
+              adapters: adaptersMod.AGENT_ADAPTERS,
+              ensureMnestraBlock: autowireMod.ensureMnestraBlock,
+              packageRoot: dir,
+            };
+          } catch (_) { return null; }
+        }
+        return null;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+// Sprint 49 T4 — iterates an adapter registry (record or array) and calls
+// `ensureMnestraBlock(adapter, opts)` for each adapter that declares a non-null
+// `mcpConfig`. Adapters with `mcpConfig: null` (Claude — user-managed via
+// `claude mcp add`) are skipped without invoking the helper. Helper exceptions
+// on a single adapter don't abort the loop — they're captured under
+// `errored[]` so the launcher can continue with the remaining adapters and
+// surface diagnostics in the step line.
+//
+// Returns { wired: string[], unchanged: string[], skipped: string[],
+//           errored: { name, error }[] } — caller renders a one-line summary.
+// Idempotent: a second call against an already-wired environment shifts every
+// adapter from `wired` to `unchanged` because the helper's per-shape
+// detect-existing branches return `{ unchanged: true }` on no-op writes.
+function autowireMcp(adapters, ensureMnestraBlockFn, opts = {}) {
+  const summary = { wired: [], unchanged: [], skipped: [], errored: [] };
+  if (!adapters || typeof ensureMnestraBlockFn !== 'function') return summary;
+  const list = Array.isArray(adapters) ? adapters : Object.values(adapters);
+  for (const adapter of list) {
+    const name = (adapter && adapter.name) || '<unknown>';
+    if (!adapter || !adapter.mcpConfig) {
+      summary.skipped.push(name);
+      continue;
+    }
+    let result;
+    try {
+      result = ensureMnestraBlockFn(adapter, opts);
+    } catch (err) {
+      summary.errored.push({ name, error: err && err.message ? err.message : String(err) });
+      continue;
+    }
+    if (result && result.wrote) summary.wired.push(name);
+    else if (result && result.unchanged) summary.unchanged.push(name);
+    else summary.skipped.push(name);
+  }
+  return summary;
+}
+
 function spawnDetached(command, args, logPath, env, _spawn = child_process.spawn, _fs = fs) {
   // open() the log file then pass the fd to spawn so the child inherits a
   // real disk-backed stdout/stderr. Close our handle after spawn so we
@@ -197,9 +278,9 @@ async function startStack(opts = {}) {
   const secrets = readSecrets(SECRETS_PATH, _fs);
   const secretCount = Object.keys(secrets).length;
   if (secretCount === 0) {
-    step('1/3', 'Loading secrets', 'WARN', `(no readable keys in ${SECRETS_PATH} — run \`npx @jhizzard/termdeck-stack\` to set up)`);
+    step('1/4', 'Loading secrets', 'WARN', `(no readable keys in ${SECRETS_PATH} — run \`npx @jhizzard/termdeck-stack\` to set up)`);
   } else {
-    step('1/3', 'Loading secrets', 'OK', `(${secretCount} keys from ${SECRETS_PATH})`);
+    step('1/4', 'Loading secrets', 'OK', `(${secretCount} keys from ${SECRETS_PATH})`);
   }
 
   // Resolve binaries.
@@ -210,32 +291,62 @@ async function startStack(opts = {}) {
   }
   const mnestraInvocation = resolveMnestraInvocation({ ..._deps, fs: _fs, whichBinary: _deps.whichBinary });
 
-  // Step 2: mnestra
+  // Step 2: auto-wire MCP for non-Claude adapters (Sprint 49 T4)
+  let autowireSummary = null;
+  if (opts.noWire) {
+    step('2/4', 'Auto-wiring MCP', 'SKIP', '(--no-wire)');
+  } else {
+    const termdeckExports = (_deps.termdeckExports !== undefined)
+      ? _deps.termdeckExports
+      : loadTermdeckExports(termdeckBinary, _fs);
+    if (!termdeckExports) {
+      step('2/4', 'Auto-wiring MCP', 'WARN', '(@jhizzard/termdeck adapter tree not resolvable — skipping)');
+    } else {
+      autowireSummary = autowireMcp(
+        termdeckExports.adapters,
+        termdeckExports.ensureMnestraBlock,
+        { secrets },
+      );
+      const parts = [];
+      for (const name of autowireSummary.wired) parts.push(`${name} (wrote)`);
+      for (const name of autowireSummary.unchanged) parts.push(`${name} (unchanged)`);
+      for (const e of autowireSummary.errored) parts.push(`${e.name} (error: ${e.error})`);
+      if (autowireSummary.wired.length === 0 && autowireSummary.unchanged.length === 0 && autowireSummary.errored.length === 0) {
+        step('2/4', 'Auto-wiring MCP', 'SKIP', '(no adapters declare mcpConfig)');
+      } else if (autowireSummary.errored.length > 0 && autowireSummary.wired.length === 0 && autowireSummary.unchanged.length === 0) {
+        step('2/4', 'Auto-wiring MCP', 'FAIL', parts.join(', '));
+      } else {
+        step('2/4', 'Auto-wiring MCP', 'OK', parts.join(', '));
+      }
+    }
+  }
+
+  // Step 3: mnestra
   const childEnv = { ...process.env, ...secrets };
   let mnestraPid = null;
   if (!mnestraInvocation) {
-    step('2/3', 'Starting Mnestra', 'SKIP', '(not installed — npm i -g @jhizzard/mnestra)');
+    step('3/4', 'Starting Mnestra', 'SKIP', '(not installed — npm i -g @jhizzard/mnestra)');
   } else if (!secrets.SUPABASE_URL || !secrets.SUPABASE_SERVICE_ROLE_KEY) {
-    step('2/3', 'Starting Mnestra', 'WARN', '(SUPABASE_URL / SERVICE_ROLE_KEY missing — run wizard)');
+    step('3/4', 'Starting Mnestra', 'WARN', '(SUPABASE_URL / SERVICE_ROLE_KEY missing — run wizard)');
   } else {
     const child = spawnDetached(mnestraInvocation.command, mnestraInvocation.args, MNESTRA_LOG_PATH, childEnv, _spawn, _fs);
     mnestraPid = child.pid;
     const health = await waitForHealth(`http://127.0.0.1:${mnestraPort}/healthz`, HEALTH_RETRIES, _fetch);
     if (health.ok) {
       const rows = (health.body && health.body.store && health.body.store.rows) || 0;
-      step('2/3', 'Starting Mnestra', 'OK', `(:${mnestraPort}, ${rows} memories)`);
+      step('3/4', 'Starting Mnestra', 'OK', `(:${mnestraPort}, ${rows} memories)`);
     } else {
-      step('2/3', 'Starting Mnestra', 'FAIL', `(no /healthz response — see ${MNESTRA_LOG_PATH})`);
+      step('3/4', 'Starting Mnestra', 'FAIL', `(no /healthz response — see ${MNESTRA_LOG_PATH})`);
     }
   }
 
-  // Step 3: termdeck
+  // Step 4: termdeck
   const termdeckChild = spawnDetached(termdeckBinary, ['--port', String(port), '--no-stack'], TERMDECK_LOG_PATH, childEnv, _spawn, _fs);
   const termdeckHealth = await waitForHealth(`http://127.0.0.1:${port}/api/health`, HEALTH_RETRIES, _fetch);
   if (termdeckHealth.ok) {
-    step('3/3', 'Starting TermDeck', 'OK', `(:${port})`);
+    step('4/4', 'Starting TermDeck', 'OK', `(:${port})`);
   } else {
-    step('3/3', 'Starting TermDeck', 'FAIL', `(no /api/health response — see ${TERMDECK_LOG_PATH})`);
+    step('4/4', 'Starting TermDeck', 'FAIL', `(no /api/health response — see ${TERMDECK_LOG_PATH})`);
   }
 
   const pidRecord = {
@@ -344,6 +455,8 @@ module.exports = {
   _ensureFirstRunConfig: ensureFirstRunConfig,
   _probeHealth: probeHealth,
   _spawnDetached: spawnDetached,
+  _autowireMcp: autowireMcp,
+  _loadTermdeckExports: loadTermdeckExports,
   PID_PATH,
   SECRETS_PATH,
   CONFIG_PATH,
