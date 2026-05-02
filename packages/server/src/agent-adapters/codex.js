@@ -197,6 +197,36 @@ const codexAdapter = {
   // Sprint 47 T3 — Codex's Ratatui TUI accepts bracketed-paste per the
   // Sprint 45 T1 audit; safe to use the two-stage submit pattern unchanged.
   acceptsPaste: true,
+  // Sprint 48 T1 — per-agent MCP auto-wire descriptor consumed by
+  // packages/server/src/mcp-autowire.js. Codex reads MCP servers from
+  // ~/.codex/config.toml in the canonical `[mcp_servers.NAME]` shape with a
+  // sibling `[mcp_servers.NAME.env]` table (snake_case, NOT camelCase — that
+  // distinguishes Codex's TOML schema from the JSON-based agents).
+  mcpConfig: {
+    path: '~/.codex/config.toml',
+    format: 'toml',
+    mnestraBlock: ({ secrets }) => {
+      const lines = ['[mcp_servers.mnestra]', 'command = "mnestra"'];
+      const wanted = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
+      const env = {};
+      for (const k of wanted) {
+        if (secrets && typeof secrets[k] === 'string' && secrets[k].length > 0) {
+          env[k] = secrets[k];
+        }
+      }
+      if (Object.keys(env).length > 0) {
+        lines.push('');
+        lines.push('[mcp_servers.mnestra.env]');
+        for (const [k, v] of Object.entries(env)) {
+          // TOML basic-string escaping — backslash + double-quote.
+          const escaped = String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          lines.push(`${k} = "${escaped}"`);
+        }
+      }
+      return lines.join('\n') + '\n';
+    },
+    detectExisting: (text) => /^\s*\[mcp_servers\.mnestra\]\s*$/m.test(text),
+  },
 };
 
 module.exports = codexAdapter;

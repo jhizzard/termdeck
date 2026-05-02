@@ -126,6 +126,54 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
   ].join('\n');
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// mcpConfig — Sprint 48 T2. Declarative description of where Gemini reads
+// its MCP-server registry and how to write a Mnestra entry into it. The
+// shared helper at packages/server/src/mcp-autowire.js (Sprint 48 T1) uses
+// this on panel spawn to ensure `memory_recall` is available out-of-the-box
+// for outside users running mixed 4+1 with a Gemini lane.
+//
+// Schema reference: https://www.geminicli.com/docs/tools/mcp-server
+// (verified 2026-05-02). Top-level key is `mcpServers` (camelCase). Each
+// entry must specify exactly one transport — `command` (stdio), `url`
+// (SSE), or `httpUrl` (HTTP streaming). Mnestra ships as a stdio binary
+// (`mnestra`), so we use `command`.
+//
+// Note (no `type` field): the `type: 'stdio'` field used in the Claude
+// Code config (~/.claude.json `mcp_servers.mnestra.type`) is a Claude-Code
+// extension. Gemini infers transport from which of command/url/httpUrl is
+// set, so we omit `type` here to keep the entry valid against the
+// documented Gemini schema.
+//
+// Note (restart required): Gemini CLI discovers MCP servers at startup, so
+// adding a new entry only takes effect on the next `gemini` launch. The
+// helper still writes immediately on panel spawn — by the time the user
+// types `gemini` in the panel, the entry is in place.
+//
+// Note (env-key omission): empty/missing secrets are intentionally
+// dropped from the env object instead of written as empty strings. This
+// matches stack-installer/src/index.js:336-339 — concrete-or-omit, never
+// placeholder, because Gemini (like Claude Code) does not shell-expand
+// `${VAR}` references in MCP env. Mnestra's own secrets.env fallback
+// loads what's missing at process start.
+// ──────────────────────────────────────────────────────────────────────────
+
+const MNESTRA_ENV_KEYS = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
+
+function buildMnestraBlock({ secrets } = {}) {
+  const env = {};
+  for (const key of MNESTRA_ENV_KEYS) {
+    const value = secrets && secrets[key];
+    if (value) env[key] = value;
+  }
+  return {
+    mnestra: {
+      command: 'mnestra',
+      env,
+    },
+  };
+}
+
 const geminiAdapter = {
   name: 'gemini',
   sessionType: 'gemini',
@@ -156,6 +204,13 @@ const geminiAdapter = {
   // Sprint 47 T3 — Gemini's CLI is paste-friendly per the single-JSON-object
   // session shape captured in Sprint 45 T2; bracketed-paste injects cleanly.
   acceptsPaste: true,
+  // Sprint 48 T2 — see comment block above for schema notes + provenance.
+  mcpConfig: {
+    path: '~/.gemini/settings.json',
+    format: 'json',
+    mcpServersKey: 'mcpServers',
+    mnestraBlock: buildMnestraBlock,
+  },
 };
 
 module.exports = geminiAdapter;

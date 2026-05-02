@@ -25,19 +25,28 @@ The full stack in four tiers. Each tier is independent — stop wherever you hav
 
 The stack launcher handles everything — loads secrets, kills stale processes, starts Mnestra if installed, boots TermDeck:
 
-**npm-installed (v0.4.6+):**
+**Globally-installed stack (recommended for outside users):**
+
+```bash
+npm i -g @jhizzard/termdeck-stack
+termdeck-stack start
+```
+
+This boots Mnestra (if Tier 2+ is installed) and the TermDeck server, prints a numbered three-step status line, and exits. Stop with `termdeck-stack stop`; check health with `termdeck-stack status`. The launcher writes `~/.termdeck/stack.pid` so subsequent `stop`/`status` calls find the right processes.
+
+**npm-installed (v0.4.6+, equivalent stack flow):**
 
 ```bash
 termdeck stack
 ```
 
-**Repo clone:**
+**Repo clone (development):**
 
 ```bash
 ./scripts/start.sh
 ```
 
-Both produce identical numbered four-step output. From v0.5.0, plain `termdeck` auto-detects a configured stack and routes through the orchestrator — `termdeck stack` becomes the explicit-force form. Use `termdeck --no-stack` to force a Tier-1-only boot.
+All three produce equivalent step-by-step output. From v0.5.0, plain `termdeck` auto-detects a configured stack and routes through the orchestrator — `termdeck stack` becomes the explicit-force form. Use `termdeck --no-stack` to force a Tier-1-only boot.
 
 It gracefully skips anything that isn't installed. Tier 1 users get a working dashboard. Full-stack users get the whole pipeline.
 
@@ -55,13 +64,22 @@ npx @jhizzard/termdeck
 
 This pulls the published package and runs the `termdeck` bin. Requires Node 18+ and a working `npx`. If `npx` can't resolve the bin (older versions of the package shipped without the bin wired up), upgrade with `npm install -g @jhizzard/termdeck@latest` and run `termdeck` directly.
 
-**Repo-clone users (always works):**
+**Global launcher (no repo clone, persistent):**
+
+```bash
+npm i -g @jhizzard/termdeck-stack
+termdeck-stack start
+```
+
+Boots the full stack (Mnestra autostart + TermDeck server) detached and prints a status line. Same flow as `./scripts/start.sh` but ships in the npm package — no repo clone required. Use `termdeck-stack stop`/`status` for the matching subcommands.
+
+**Repo-clone users (development):**
 
 ```bash
 ./scripts/start.sh
 ```
 
-From the cloned repo root. This launcher doesn't depend on the published bin — it runs the server directly from `packages/cli/src/index.js`, loads secrets, and handles stale-process cleanup. Use this if you're hacking on TermDeck or if `npx` gives you trouble.
+From the cloned repo root. This launcher runs the server directly from `packages/cli/src/index.js` instead of the global bin — useful when hacking on TermDeck itself. The published `termdeck-stack start` subcommand is preferred for outside users.
 
 Either path opens the browser at `http://127.0.0.1:3000`. No accounts, no credentials, no database.
 
@@ -380,9 +398,9 @@ Restart TermDeck. Check:
 |---|---|---|
 | `npx` fails with compilation error | Native module build issue | v0.3+ uses prebuilts — `npm cache clean --force` and retry. macOS: `xcode-select --install`. |
 | Blank page at localhost:3000 | xterm.js CDN unreachable | Check network. Dashboard loads from `cdn.jsdelivr.net`. |
-| `EADDRINUSE: port 3000` (or 37778) on startup | Stale TermDeck/Mnestra process from a prior run | `./scripts/start.sh` kills stale PIDs automatically. Or manually: `lsof -ti :3000 \| xargs kill`. |
+| `EADDRINUSE: port 3000` (or 37778) on startup | Stale TermDeck/Mnestra process from a prior run | `termdeck-stack stop` (then `start`) cleans up via the pidfile, or `./scripts/start.sh` kills stale PIDs automatically. Manual: `lsof -ti :3000 \| xargs kill`. |
 | Mnestra check red even though `mnestra serve` is running | Preflight hits `/healthz` (not `/health`) and parses `store.rows` — older Mnestra builds lacked that endpoint | Upgrade: `npm install -g @jhizzard/mnestra@latest` (≥0.2.0 required). |
-| Tier 2 features silent despite `secrets.env` being populated | Vars exist in the file but weren't exported into the shell launching `npx termdeck` | Use `./scripts/start.sh` (auto-exports via `set -a; source`). Or manually: `set -a; source ~/.termdeck/secrets.env; set +a` before launching. |
+| Tier 2 features silent despite `secrets.env` being populated | Vars exist in the file but weren't exported into the shell launching `npx termdeck` | From v0.17.0 the TermDeck server auto-merges `~/.termdeck/secrets.env` into every PTY env block, so launching via `termdeck-stack start` (or `./scripts/start.sh`) covers it. If you launch the bare `termdeck` bin from a fresh shell, run `set -a; source ~/.termdeck/secrets.env; set +a` first. |
 | Health badge shows "Tier 1: OK" | DATABASE_URL not set | Expected for Tier 1. Add DATABASE_URL to `~/.termdeck/secrets.env` for full stack. |
 | Health badge shows red | Mnestra/Rumen/DB not configured | Click badge for detail per check. Each failed check shows a remediation hint. |
 | Flashback never fires | Empty memory store or Mnestra not running | Flashback needs memories. Use Mnestra for a few days first, or `mnestra serve` to start the server. |

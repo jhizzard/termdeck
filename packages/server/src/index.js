@@ -81,6 +81,53 @@ const orchestrationPreview = require('./orchestration-preview');
 const { createPtyReaper } = require('./pty-reaper');
 const { AGENT_ADAPTERS } = require('./agent-adapters');
 
+// Sprint 48 T4 deliverable 2: PTY env-var propagation.
+// Reads ~/.termdeck/secrets.env once per server lifetime so each PTY spawn
+// inherits SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / OPENAI_API_KEY etc.
+// without depending on the user's shell to have sourced the file.
+//
+// Why this exists: `memory-session-end.js` (the bundled Stop hook installed by
+// `@jhizzard/termdeck-stack`) writes session_summary rows to Mnestra by
+// reading those three vars from `process.env`. When TermDeck spawns a Claude
+// Code panel directly via `pty.spawn`, the child shell inherits the server's
+// `process.env` — but if the *user* didn't source secrets.env in their
+// `.zshrc` before running `termdeck`, those vars are absent and every session
+// close hits `env-var-missing`. Sprint 47 close-out audit confirmed 0
+// session_summary rows had ever landed.
+//
+// Treats `${VAR}` placeholders as unset (Sprint 47.5 hotfix lesson — Claude
+// Code does not shell-expand MCP env values; same trap applies anywhere the
+// secrets file flows through a non-shell consumer).
+let _termdeckSecretsCache = null;
+function readTermdeckSecretsForPty() {
+  if (_termdeckSecretsCache !== null) return _termdeckSecretsCache;
+  const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
+  const out = {};
+  try {
+    const text = fs.readFileSync(secretsPath, 'utf8');
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (!m) continue;
+      let v = m[2].trim();
+      if (v.length >= 2 && (v[0] === '"' || v[0] === "'") && v[v.length - 1] === v[0]) {
+        v = v.slice(1, -1);
+      }
+      if (v.startsWith('${') && v.endsWith('}')) continue;
+      if (v === '') continue;
+      out[m[1]] = v;
+    }
+  } catch (_err) {
+    // File absent or unreadable — empty merge, hook still hits env-var-missing
+    // until the user runs the wizard. Better than a crash on spawn.
+  }
+  _termdeckSecretsCache = out;
+  return out;
+}
+// Test hook — clear the cache between tests that mutate the on-disk file.
+function _resetTermdeckSecretsCache() { _termdeckSecretsCache = null; }
+
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
 // helper is decoupled from T2's templates.js / init-project.js; we resolve
 // them here and pass them into the helper. If a module is missing (e.g.
@@ -805,6 +852,18 @@ function createServer(config) {
       const args = (cmdTrim && !isPlainShell) ? ['-c', cmdTrim] : [];
 
       try {
+        // Sprint 48 T4: merge ~/.termdeck/secrets.env into the PTY env so
+        // the bundled session-end memory hook (`memory-session-end.js`) sees
+        // SUPABASE_URL / SERVICE_ROLE_KEY / OPENAI_API_KEY without depending
+        // on the user's shell to have sourced the file. process.env is the
+        // base; any concrete value the parent already exported wins.
+        const termdeckSecrets = readTermdeckSecretsForPty();
+        const secretFallback = {};
+        for (const [k, v] of Object.entries(termdeckSecrets)) {
+          if (process.env[k] === undefined || process.env[k] === '') {
+            secretFallback[k] = v;
+          }
+        }
         const term = pty.spawn(spawnShell, args, {
           name: 'xterm-256color',
           cols: 120,
@@ -812,6 +871,7 @@ function createServer(config) {
           cwd: resolvedCwd,
           env: {
             ...process.env,
+            ...secretFallback,
             TERMDECK_SESSION: session.id,
             TERMDECK_PROJECT: project || '',
             TERM: 'xterm-256color',
@@ -2162,4 +2222,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createServer, loadConfig };
+module.exports = {
+  createServer,
+  loadConfig,
+  // Sprint 48 T4 — exported for unit testing the secrets.env → PTY env merge.
+  readTermdeckSecretsForPty,
+  _resetTermdeckSecretsCache,
+};

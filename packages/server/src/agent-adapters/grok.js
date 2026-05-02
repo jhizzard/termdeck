@@ -219,6 +219,136 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// mcpConfig — Sprint 48 T3. Grok's MCP-server registry lives at
+// `~/.grok/user-settings.json` under the `mcp.servers` key, which is an
+// **ARRAY** of `McpServerConfig` items, NOT a record `mcpServers.NAME` like
+// Codex/Gemini use. Authoritative schema lifted from
+// `/usr/local/lib/node_modules/grok-dev/dist/utils/settings.{d.ts,js}`
+// (Bun-bundled source, package `grok-dev` v1.1.5):
+//
+//   interface McpServerConfig {
+//     id: string; label: string; enabled: boolean;
+//     transport: "http" | "sse" | "stdio";
+//     command?, args?, env?, cwd?, url?, headers?
+//   }
+//   interface McpSettings { servers?: McpServerConfig[] }
+//   interface UserSettings { ..., mcp?: McpSettings }
+//   function loadMcpServers(): UserSettings.mcp?.servers ?? []
+//   function saveMcpServers(servers): saveUserSettings({ mcp: { servers } })
+//
+// Hot-load behavior: agent.js calls `loadMcpServers()` at the start of every
+// agent turn (3 sites: stream / batch / child-agent), so MCP changes are
+// picked up on the next user message — no Grok restart required.
+//
+// Schema-divergence implication: the `mcpServersKey + mnestraBlock` record-
+// merge shape used by gemini.js (Sprint 48 T2) and the TOML-append shape used
+// by codex.js cannot represent Grok's array-with-explicit-id-fields layout.
+// Grok therefore declares a `merge(rawText, { secrets }) -> { changed, output }`
+// escape-hatch on its `mcpConfig`. The shared `mcp-autowire.js` helper
+// (Sprint 48 T1) checks for `mcpConfig.merge` first; if present, the adapter
+// owns parse + mutate + serialize, the helper still owns tilde-expansion +
+// parent-dir creation + atomic write + idempotency reporting. See Sprint 48
+// STATUS.md § T3 FIX-PROPOSED for the coordination decision.
+//
+// Env-key omission discipline matches stack-installer/src/index.js:336-339
+// and the Gemini adapter: empty/missing/`${VAR}`-placeholder values are
+// dropped from the env object instead of written as empty strings, because
+// Grok (like Claude Code and Gemini) does not shell-expand `${VAR}` in MCP
+// env. Mnestra's own secrets.env stdio fallback (mnestra@0.3.4) loads what
+// is missing at process start.
+// ──────────────────────────────────────────────────────────────────────────
+
+const MNESTRA_ENV_KEYS = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
+
+function _pickConcreteEnv(secrets) {
+  const env = {};
+  if (!secrets || typeof secrets !== 'object') return env;
+  for (const key of MNESTRA_ENV_KEYS) {
+    const value = secrets[key];
+    if (typeof value !== 'string') continue;
+    if (value.length === 0) continue;
+    // Reject literal `${VAR}` placeholders — Grok won't shell-expand them.
+    if (/^\$\{[^}]*\}$/.test(value)) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
+function _buildMnestraServer({ secrets } = {}) {
+  return {
+    id: 'mnestra',
+    label: 'Mnestra',
+    enabled: true,
+    transport: 'stdio',
+    command: 'mnestra',
+    args: [],
+    env: _pickConcreteEnv(secrets),
+  };
+}
+
+// Deep-equal check scoped to the fields we manage. Unknown extra fields on
+// the existing entry (e.g. user-added `cwd` overrides) are tolerated — we
+// only refresh the entry when one of OUR managed fields drifts. Prevents
+// the helper from clobbering hand-edited Grok customizations on every spawn.
+function _mnestraEntryEqual(existing, desired) {
+  if (!existing || typeof existing !== 'object') return false;
+  for (const key of ['id', 'label', 'enabled', 'transport', 'command']) {
+    if (existing[key] !== desired[key]) return false;
+  }
+  const a = Array.isArray(existing.args) ? existing.args : [];
+  const b = desired.args;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  const ea = existing.env && typeof existing.env === 'object' ? existing.env : {};
+  const eb = desired.env;
+  const eaKeys = Object.keys(ea).sort();
+  const ebKeys = Object.keys(eb).sort();
+  if (eaKeys.length !== ebKeys.length) return false;
+  for (let i = 0; i < eaKeys.length; i += 1) {
+    if (eaKeys[i] !== ebKeys[i]) return false;
+    if (ea[eaKeys[i]] !== eb[ebKeys[i]]) return false;
+  }
+  return true;
+}
+
+function _mergeMnestraIntoGrokSettings(rawText, { secrets } = {}) {
+  let current = {};
+  if (typeof rawText === 'string' && rawText.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(rawText);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        current = parsed;
+      }
+    } catch (_) {
+      // Malformed JSON → start fresh. Helper's atomic-write contract means
+      // we don't risk corrupting the user's file partway through; on read
+      // failure the conservative path is to write a clean replacement that
+      // preserves the keys we know how to round-trip (none — we only own
+      // the mcp branch). User's other settings in a corrupt file are
+      // unrecoverable from text anyway.
+      current = {};
+    }
+  }
+  const next = { ...current };
+  next.mcp = next.mcp && typeof next.mcp === 'object' && !Array.isArray(next.mcp)
+    ? { ...next.mcp }
+    : {};
+  const servers = Array.isArray(next.mcp.servers) ? [...next.mcp.servers] : [];
+  const desired = _buildMnestraServer({ secrets });
+  const existingIdx = servers.findIndex((s) => s && s.id === 'mnestra');
+  if (existingIdx >= 0 && _mnestraEntryEqual(servers[existingIdx], desired)) {
+    return { changed: false, output: rawText };
+  }
+  if (existingIdx >= 0) {
+    servers[existingIdx] = desired;
+  } else {
+    servers.push(desired);
+  }
+  next.mcp.servers = servers;
+  return { changed: true, output: `${JSON.stringify(next, null, 2)}\n` };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Adapter export. spawn.env.GROK_MODEL defaults to the cheap-fast tier;
 // per-lane override is the launcher's job at session-spawn time (Sprint 46
 // reads `agent: grok` + optional `model-hint: code|reasoning-deep|...` from
@@ -260,6 +390,15 @@ const grokAdapter = {
   // lane-time test shows the OpenTUI input handler eats the paste markers,
   // flip this to false and the inject helper falls back to chunked stdin.
   acceptsPaste: true,
+  // Sprint 48 T3 — see comment block above for schema notes + provenance.
+  // Grok deviates from Codex (TOML) and Gemini (JSON record) — its `mcp.servers`
+  // is an array with explicit `id`/`label`/`enabled`/`transport` fields, so the
+  // adapter declares a `merge` escape-hatch instead of `mcpServersKey + mnestraBlock`.
+  mcpConfig: {
+    path: '~/.grok/user-settings.json',
+    format: 'json',
+    merge: _mergeMnestraIntoGrokSettings,
+  },
 };
 
 module.exports = grokAdapter;

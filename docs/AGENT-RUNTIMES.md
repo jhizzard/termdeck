@@ -83,7 +83,7 @@ The script is idempotent — re-running on already-synced files produces no diff
 
 ## 5. The adapter contract
 
-Each agent ships a single module at `packages/server/src/agent-adapters/<name>.js` that implements a 7-field contract:
+Each agent ships a single module at `packages/server/src/agent-adapters/<name>.js` that implements a 9-field contract (Sprint 47 T3 added `acceptsPaste`; Sprint 48 T1 added `mcpConfig`):
 
 ```js
 {
@@ -94,6 +94,8 @@ Each agent ships a single module at `packages/server/src/agent-adapters/<name>.j
   parseTranscript: (raw) => Memory[],          // for the session-end memory hook
   bootPromptTemplate: (lane, sprint) => string, // 4+1 inject prompt
   costBand: 'free' | 'pay-per-token' | 'subscription',  // for Sprint 46 cost annotations
+  acceptsPaste: boolean,                        // Sprint 47 T3 — bracketed-paste capable
+  mcpConfig: { path, format, ... } | null,      // Sprint 48 T1 — per-agent MCP auto-wire
 }
 ```
 
@@ -106,6 +108,8 @@ Each agent ships a single module at `packages/server/src/agent-adapters/<name>.j
 | `parseTranscript` | `(raw: string) => Memory[]` | The session-end memory hook calls this to lift the agent's transcript format into Mnestra-shaped `Memory[]`. Claude's format is JSONL `{ message: { role, content } }`; Codex/Gemini/Grok formats are agent-specific. | Reads JSONL, normalizes `{ role, content }` pairs into `Memory{ project, sessionId, content, … }`. |
 | `bootPromptTemplate` | `(lane, sprint) => string` | Generates the multi-line bracketed-paste body for 4+1 inject. Sprint 46's inject script reads `lane.agent` and dispatches to the right adapter's template. | Emits the 6-step boot sequence (`memory_recall`, read CLAUDE.md, etc.) the orchestrator currently writes by hand. |
 | `costBand` | `'free' \| 'pay-per-token' \| 'subscription'` | Surfaces in PLANNING.md cost annotations starting Sprint 46. | `'subscription'` for Claude Max, `'pay-per-token'` for the API path. |
+| `acceptsPaste` | `boolean` | Whether the agent's CLI accepts bracketed-paste cleanly in its input box. `true` lets the 4+1 inject helper use the two-stage submit pattern; `false` triggers chunked-stdin fallback in `sprint-inject.js`. Sprint 47 T3 addition. | `true` for Claude Code, Codex, Gemini, Grok (all four supported agents). |
+| `mcpConfig` | `{ path, format, mnestraBlock, detectExisting } \| { path, format, mcpServersKey, mnestraBlock } \| { path, format, merge } \| null` | Per-agent MCP auto-wire descriptor consumed by `packages/server/src/mcp-autowire.js`. The shared helper ensures a Mnestra MCP block is present in the agent's config file on panel spawn — out-of-the-box `memory_recall` for non-Claude agents. Three shapes supported (precedence top → bottom): the **escape-hatch** (adapter owns the entire merge via a `merge(rawText, {secrets}) => {changed, output}` function — needed for non-record schemas like Grok's array shape), the **JSON-record-merge** shape (adapter declares `mcpServersKey` and returns the value to merge under it as an object), and the **TOML-append / JSON-append** shape (adapter returns the rendered block as a string + supplies `detectExisting` for idempotency). `null` means the agent's MCP config is user-managed and the helper short-circuits to `{ skipped: 'no-mcpConfig' }` — Claude only. Sprint 48 T1 addition. | `null` for Claude (user-managed via `claude mcp add`); TOML-append shape for Codex; JSON-record shape for Gemini; merge escape-hatch shape for Grok. |
 
 The registry export at `packages/server/src/agent-adapters/index.js` is a flat map:
 
@@ -222,7 +226,7 @@ The adapter contract in § 5 is **deliberately portable to TheHarness's browser-
 - `patterns` adapts to DOM selectors instead of stdout regexes — same conceptual job (detect "thinking", "editing", "tool use" states from the rendered surface).
 - `statusFor`, `parseTranscript`, `bootPromptTemplate`, `costBand` carry over **unchanged**.
 
-This is why the contract has 7 fields, not 5 or 9. Each one earns its place by surviving the transport-swap test. When TheHarness's Phase 1 begins (post-BHHT per `WHY.md`), Sprint 47+ can lift the contract verbatim and add a `harness/claude-pro` adapter alongside the existing `claude` adapter — same registry, different transport, no abstraction fork.
+This is why the contract started at 7 fields and grew to 9 deliberately — each one earns its place by surviving the transport-swap test. `acceptsPaste` (Sprint 47 T3) and `mcpConfig` (Sprint 48 T1) both extend cleanly to TheHarness: `acceptsPaste` becomes "DOM input element accepts a synthetic paste event"; `mcpConfig` is irrelevant because browser-tab agents inherit MCP config from the chat product, not from a local file (so `mcpConfig: null` is the correct value for every harness/* adapter). When TheHarness's Phase 1 begins (post-BHHT per `WHY.md`), Sprint 47+ can lift the contract verbatim and add a `harness/claude-pro` adapter alongside the existing `claude` adapter — same registry, different transport, no abstraction fork.
 
 ---
 

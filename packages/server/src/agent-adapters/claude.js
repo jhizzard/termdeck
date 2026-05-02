@@ -7,7 +7,8 @@
 // transcript-parser cut-offs. Sprint 45 adds Codex / Gemini / Grok adapters
 // alongside this one; Sprint 46 wires per-lane agent assignment in 4+1.
 //
-// Contract (memorialization doc § 4 + lane brief T3):
+// Contract (memorialization doc § 4 + lane brief T3, extended in Sprint 47
+// T3 with `acceptsPaste` and Sprint 48 T1 with `mcpConfig`):
 //   {
 //     name:           string,                     // adapter id used in registry
 //     sessionType:    string,                     // session.meta.type produced
@@ -19,6 +20,10 @@
 //     parseTranscript:(raw) => Memory[],          // for memory-session-end hook
 //     bootPromptTemplate: (lane, sprint) => string,
 //     costBand:       'free' | 'pay-per-token' | 'subscription',
+//     acceptsPaste:   boolean,                    // Sprint 47 T3 — bracketed-paste capable
+//     mcpConfig:      { path, format, mnestraBlock, detectExisting } | null,
+//                                                 // Sprint 48 T1 — per-agent MCP auto-wire
+//                                                 // null = user-managed (Claude only)
 //   }
 //
 // `statusFor` returns null when no pattern matches — preserves the original
@@ -157,6 +162,11 @@ const claudeAdapter = {
   // The two-stage submit pattern (paste then \r alone) is the canonical inject
   // shape for this adapter; chunked-fallback is unnecessary.
   acceptsPaste: true,
+  // Sprint 48 T1 — Claude's MCP config (~/.claude.json) is owned by the user
+  // and `claude mcp add`. Auto-wiring a Mnestra block here would conflict
+  // with that surface. `null` declares the contract field while signalling
+  // "user-managed; mcp-autowire.js short-circuits to skipped:no-mcpConfig".
+  mcpConfig: null,
 };
 
 module.exports = claudeAdapter;

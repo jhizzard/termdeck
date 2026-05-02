@@ -52,6 +52,16 @@ processes, so anything in your shell init or
 `~/.termdeck/secrets.env` (sourced by `scripts/start.sh` /
 `npx @jhizzard/termdeck`) is visible to the hook.
 
+**From v0.17.0**, the TermDeck server also merges
+`~/.termdeck/secrets.env` directly into every PTY-spawned shell — so any
+Claude Code panel launched inside TermDeck inherits `SUPABASE_URL` /
+`SUPABASE_SERVICE_ROLE_KEY` / `OPENAI_API_KEY` even if the user's
+parent shell never sourced the file. Concrete values in
+`process.env` still win (parent-shell env takes precedence over the
+file fallback). Standalone Claude Code launches outside TermDeck
+still rely on the parent shell having sourced the file — for those,
+the wizard can offer a one-line `~/.zshrc` source addition.
+
 If any of the three is missing the log line will name them:
 
 ```

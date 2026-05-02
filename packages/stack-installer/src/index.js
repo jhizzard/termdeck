@@ -131,9 +131,14 @@ function parseArgs(argv) {
 
 function printHelp() {
   process.stdout.write(`
-  termdeck-stack — install the TermDeck developer memory stack
+  termdeck-stack — install and run the TermDeck developer memory stack
 
-  Usage:
+  Subcommands:
+    termdeck-stack start          Boot the full stack (TermDeck + Mnestra)
+    termdeck-stack stop           Stop the running stack
+    termdeck-stack status         Print stack health
+
+  Install:
     npx @jhizzard/termdeck-stack          Interactive wizard
     npx @jhizzard/termdeck-stack --tier 4 Unattended install (1|2|3|4)
     npx @jhizzard/termdeck-stack --dry-run Print plan, don't install
@@ -640,7 +645,32 @@ function printNextSteps(plan, opts) {
 
 // ── Main ────────────────────────────────────────────────────────────
 
+// Sprint 48 T4: persistent launcher subcommands. Short-circuits before the
+// wizard so `npx @jhizzard/termdeck-stack start` (and stop|status) boots the
+// stack without running the install flow. Bare invocation still falls through
+// to the wizard for backwards compat.
+async function _maybeRunSubcommand(argv) {
+  const sub = argv[0];
+  if (sub !== 'start' && sub !== 'stop' && sub !== 'status') return null;
+  // Lazy-require so the wizard path doesn't pay the launcher's load cost.
+  const launcher = require('./launcher');
+  if (sub === 'start') {
+    const result = await launcher.startStack({ /* opts could parse argv flags later */ });
+    return result.ok === false ? 1 : 0;
+  }
+  if (sub === 'stop') {
+    const result = await launcher.stopStack({});
+    return result.ok ? 0 : 1;
+  }
+  // status — exits non-zero if termdeck isn't healthy so scripts can branch on it.
+  const result = await launcher.statusStack({});
+  return result.ok ? 0 : 1;
+}
+
 async function main(argv) {
+  const subResult = await _maybeRunSubcommand(argv);
+  if (subResult !== null) return subResult;
+
   const args = parseArgs(argv);
   if (args.help) { printHelp(); return 0; }
 
@@ -716,6 +746,7 @@ if (require.main === module) {
 }
 
 module.exports = main;
+module.exports._maybeRunSubcommand = _maybeRunSubcommand;
 module.exports._mergeSessionEndHookEntry = _mergeSessionEndHookEntry;
 module.exports._readSettingsJson = _readSettingsJson;
 module.exports._writeSettingsJson = _writeSettingsJson;
