@@ -361,8 +361,18 @@ async function _runSchemaCheck(opts = {}) {
       hint: `run: psql "$DATABASE_URL" -f config/transcript-migration.sql`,
     });
 
-    // Rumen — table existence and the created_at column drift Brad hit
+    // Rumen — table existence and timestamp column drift detection.
+    // Migration 001 defines rumen_jobs.started_at (semantically the tick
+    // start time) — NOT created_at. The other two tables use created_at.
+    // Pre-0.16.1 doctor probed `created_at` for all three, which produced
+    // a false-positive WARN on rumen_jobs and pointed users at a phantom
+    // migration drift (Brad, 2026-05-02).
     const rumen = sections[3].checks;
+    const RUMEN_TIME_COL = {
+      rumen_jobs: 'started_at',
+      rumen_insights: 'created_at',
+      rumen_questions: 'created_at',
+    };
     for (const t of ['rumen_jobs', 'rumen_insights', 'rumen_questions']) {
       const tableOk = await probeSchema(client, SCHEMA_QUERIES.table(t));
       rumen.push({
@@ -373,9 +383,10 @@ async function _runSchemaCheck(opts = {}) {
       // Only check the column when the table exists — otherwise the column
       // line is redundant noise.
       if (tableOk) {
+        const col = RUMEN_TIME_COL[t];
         rumen.push({
-          label: `${t}.created_at column`,
-          status: (await probeSchema(client, SCHEMA_QUERIES.column(t, 'created_at'))) ? 'pass' : 'fail',
+          label: `${t}.${col} column`,
+          status: (await probeSchema(client, SCHEMA_QUERIES.column(t, col))) ? 'pass' : 'fail',
           hint: `column drift detected — re-run: termdeck init --rumen`,
         });
       }

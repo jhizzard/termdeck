@@ -53,6 +53,34 @@ const HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-session-end.js');
 const HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-session-end.js');
 const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
 const HOOK_TIMEOUT_SECONDS = 30;
+const SECRETS_PATH = path.join(HOME, '.termdeck', 'secrets.env');
+
+// Read ~/.termdeck/secrets.env into a plain object. Returns {} if the file
+// is absent or unreadable. Used to populate the mnestra MCP env block with
+// concrete values — Claude Code does NOT shell-expand `${VAR}` references
+// in MCP env, so writing placeholders results in mnestra receiving the
+// literal string `${SUPABASE_URL}` and Supabase rejecting it as an invalid
+// URL. Writing concrete values is the only thing that works.
+function readTermdeckSecrets() {
+  try {
+    const text = fs.readFileSync(SECRETS_PATH, 'utf8');
+    const out = {};
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (!m) continue;
+      let v = m[2];
+      if (v.length >= 2 && (v[0] === '"' || v[0] === "'") && v[v.length - 1] === v[0]) {
+        v = v.slice(1, -1);
+      }
+      out[m[1]] = v;
+    }
+    return out;
+  } catch (_err) {
+    return {};
+  }
+}
 
 const LAYERS = [
   {
@@ -297,18 +325,60 @@ function wireMcpEntries(plan, opts) {
   const keptExisting = [];
 
   if (installedTiers.has(2) && !servers.mnestra) {
+    // Claude Code does NOT expand `${VAR}` in MCP env — placeholders pass
+    // through literally and mnestra rejects them as an invalid SUPABASE_URL.
+    // Read concrete values from ~/.termdeck/secrets.env. Missing keys fall
+    // back to process.env (the installer was launched from the user's shell,
+    // which may export them); if still empty, leave the key out so mnestra's
+    // own secrets.env fallback gets a chance to load it.
+    const secrets = readTermdeckSecrets();
+    const env = {};
+    for (const key of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY']) {
+      const v = secrets[key] || process.env[key] || '';
+      if (v) env[key] = v;
+    }
     servers.mnestra = {
       type: 'stdio',
       command: 'mnestra',
-      env: {
-        SUPABASE_URL: '${SUPABASE_URL}',
-        SUPABASE_SERVICE_ROLE_KEY: '${SUPABASE_SERVICE_ROLE_KEY}',
-        OPENAI_API_KEY: '${OPENAI_API_KEY}',
-      },
+      env,
     };
     additions.push('mnestra');
+    if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+      process.stdout.write(
+        `${ANSI.yellow}!${ANSI.reset} mnestra MCP added with incomplete env — ` +
+        `set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in ${SECRETS_PATH} ` +
+        `or via \`claude mcp remove mnestra -s user\` followed by ` +
+        `\`claude mcp add mnestra -s user -e SUPABASE_URL=... -e SUPABASE_SERVICE_ROLE_KEY=... -e OPENAI_API_KEY=... -- mnestra\`.\n`
+      );
+    }
   } else if (servers.mnestra) {
-    keptExisting.push('mnestra');
+    // Repair pass: existing entry from a buggy installer (≤ 0.4.11) used
+    // `${VAR}` placeholders that Claude Code never expands. If we detect
+    // those, swap in concrete values from secrets.env / process.env.
+    const env = { ...(servers.mnestra.env || {}) };
+    let repaired = false;
+    const secrets = readTermdeckSecrets();
+    for (const key of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY']) {
+      const cur = env[key];
+      const looksLikePlaceholder = typeof cur === 'string'
+        && cur.startsWith('${') && cur.endsWith('}');
+      if (looksLikePlaceholder || cur === '') {
+        const v = secrets[key] || process.env[key] || '';
+        if (v) {
+          env[key] = v;
+          repaired = true;
+        } else if (looksLikePlaceholder) {
+          delete env[key];
+          repaired = true;
+        }
+      }
+    }
+    if (repaired) {
+      servers.mnestra = { ...servers.mnestra, env };
+      additions.push('mnestra (env repaired)');
+    } else {
+      keptExisting.push('mnestra');
+    }
   }
 
   if (installedTiers.has(4) && !servers.supabase) {

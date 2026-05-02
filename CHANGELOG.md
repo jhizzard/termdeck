@@ -18,6 +18,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sprint 40 carry-over: analyzer broadening — `PATTERNS.error` case-sensitivity gaps.
 - Sprint 40 carry-over: LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.
 
+## [0.16.1] - 2026-05-02
+
+### Fixed — Sprint 47.5 hotfix: stack-installer placeholder env + doctor.js Rumen column drift
+
+> **Theme:** Two pre-Sprint-48 hotfixes folded into a single patch. Layer 1 unblocks Joshua's mnestra `memory_recall` (broken across all sessions after a routine `npm install -g @jhizzard/termdeck-stack@0.4.11` re-ran the installer). Layer 2 retires Brad's 2026-05-02 false-positive WARN on the Rumen schema check.
+
+### Lanes
+
+- **Hotfix A — stack-installer mnestra MCP env (no lane; surfaced in conversation).** `packages/stack-installer/src/index.js:299-312` wrote literal `${SUPABASE_URL}` / `${SUPABASE_SERVICE_ROLE_KEY}` / `${OPENAI_API_KEY}` strings into the mnestra MCP env block, on the assumption that Claude Code would shell-expand them at MCP launch time. **Claude Code does not perform `${VAR}` expansion on MCP env values** — they pass through to the spawned process literally. mnestra received the literal string `${SUPABASE_URL}` as `process.env.SUPABASE_URL`, the in-binary `loadTermdeckSecretsFallback()` saw it as truthy and bailed without reading `~/.termdeck/secrets.env`, and `@supabase/supabase-js` rejected it with `Invalid supabaseUrl: Must be a valid HTTP or HTTPS URL.` on every tool call. NEW `readTermdeckSecrets()` helper now parses `~/.termdeck/secrets.env` (dotenv-subset; quoted values stripped) and the env writer populates concrete values from `secrets.env` ∪ `process.env` ∪ omit. The `else if (servers.mnestra)` branch now performs a **repair pass** on existing entries — any value shaped like `${VAR}` is swapped for a concrete one (or deleted if no source can supply it), so users who previously ran `≤0.4.11` get healed transparently on next `npx @jhizzard/termdeck-stack`. Companion mnestra fix shipped as `@jhizzard/mnestra@0.3.4`: secrets fallback now runs in the default MCP stdio path (was `serve`-only) AND treats `${...}` placeholder strings as if the env var were unset.
+- **Hotfix B — `packages/cli/src/doctor.js:364-388` per-table Rumen timestamp column map (Brad upstream report 2026-05-02).** Pre-0.16.1 doctor probed `rumen_jobs.created_at` for all three Rumen tables, but Rumen migration 001 defines `rumen_jobs.started_at` (semantically the tick start time — `rumen_jobs` has no `created_at`). The probe failed on a fully-healthy install and surfaced as a WARN with hint `column drift detected — re-run: termdeck init --rumen`, sending users on a wild-goose chase since re-running migration 001 correctly does NOT add `created_at` to `rumen_jobs`. NEW `RUMEN_TIME_COL` map (`rumen_jobs → started_at`, `rumen_insights → created_at`, `rumen_questions → created_at`) drives the column probe per-table. Doctor now reports green on a correctly-migrated stack. Brad's "side observation" about an empty bundled `rumen-migrations/` directory was a misread — actual layout is `setup/rumen/migrations/` (subdirectory style; mnestra uses dash-separator sibling style); 0.16.0 ships all three Rumen SQL files at the bundled path and `listRumenMigrations()` resolves them correctly.
+
+### Validation
+
+- **Mnestra MCP**: rebuilt at the symlinked install path, then re-tested with `env SUPABASE_URL='${SUPABASE_URL}' ... mnestra` — the secrets fallback fires, `[mnestra] Loaded 6 secrets from ~/.termdeck/secrets.env`, `memory_status` returns the live aggregation (6237 memories). Mnestra full test suite **42/42 green**.
+- **TermDeck**: `node --test tests/cli-doctor.test.js tests/cli-stack-detection.test.js tests/stack-installer-hook-merge.test.js` — **67/67 green**, no test changes required (the doctor.js bug was a misnamed-column probe with no direct regression test; the stack-installer change is additive).
+- **Repair pass**: applied manually to Joshua's `~/.claude.json` mnestra MCP env block as part of the hotfix conversation (backup at `~/.claude.json.bak.20260502-122145`); the post-`0.4.12` installer will perform the same repair automatically on next run.
+
+### Notes
+
+- `@jhizzard/termdeck-stack@0.4.12` audit-trail bump per RELEASE.md convention; the stack-installer code IS materially changed in this release (mnestra MCP env writer + repair pass), so the bump is functional, not pure-audit-trail.
+- Sprint 48 (per-agent MCP auto-wire + mixed-agent dogfood) is the next sprint and was paused so this hotfix could land first; orchestrating off a known-broken installer would have re-broken every fresh agent panel that re-ran the stack provisioner.
+- Defense-in-depth: even after `termdeck-stack@0.4.12` ships, an `~/.claude.json` written by any older installer version keeps working without manual repair because mnestra now ignores `${...}` placeholders. The two layers fix the same root cause from opposite ends.
+
 ## [0.16.0] - 2026-05-01
 
 ### Added — Sprint 47: Mixed 4+1 infrastructure (per-lane agent assignment + Sprint 46 close-out hook fix)
