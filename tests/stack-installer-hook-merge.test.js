@@ -508,6 +508,9 @@ const {
   postMemoryItem,
   processStdinPayload,
   PROJECT_MAP,
+  // Sprint 50 T2 — source_agent provenance helpers.
+  normalizeSourceAgent,
+  ALLOWED_SOURCE_AGENTS,
 } = hookModule;
 
 // Drop the LOG_FILE so test runs don't pollute the user's hook log.
@@ -876,6 +879,91 @@ test('postMemoryItem returns false on fetch exception', withMockedFetch(
       supabaseUrl: 'u', supabaseKey: 'k', content: 'c', embedding: [1], project: 'p', sessionId: 's',
     });
     assert.equal(ok, false);
+  }
+));
+
+// ── Sprint 50 T2 — source_agent provenance ─────────────────────────────
+
+test('normalizeSourceAgent accepts the canonical 5 agents', () => {
+  for (const a of ['claude', 'codex', 'gemini', 'grok', 'orchestrator']) {
+    assert.equal(normalizeSourceAgent(a), a);
+  }
+  // ALLOWED_SOURCE_AGENTS is the live set; export shape pinned for the
+  // mnestra MCP zod enum to mirror without drift.
+  assert.equal(ALLOWED_SOURCE_AGENTS.size, 5);
+});
+
+test('normalizeSourceAgent defaults to "claude" for absent / empty / unknown', () => {
+  assert.equal(normalizeSourceAgent(undefined), 'claude');
+  assert.equal(normalizeSourceAgent(null), 'claude');
+  assert.equal(normalizeSourceAgent(''), 'claude');
+  assert.equal(normalizeSourceAgent('   '), 'claude');
+  assert.equal(normalizeSourceAgent('not-a-real-agent'), 'claude');
+  // Mixed-case variants normalize to the lowercase canonical form.
+  assert.equal(normalizeSourceAgent('Claude'), 'claude');
+  assert.equal(normalizeSourceAgent('CODEX'), 'codex');
+});
+
+test('postMemoryItem defaults source_agent to "claude" when payload omits it', withMockedFetch(
+  async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    assert.equal(body.source_agent, 'claude',
+      'absent sourceAgent must default to "claude" — Claude Code SessionEnd payloads do not carry the field');
+    return { ok: true };
+  },
+  async () => {
+    const ok = await postMemoryItem({
+      supabaseUrl: 'https://abc.supabase.co',
+      supabaseKey: 'service-key',
+      content: 'summary text',
+      embedding: [0.1, 0.2, 0.3],
+      project: 'termdeck',
+      sessionId: 'sess-abc',
+      // sourceAgent intentionally omitted
+    });
+    assert.equal(ok, true);
+  }
+));
+
+test('postMemoryItem passes a valid sourceAgent through to Supabase', withMockedFetch(
+  async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    assert.equal(body.source_agent, 'codex',
+      'Sprint 50 T1 onPanelClose passes source_agent="codex" for Codex panels');
+    return { ok: true };
+  },
+  async () => {
+    const ok = await postMemoryItem({
+      supabaseUrl: 'https://abc.supabase.co',
+      supabaseKey: 'service-key',
+      content: 'codex panel summary',
+      embedding: [0.1, 0.2, 0.3],
+      project: 'termdeck',
+      sessionId: 'sess-codex',
+      sourceAgent: 'codex',
+    });
+    assert.equal(ok, true);
+  }
+));
+
+test('postMemoryItem coerces an unknown sourceAgent to "claude" rather than failing', withMockedFetch(
+  async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    assert.equal(body.source_agent, 'claude',
+      'unknown agent strings must coerce to "claude" — fail-soft, keep ingestion alive');
+    return { ok: true };
+  },
+  async () => {
+    const ok = await postMemoryItem({
+      supabaseUrl: 'https://abc.supabase.co',
+      supabaseKey: 'service-key',
+      content: 'mystery panel summary',
+      embedding: [0.1, 0.2, 0.3],
+      project: 'termdeck',
+      sessionId: 'sess-x',
+      sourceAgent: 'mystery-future-agent',
+    });
+    assert.equal(ok, true);
   }
 ));
 

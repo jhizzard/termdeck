@@ -53,6 +53,20 @@
         }
       } catch (_) { /* keep bootstrap fallback */ }
 
+      // Sprint 50 T3 — adapter-driven launcher buttons. Render one button
+      // per registered agent in the topbar quick-launch and the empty-state
+      // tile group. Replaces the pre-Sprint-50 hardcoded `claude` button
+      // that left Codex/Gemini/Grok with no one-click launcher (forcing
+      // free-form `codex`/`gemini`/`grok` typing in the prompt bar — a v1.0.0
+      // gate-blocker UX gap surfaced during the Sprint 49 mixed-agent
+      // dogfood). Static `shell` + `python` entries stay (non-adapter
+      // built-ins). HTML fallback shapes are preserved if rendering fails.
+      try {
+        renderQuickLaunchers();
+      } catch (err) {
+        console.warn('[client] launcher render failed, keeping HTML fallback:', err);
+      }
+
       // Populate project dropdown
       const sel = document.getElementById('promptProject');
       for (const name of Object.keys(state.config.projects || {})) {
@@ -1586,6 +1600,98 @@
       launchTerminal();
     }
 
+    // ===== Adapter-driven launcher buttons (Sprint 50 T3) =====
+    //
+    // Built-in non-adapter entries that flank the adapter list. `shell` is
+    // the always-on fallback panel; `python` is the HTTP-server convenience
+    // launcher that long predates the multi-agent registry.
+    const BUILTIN_LAUNCHERS = {
+      pre: [
+        { command: 'zsh', label: 'shell', title: 'Open a zsh shell' },
+      ],
+      post: [
+        {
+          command: 'python3 -m http.server 8080',
+          label: 'python',
+          title: 'Open a Python HTTP server on :8080',
+        },
+      ],
+    };
+
+    // One launcher button. Reuses the same `quickLaunch(cmd)` path the
+    // hardcoded HTML buttons used so command resolution (LauncherResolver
+    // + /api/sessions) is unchanged.
+    function makeLauncherButton(cmd, label, title, className) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = className;
+      btn.textContent = label;
+      if (title) btn.title = title;
+      btn.dataset.command = cmd;
+      btn.addEventListener('click', () => quickLaunch(cmd));
+      return btn;
+    }
+
+    function adapterLauncherEntries() {
+      const adapters = Array.isArray(state.agentAdapters) ? state.agentAdapters : [];
+      return adapters.map((a) => ({
+        command: a.binary || a.name,
+        label: (a.displayName || a.name || a.binary || '').toLowerCase(),
+        // Title text gets the canonical displayName so the tooltip preserves
+        // the proper-cased "Claude Code" / "Codex CLI" form even when the
+        // button face renders lowercase to match TermDeck's chrome style.
+        title: `Open ${a.displayName || a.name || a.binary}`,
+      }));
+    }
+
+    function renderQuickLaunchers() {
+      const adapters = adapterLauncherEntries();
+      const ordered = [
+        ...BUILTIN_LAUNCHERS.pre,
+        ...adapters,
+        ...BUILTIN_LAUNCHERS.post,
+      ];
+
+      // Topbar — compact buttons.
+      const topbar = document.getElementById('topbarQuickLaunch');
+      if (topbar) {
+        topbar.replaceChildren();
+        for (const entry of ordered) {
+          topbar.appendChild(
+            makeLauncherButton(entry.command, entry.label, entry.title, 'topbar-ql-btn'),
+          );
+        }
+      }
+
+      // Empty state — taller tiles with the raw command rendered as a
+      // secondary line. Mirrors the pre-Sprint-50 markup so existing CSS
+      // classes (`quick-launch-btn`, `ql-cmd`, `ql-desc`) keep their styling.
+      const emptyGroup = document.querySelector('#emptyState .quick-launch-group');
+      if (emptyGroup) {
+        emptyGroup.replaceChildren();
+        for (const entry of ordered) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'quick-launch-btn';
+          btn.title = entry.title;
+          btn.dataset.command = entry.command;
+
+          const cmd = document.createElement('span');
+          cmd.className = 'ql-cmd';
+          cmd.textContent = entry.command;
+
+          const desc = document.createElement('span');
+          desc.className = 'ql-desc';
+          desc.textContent = entry.title;
+
+          btn.appendChild(cmd);
+          btn.appendChild(desc);
+          btn.addEventListener('click', () => quickLaunch(entry.command));
+          emptyGroup.appendChild(btn);
+        }
+      }
+    }
+
     // ===== Add Project modal =====
     function rebuildProjectDropdown(selectName) {
       const sel = document.getElementById('promptProject');
@@ -2571,10 +2677,23 @@
     }
 
     function getTypeLabel(type) {
+      // Sprint 50 T3 — adapter-driven panel header labels. Consult
+      // state.agentAdapters first so a freshly-launched Codex/Gemini/Grok
+      // panel reads its agent's displayName (rather than the raw
+      // sessionType string or — worse — falling through to "Shell" when
+      // the type label map didn't have an entry). Adding a new agent now
+      // requires only an adapter file with `displayName`; no client-side
+      // edit. Built-in non-adapter types (shell / python-server / etc.)
+      // keep their static labels.
+      const adapters = Array.isArray(state.agentAdapters) ? state.agentAdapters : [];
+      const adapter = adapters.find((a) => a && a.sessionType === type);
+      if (adapter && adapter.displayName) return adapter.displayName;
       const labels = {
         'shell': 'Shell',
         'claude-code': 'Claude Code',
+        'codex': 'Codex CLI',
         'gemini': 'Gemini CLI',
+        'grok': 'Grok CLI',
         'python-server': 'Python Server',
         'one-shot': 'One-shot'
       };
@@ -2624,7 +2743,18 @@
 
       if (dot) {
         dot.style.background = getStatusColor(meta.status);
-        dot.classList.toggle('pulsing', meta.status === 'thinking');
+        // Sprint 50 T3 — pulse the status dot for ALL in-flight states
+        // (thinking, editing, active), not just thinking. Pre-Sprint-50 the
+        // dot only pulsed on `thinking`; during a long agent task the
+        // status fluctuated through editing/active as different regex
+        // patterns matched the live PTY stream, removing the pulsing class
+        // each time and making the visual cue feel "frozen" between thinking
+        // hits. Pulsing across all work-in-progress states keeps the
+        // animation alive end-to-end. Idle / exited / errored stay solid.
+        const inflight = meta.status === 'thinking'
+          || meta.status === 'editing'
+          || meta.status === 'active';
+        dot.classList.toggle('pulsing', inflight);
       }
       if (status) status.textContent = meta.statusDetail || meta.status;
       if (metaLast && meta.lastCommands?.length) {

@@ -122,6 +122,83 @@ function statusFor(data) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// resolveTranscriptPath — Sprint 50 T1.
+//
+// Grok stores messages in `~/.grok/grok.db` (SQLite, STRICT schema requiring
+// SQLite ≥3.37 — macOS system sqlite3 3.36 cannot read it; better-sqlite3
+// bundles a recent build). The bundled hook (vendored to ~/.claude/hooks/)
+// can't `require('better-sqlite3')` because that path is outside TermDeck's
+// node_modules tree. So `resolveTranscriptPath` does the SQLite extraction
+// in-process here (the server has better-sqlite3 as a top-level dep), writes
+// the messages as a JSON envelope to `os.tmpdir()/termdeck-grok-<id>.json`,
+// and returns the tempfile path. The hook then reads that path with
+// `parseGrokJson` (a flat JSON-array parser — no SQLite needed downstream).
+//
+// Workspace mapping: grok.db's `workspaces.canonical_path` is the agent's
+// cwd-at-startup. We match against `session.meta.cwd` to find the
+// workspace_id, then pick the most recent session in that workspace whose
+// `created_at >= session.meta.createdAt` (allowing a small clock-skew
+// epsilon). Returns null gracefully if better-sqlite3 isn't loadable, the
+// DB doesn't open, the workspace isn't found, or no session matches.
+// ──────────────────────────────────────────────────────────────────────────
+
+const _GROK_RESOLVE_EPSILON_MS = 5_000;
+
+async function resolveTranscriptPath(session) {
+  if (!session || !session.meta || !session.meta.cwd) return null;
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  let Database;
+  try { Database = require('better-sqlite3'); }
+  catch (_) { return null; }  // dep missing → no-op
+  const dbPath = path.join(os.homedir(), '.grok', 'grok.db');
+  if (!fs.existsSync(dbPath)) return null;
+  let db;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  } catch (_) { return null; }
+  try {
+    const ws = db.prepare(
+      'SELECT id FROM workspaces WHERE canonical_path = ? LIMIT 1'
+    ).get(session.meta.cwd);
+    if (!ws) return null;
+    const createdAtMs = session.meta.createdAt
+      ? Date.parse(session.meta.createdAt) - _GROK_RESOLVE_EPSILON_MS
+      : 0;
+    const grokSession = db.prepare(
+      'SELECT id, created_at FROM sessions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(ws.id);
+    if (!grokSession) return null;
+    if (createdAtMs && Date.parse(grokSession.created_at) < createdAtMs) {
+      return null;  // most recent grok session predates this panel — no match
+    }
+    const rows = db.prepare(
+      'SELECT message_json FROM messages WHERE session_id = ? ORDER BY seq ASC'
+    ).all(grokSession.id);
+    if (!rows || rows.length === 0) return null;
+    const envelope = [];
+    for (const row of rows) {
+      let parsed;
+      try { parsed = JSON.parse(row.message_json); } catch (_) { continue; }
+      if (!parsed || typeof parsed !== 'object') continue;
+      const role = parsed.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      envelope.push({ role, content: parsed.content });
+    }
+    if (envelope.length === 0) return null;
+    const safeId = String(session.id || `unknown-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const tmpfile = path.join(os.tmpdir(), `termdeck-grok-${safeId}.json`);
+    fs.writeFileSync(tmpfile, JSON.stringify(envelope), 'utf8');
+    return tmpfile;
+  } catch (_) {
+    return null;
+  } finally {
+    try { db.close(); } catch (_) { /* fail-soft */ }
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // parseTranscript — Grok stores messages in SQLite (~/.grok/grok.db), not
 // in a JSONL file. The adapter contract is `(raw: string) => Memory[]`, so
 // the caller (the memory-session-end hook, refactored in Sprint 45 T4) is
@@ -360,6 +437,8 @@ function _mergeMnestraIntoGrokSettings(rawText, { secrets } = {}) {
 const grokAdapter = {
   name: 'grok',
   sessionType: 'grok',
+  // Sprint 50 T3 — see claude.js for rationale.
+  displayName: 'Grok CLI',
   matches: (cmd) => typeof cmd === 'string' && /(?:^|\s|\/)grok(?:\b|$)/i.test(cmd),
   spawn: {
     binary: 'grok',
@@ -382,6 +461,9 @@ const grokAdapter = {
   },
   statusFor,
   parseTranscript,
+  // Sprint 50 T1 — 10th adapter field. SQLite extraction → tempfile JSON
+  // envelope (see header above for rationale + workspace mapping).
+  resolveTranscriptPath,
   bootPromptTemplate,
   costBand: 'subscription',
   // Sprint 47 T3 — Grok's Bun+OpenTUI input box hasn't been empirically

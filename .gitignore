@@ -17,3 +17,6 @@ supabase/.temp/
 
 # Claude Code workspace state (hooks, plugin settings, skill cache)
 .claude/
+
+# Sprint worktrees (Sprint 47+ pattern — per-lane git worktree add paths)
+.worktrees/

@@ -76,6 +76,52 @@ function statusFor(data) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// resolveTranscriptPath — Sprint 50 T1 (10th adapter field).
+//
+// Claude Code stores per-session JSONL transcripts at
+//   ~/.claude/projects/<dir-hash>/<claude-session-uuid>.jsonl
+// where <dir-hash> is `cwd` with `/` replaced by `-`. The inner UUID is
+// Claude's own session id — distinct from TermDeck's `session.id` — so we
+// can't compute the path; we list the directory and pick the most recently
+// modified .jsonl whose mtime is at-or-after `session.meta.createdAt`.
+//
+// IMPORTANT: server-side `onPanelClose` SKIPS claude-typed sessions so
+// Claude's existing SessionEnd hook (registered in ~/.claude/settings.json)
+// remains the sole writer for Claude rows — no double-writes. This
+// implementation exists for contract uniformity + the unit-test surface +
+// future tooling that may want to look up Claude transcripts directly.
+// ──────────────────────────────────────────────────────────────────────────
+
+async function resolveTranscriptPath(session) {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  if (!session || !session.meta || !session.meta.cwd) return null;
+  const dirHash = session.meta.cwd.replace(/\//g, '-');
+  const projectsDir = path.join(os.homedir(), '.claude', 'projects', dirHash);
+  let entries;
+  try { entries = fs.readdirSync(projectsDir); }
+  catch (_) { return null; }
+  const createdAtMs = session.meta.createdAt
+    ? Date.parse(session.meta.createdAt)
+    : 0;
+  let bestPath = null;
+  let bestMtime = -Infinity;
+  for (const name of entries) {
+    if (!name.endsWith('.jsonl')) continue;
+    const full = path.join(projectsDir, name);
+    let st;
+    try { st = fs.statSync(full); } catch (_) { continue; }
+    if (createdAtMs && st.mtimeMs < createdAtMs) continue;
+    if (st.mtimeMs > bestMtime) {
+      bestMtime = st.mtimeMs;
+      bestPath = full;
+    }
+  }
+  return bestPath;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // parseTranscript — Claude Code JSONL format, lifted from
 // packages/stack-installer/assets/hooks/memory-session-end.js:88-102.
 // Emits records of shape { role: 'user'|'assistant', content: string }
@@ -137,6 +183,12 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
 const claudeAdapter = {
   name: 'claude',
   sessionType: 'claude-code',
+  // Sprint 50 T3 — human-readable label for launcher buttons + panel headers.
+  // Drives /api/agents projection and getTypeLabel() in the dashboard so a
+  // freshly-launched Codex/Gemini/Grok panel header reads its agent name
+  // (not the previous "Shell" fallback). Single source of truth — adding a
+  // new adapter no longer requires touching the client's hardcoded label map.
+  displayName: 'Claude Code',
   matches: (cmd) => typeof cmd === 'string' && /claude/i.test(cmd),
   spawn: {
     binary: 'claude',
@@ -156,6 +208,9 @@ const claudeAdapter = {
   },
   statusFor,
   parseTranscript,
+  // Sprint 50 T1 — 10th adapter field. See header for skip-claude rule
+  // (onPanelClose ignores claude-typed sessions).
+  resolveTranscriptPath,
   bootPromptTemplate,
   costBand: 'pay-per-token',
   // Sprint 47 T3 — Claude Code's input box accepts bracketed-paste cleanly.

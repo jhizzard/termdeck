@@ -102,6 +102,83 @@ function statusFor(data) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// resolveTranscriptPath — Sprint 50 T1.
+//
+// Codex stores chat-shape JSONL rollouts at
+//   ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+// (verified 2026-05-02 substrate probe — first line is
+// `{type:'session_meta', payload:{cwd, ...}}`). `~/.codex/history.jsonl` at
+// the top level is a flat command-history shape, NOT chat — Sprint 49
+// close-out tried that and got `session-too-short: 0 messages
+// (parser=codex)` from the bundled hook against a real lane session.
+//
+// Attribution strategy: we don't know Codex's internal session UUID at
+// spawn time, so we walk today's + yesterday's rollout directories in
+// newest-mtime order, parse each file's first line, and return the first
+// match where `session_meta.payload.cwd === session.meta.cwd` AND
+// `mtime >= session.meta.createdAt`. Returns null when no rollout exists
+// (e.g., Codex panel was opened but never sent a turn) — onPanelClose
+// no-ops cleanly.
+// ──────────────────────────────────────────────────────────────────────────
+
+function _codexCandidateDirs(homedir, now) {
+  const path = require('path');
+  const day = new Date(now);
+  const yesterday = new Date(now - 24 * 60 * 60 * 1000);
+  const fmt = (d) => ({
+    Y: String(d.getUTCFullYear()),
+    M: String(d.getUTCMonth() + 1).padStart(2, '0'),
+    D: String(d.getUTCDate()).padStart(2, '0'),
+  });
+  const out = [];
+  for (const d of [day, yesterday]) {
+    const { Y, M, D } = fmt(d);
+    out.push(path.join(homedir, '.codex', 'sessions', Y, M, D));
+  }
+  return out;
+}
+
+async function resolveTranscriptPath(session) {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  if (!session || !session.meta || !session.meta.cwd) return null;
+  const cwd = session.meta.cwd;
+  const createdAtMs = session.meta.createdAt
+    ? Date.parse(session.meta.createdAt)
+    : 0;
+  const candidates = [];
+  for (const dir of _codexCandidateDirs(os.homedir(), Date.now())) {
+    let entries;
+    try { entries = fs.readdirSync(dir); }
+    catch (_) { continue; }
+    for (const name of entries) {
+      if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) continue;
+      const full = path.join(dir, name);
+      let st;
+      try { st = fs.statSync(full); } catch (_) { continue; }
+      if (createdAtMs && st.mtimeMs < createdAtMs) continue;
+      candidates.push({ full, mtime: st.mtimeMs });
+    }
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  for (const { full } of candidates) {
+    let firstLine;
+    try {
+      const buf = fs.readFileSync(full, 'utf8');
+      const nl = buf.indexOf('\n');
+      firstLine = nl >= 0 ? buf.slice(0, nl) : buf;
+    } catch (_) { continue; }
+    let meta;
+    try { meta = JSON.parse(firstLine); } catch (_) { continue; }
+    if (!meta || meta.type !== 'session_meta') continue;
+    if (!meta.payload || meta.payload.cwd !== cwd) continue;
+    return full;
+  }
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // parseTranscript — Codex JSONL format.
 //
 // Each line is `{ timestamp, type, payload }`. We want only:
@@ -173,6 +250,8 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
 const codexAdapter = {
   name: 'codex',
   sessionType: 'codex',
+  // Sprint 50 T3 — see claude.js for rationale.
+  displayName: 'Codex CLI',
   matches: (cmd) => typeof cmd === 'string' && /\bcodex\b/i.test(cmd),
   spawn: {
     binary: 'codex',
@@ -192,6 +271,9 @@ const codexAdapter = {
   },
   statusFor,
   parseTranscript,
+  // Sprint 50 T1 — 10th adapter field. See header above for substrate
+  // findings + attribution strategy.
+  resolveTranscriptPath,
   bootPromptTemplate,
   costBand: 'pay-per-token',
   // Sprint 47 T3 — Codex's Ratatui TUI accepts bracketed-paste per the

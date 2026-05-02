@@ -59,6 +59,15 @@ test('every adapter implements the 7-field contract', () => {
 
     assert.ok(['free', 'pay-per-token', 'subscription'].includes(adapter.costBand),
       `${id}: costBand must be one of free|pay-per-token|subscription, got ${adapter.costBand}`);
+
+    // Sprint 50 T3 — every adapter declares a human-readable displayName.
+    // Drives the dashboard launcher buttons (one per adapter) and the panel
+    // header label resolver (getTypeLabel). Adding a new adapter without
+    // displayName regresses the v1.0.0 UX trust trio fix.
+    assert.equal(typeof adapter.displayName, 'string',
+      `${id}: displayName must be a string`);
+    assert.ok(adapter.displayName.length > 0,
+      `${id}: displayName must be non-empty`);
   }
 });
 

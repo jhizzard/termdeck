@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const dns = require('dns');
+const { spawn: spawnChild } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const { createCachedLookup, createFailureLogger } = require('./rumen-pool-resilience');
 
@@ -127,6 +128,97 @@ function readTermdeckSecretsForPty() {
 }
 // Test hook — clear the cache between tests that mutate the on-disk file.
 function _resetTermdeckSecretsCache() { _termdeckSecretsCache = null; }
+
+// Sprint 50 T1 — Per-agent SessionEnd hook trigger.
+//
+// `_spawnSessionEndHookImpl` is the production spawn path; tests swap it
+// out via `_setSpawnSessionEndHookImplForTesting` to capture the
+// payload + arguments deterministically. The reason this indirection
+// exists rather than mocking `child_process.spawn`: `node:test` doesn't
+// run detached + stdio:['pipe','ignore','ignore'] children inside the
+// test runner (verified — direct spawn with the same options fails to
+// even invoke the script's first line). Mocking `child_process` would
+// require module-level mocking which the runner doesn't support out of
+// the box. A single-function injection keeps the surface tiny.
+function _defaultSpawnSessionEndHookImpl(hookPath, payload, env) {
+  const child = spawnChild('node', [hookPath], {
+    stdio: ['pipe', 'ignore', 'ignore'],
+    detached: true,
+    env,
+  });
+  child.on('error', (err) => {
+    console.error('[onPanelClose] hook spawn error:', err && err.message ? err.message : err);
+  });
+  try {
+    child.stdin.write(JSON.stringify(payload));
+    child.stdin.end();
+  } catch (err) {
+    console.error('[onPanelClose] hook stdin write failed:', err && err.message ? err.message : err);
+  }
+  child.unref();
+  return child;
+}
+let _spawnSessionEndHookImpl = _defaultSpawnSessionEndHookImpl;
+function _setSpawnSessionEndHookImplForTesting(fn) {
+  _spawnSessionEndHookImpl = typeof fn === 'function' ? fn : _defaultSpawnSessionEndHookImpl;
+}
+
+// Fires when a panel's PTY exits. Routes through the adapter registry's
+// new `resolveTranscriptPath` field (10th adapter field, Sprint 50) and
+// invokes the bundled `~/.claude/hooks/memory-session-end.js` with the
+// right payload so Codex / Gemini / Grok panels write a `session_summary`
+// row the same way Claude Code already does.
+//
+// Skip rules (in order):
+//   1. Claude — its own SessionEnd hook (registered in
+//      ~/.claude/settings.json) ingests Claude rows. Double-firing here
+//      would either insert two rows per session or race the Claude hook.
+//   2. Adapters without `resolveTranscriptPath` — older adapters or types
+//      not in the registry (shell, python-server, one-shot). No-op.
+//   3. `resolveTranscriptPath` returns null — adapter declares no
+//      transcript exists for this session (panel never sent a turn).
+//   4. ~/.claude/hooks/memory-session-end.js missing — user hasn't
+//      installed the TermDeck stack hook. No-op.
+//
+// Fail-soft contract: any error logs to stderr and exits cleanly. Never
+// blocks panel teardown — the spawn is fire-and-forget (detached + unref).
+//
+// `source_agent` is included in the payload (T2 consumes it via the new
+// `memory_items.source_agent` column). T1 just passes the value; if T2
+// hasn't migrated the column yet at the moment of first fire, Supabase
+// rejects the row and the hook logs `supabase-insert-failed: HTTP 4xx`.
+async function onPanelClose(session) {
+  try {
+    if (!session || !session.meta) return;
+    const adapter = AGENT_ADAPTERS[session.meta.type]
+      || Object.values(AGENT_ADAPTERS).find((a) => a.sessionType === session.meta.type);
+    if (!adapter) return;
+    if (adapter.sessionType === 'claude-code') return;
+    if (typeof adapter.resolveTranscriptPath !== 'function') return;
+
+    const transcriptPath = await adapter.resolveTranscriptPath(session);
+    if (!transcriptPath) return;
+
+    const hookPath = path.join(os.homedir(), '.claude', 'hooks', 'memory-session-end.js');
+    if (!fs.existsSync(hookPath)) return;
+
+    const payload = {
+      transcript_path: transcriptPath,
+      cwd: session.meta.cwd,
+      session_id: session.id,
+      sessionType: adapter.sessionType,
+      // Sprint 50 — T2 consumes this via the new memory_items.source_agent column.
+      source_agent: adapter.name,
+    };
+
+    _spawnSessionEndHookImpl(hookPath, payload, {
+      ...process.env,
+      ...readTermdeckSecretsForPty(),
+    });
+  } catch (err) {
+    console.error('[onPanelClose] error:', err && err.message ? err.message : err);
+  }
+}
 
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
 // helper is decoupled from T2's templates.js / init-project.js; we resolve
@@ -926,6 +1018,15 @@ function createServer(config) {
 
           // Fire-and-forget session log (T2.5)
           writeSessionLog({ session, config, db, getSessionHistory });
+
+          // Sprint 50 T1 — fire the bundled SessionEnd hook for non-Claude
+          // panels so Codex / Gemini / Grok /exits write to Mnestra the way
+          // Claude Code already does. onPanelClose handles dispatch +
+          // skip-claude + skip-when-no-transcript. Fire-and-forget; any
+          // error logs and never blocks teardown.
+          onPanelClose(session).catch((err) => {
+            console.error('[onPanelClose] async error:', err && err.message ? err.message : err);
+          });
         });
 
         // Wire command logging to SQLite + RAG
@@ -1324,6 +1425,9 @@ function createServer(config) {
   //   • binary      — canonical command name; client matches `^binary\b` (i)
   //   • costBand    — 'free' | 'pay-per-token' | 'subscription' (Sprint 46
   //                   surfaces this in PLANNING.md cost annotations)
+  //   • displayName — Sprint 50 T3: human-readable label for launcher buttons
+  //                   and panel headers. Backwards-compat: existing clients
+  //                   that ignore the field continue to work unchanged.
   // Functions / RegExps are NOT serialized — match logic lives client-side
   // and uses the binary as the prefix anchor. Adapter-specific shorthand
   // (e.g. `cc` → `claude`) is normalized in app.js before this lookup.
@@ -1332,6 +1436,29 @@ function createServer(config) {
       name: a.name,
       sessionType: a.sessionType,
       binary: a.spawn && a.spawn.binary,
+      costBand: a.costBand,
+      displayName: a.displayName || a.name,
+    }));
+    res.json(list);
+  });
+
+  // GET /api/agents - Sprint 50 T3: richer adapter projection used by the
+  // dashboard launcher to render one button per registered agent and by the
+  // mixed-agent dogfood inject script to discover available agents. Adds
+  // the full spawn descriptor (binary + defaultArgs) so callers don't need
+  // to re-derive it from the binary alone. Coexists with /api/agent-adapters
+  // (kept stable for the launcher-resolver client contract).
+  app.get('/api/agents', (req, res) => {
+    const list = Object.values(AGENT_ADAPTERS).map((a) => ({
+      name: a.name,
+      sessionType: a.sessionType,
+      displayName: a.displayName || a.name,
+      spawn: {
+        binary: (a.spawn && a.spawn.binary) || a.name,
+        defaultArgs: (a.spawn && Array.isArray(a.spawn.defaultArgs))
+          ? a.spawn.defaultArgs.slice()
+          : [],
+      },
       costBand: a.costBand,
     }));
     res.json(list);
@@ -2228,4 +2355,9 @@ module.exports = {
   // Sprint 48 T4 — exported for unit testing the secrets.env → PTY env merge.
   readTermdeckSecretsForPty,
   _resetTermdeckSecretsCache,
+  // Sprint 50 T1 — exported for unit testing the per-agent SessionEnd
+  // hook trigger (skip-claude, no-transcript, no-hook-installed,
+  // payload shape, fire-and-forget).
+  onPanelClose,
+  _setSpawnSessionEndHookImplForTesting,
 };

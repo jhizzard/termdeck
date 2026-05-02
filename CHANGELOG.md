@@ -6,20 +6,110 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Planned
-- **Sprint 51 (vision-level): cost-monitoring expandable dashboard panel.** Per-agent subscription-vs-per-token billing exposure. Reads each adapter's `costBand` field (already declared on all 4 adapters) and surfaces it in an expandable drawer: agent name + cost-band badge + session token count + running cost estimate (per-token agents) + "what's included" tooltip per agent. Optional non-blocking threshold toast when a per-token agent crosses a user-configurable spend threshold (default $5/session — Joshua to decide at scoping). Why: outside users running mixed 4+1 may not realize swapping a Claude lane for a Codex/Gemini/Grok lane shifts billing from "included in $X/mo subscription" to "$Y per million tokens" — long sprints with thinking + tool calls can rack up hundreds before the user notices. v1.x feature, not a v1.0.0 blocker. Same pattern (`costBand` + dashboard surface) extends naturally to rumen-tick (Edge Function billing) and mnestra (embedding cost per `memory_remember`).
-- **Sprint 50 (gate-blocker UX hotfixes for v1.0.0 polish):** three "visible signal lies to the human" gaps surfaced during Sprint 49 inject. (1) Launcher buttons missing for Codex/Gemini/Grok — adapter-driven panel chooser reads from `AGENT_ADAPTERS` registry, ~80 LOC. (2) Panel labels show "shell" instead of agent name (front-end reads launch command, not `meta.type`), ~10 LOC. (3) Status spinner freezes mid-work even when API heartbeat is healthy (CSS animation completes one cycle and stops; needs `animation-iteration-count: infinite` OR re-trigger on `lastActivity` updates), ~5 LOC. All three are small, all three erode user trust independently, all three belong in one tight UX-polish sprint.
-- **Sprint 49 (top candidate): real mixed-agent dogfood.** Sprint 48 shipped per-agent MCP auto-wire (T1-T3) plus the global stack launcher (T4). Sprint 49 declares `T1=codex / T2=gemini / T3=grok / T4=claude` in PLANNING.md frontmatter and runs an end-to-end real sprint with mixed lanes. Validates T1-T3's MCP auto-wire under real load + Sprint 47's status-merger idiom-detection against actual non-Claude STATUS posts. **This is the v1.0.0 inflection gate** — auto-wire + dogfood + launcher all proven end-to-end.
-- **Grok 16-sub-agent observability.** Per the Grok smoke-test self-report: Grok's `task` tool emits parseable stdout patterns (`"Delegating to [agent] sub-agent: ..."`, `"[sub-agent complete]"`). TermDeck's `session.js` analyzer can pick these up; UX could be a collapsible tree / side-metadata pane showing agent pills. Sized as a Sprint 49 lane.
-- **Optional `~/.zshrc` source-line offer** in the stack-installer wizard (Sprint 48 T4 deferred this — the brief flagged it as time-permitting; skipped to keep the lane tight). Adds `set -a; source ~/.termdeck/secrets.env; set +a` to `~/.zshrc` so standalone Claude Code launches outside TermDeck also inherit secrets.
-- **Promote `packages/stack-installer/tests/**/*.test.js` into root `npm test` glob.** Currently runs separately via `node --test packages/stack-installer/tests/**/*.test.js`. Sprint 48 T4 follow-up.
-- **14 Sprint 46 deferrals** roll forward unchanged. Edge click handler design call, cross-project edges visual distinction, chip "all on/off" preset, perf at 2000+ nodes, URL state codec edge case (T1 lane); source-session links, pagination, audit-write-gap cleanup (T2); server metadata gap, TUI spinner spam in stored content, escapeHtml dedup, perf virtualization (T3); cosmetic title gaps on `btn-status`/`btn-config`, regex-injection defensive helper (T4). Full list in `docs/sprint-46-dashboard-audit/AUDIT-FINDINGS.md` § Sprint 47 deferrals.
-- **Upstream rumen-package fix queued for next rumen release.** `~/Documents/Graciella/rumen/src/index.ts:177` — `createJob` INSERT omits `started_at` and the column has no default, leaving 1546+ rumen_jobs rows with NULL `started_at`. Two-line patch: add `started_at` to the INSERT VALUES tuple with `NOW()`. Sprint 45 shipped the surgical TermDeck-side `COALESCE(started_at, completed_at)` read-side fix; the upstream patch removes the workaround once it lands.
-- **Grok adapter SQLite extraction** for the memory-hook `parseTranscript` path. Sprint 45 T3 supplied `parseTranscript`; the hook layer needs to query `~/.grok/grok.db` and synthesize a JSONL feed before invoking the parser. Better-sqlite3 prebuilt covers SQLite ≥3.37.
+### Planned (post-v1.0.0)
+- **Sprint 51 — Cost-monitoring expandable dashboard panel.** Per-agent subscription-vs-per-token billing exposure. Reads each adapter's `costBand` field (declared on all 4 adapters since Sprint 45, populated since v1.0.0) and surfaces it in an expandable drawer: agent name + cost-band badge + session token count + running cost estimate (per-token agents) + "what's included" tooltip per agent. Optional non-blocking threshold toast when a per-token agent crosses a user-configurable spend threshold (default $5/session — Joshua to decide at scoping). Why: outside users running mixed 4+1 may not realize swapping a Claude lane for a Codex/Gemini/Grok lane shifts billing from "included in $X/mo subscription" to "$Y per million tokens" — long sprints with thinking + tool calls can rack up hundreds before the user notices. Same pattern (`costBand` + dashboard surface) extends naturally to rumen-tick (Edge Function billing) and mnestra (embedding cost per `memory_remember`). The v1.0.0 `source_agent` column is the natural foundation for "your last 30 days of memory spend, broken down by source LLM."
+- **Grok 16-sub-agent observability.** Per the Sprint 47 Grok smoke-test self-report: Grok's `task` tool emits parseable stdout patterns (`"Delegating to [agent] sub-agent: ..."`, `"[sub-agent complete]"`). TermDeck's `session.js` analyzer can pick these up; UX could be a collapsible tree / side-metadata pane showing agent pills. Carried forward from Sprint 49 deferral.
+- **Optional `~/.zshrc` source-line offer** in the stack-installer wizard (Sprint 48 T4 deferred). Adds `set -a; source ~/.termdeck/secrets.env; set +a` to `~/.zshrc` so standalone Claude Code launches outside TermDeck also inherit secrets.
+- **Promote `packages/stack-installer/tests/**/*.test.js` into root `npm test` glob.** Currently runs separately. Sprint 48 T4 follow-up.
 - **`mnestra doctor` subcommand** (Brad's third upstream suggestion 2026-04-28). Cross-repo work; queued.
-- Sprint 40 carry-over: harness session-end hook PROJECT_MAP forward-fix (out-of-repo file at `~/.claude/hooks/memory-session-end.js`).
-- Sprint 40 carry-over: analyzer broadening — `PATTERNS.error` case-sensitivity gaps.
-- Sprint 40 carry-over: LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.
+- **Upstream rumen-package fix queued for next rumen release.** `~/Documents/Graciella/rumen/src/index.ts:177` — `createJob` INSERT omits `started_at` and the column has no default, leaving 1546+ rumen_jobs rows with NULL `started_at`. Two-line patch: add `started_at` to the INSERT VALUES tuple with `NOW()`. Sprint 45 shipped the surgical TermDeck-side `COALESCE(started_at, completed_at)` read-side fix; the upstream patch removes the workaround once it lands.
+- **Sprint 46 deferrals still open after Sprint 50.5 close-out.** The Sprint 50.5 dogfood cleared four (T1 URL state codec edge case, T2 — replaced with `approvalModel` doc work — T3 TUI spinner spam, T4 dead `triggerProactiveMemoryQuery`); ten deferrals remain in `docs/sprint-46-dashboard-audit/AUDIT-FINDINGS.md` § Sprint 47 deferrals (most need design calls, not lane work).
+- Sprint 40 carry-overs: harness session-end hook PROJECT_MAP forward-fix (out-of-repo `~/.claude/hooks/memory-session-end.js`); analyzer broadening for `PATTERNS.error` case-sensitivity gaps; LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.
+
+## [1.0.0] - 2026-05-02
+
+> **TermDeck 1.0** — A browser terminal multiplexer that runs Claude Code, Codex, Gemini, and Grok side-by-side, captures every session to a vector-backed memory store, and lets you fan a sprint across four agents from one dashboard. Eight sprints (44 → 50) of multi-agent substrate work graduate TermDeck from "Claude Code multiplexer with extras" to a production-ready mixed-agent orchestrator.
+
+### What's new for users (the headline)
+
+- **Open any agent with one click.** The dashboard panel chooser now renders a launcher button per registered adapter — Claude / Codex / Gemini / Grok. No more typing `codex` or `gemini` into a `shell` panel and hoping prompt-pattern detection reclassifies the type.
+- **Panel labels name the agent that's actually running.** "shell" no longer lies when the panel is hosting Claude Code or Grok 4.20 Reasoning. The label reads from the resolved adapter `displayName`, not the launch command.
+- **Memory captures every agent's `/exit`, not just Claude's.** Closing a Codex / Gemini / Grok panel writes a `session_summary` row to your Mnestra store with the source agent tagged. Recall calls can filter by which agent authored a row — `memory_recall(source_agents=['claude'])` returns only Claude-authored rows; the default returns all.
+- **Sprints can run on mixed agents.** Declare `T1=codex / T2=gemini / T3=grok / T4=claude` in your sprint's PLANNING.md frontmatter and the inject script dispatches per-agent boot prompts to per-agent panels. Status posts in any of the four idioms get normalized into the canonical FINDING / FIX-PROPOSED / DONE shape.
+- **Worktree-isolated parallel sprints.** Per-lane `git worktree add` paths mean a botched lane is `git worktree remove` away from clean main — no merge fights when four agents edit the repo simultaneously.
+- **The full stack launches with one command.** `npm i -g @jhizzard/termdeck-stack && termdeck-stack start` boots Mnestra (memory store) + TermDeck (multiplexer) + auto-wires the Mnestra MCP block into every adapter's config. No repo clone, no manual `mcpServers` edits.
+
+### How we got here (Sprint 44 → Sprint 50 narrative arc)
+
+**Sprint 44** (foundation, 2026-04-30): Grok install, AGENTS.md sync, adapter registry skeleton with the 7-field contract, `docs/AGENT-RUNTIMES.md` documentation. Multi-agent ambition stated; nothing yet shipped to non-Claude users.
+
+**Sprint 45** (adapters, 2026-05-01): Codex / Gemini / Grok adapter implementations under `packages/server/src/agent-adapters/<name>.js`. Each declares `spawn`, `prompt`, `parseTranscript`, `costBand`. Real-load test: opening a Codex panel correctly classifies as `codex-cli`; same for Gemini, Grok. Grok's SQLite-backed transcript shape was flagged for hook-layer follow-up — closed in v1.0.0.
+
+**Sprint 46** (defensive sweep, 2026-05-01): the topbar's right-hand button row hadn't been audited end-to-end since the launcher refactor. Five silent-regression bugs caught and fixed (graph node hover tooltip missing, transcripts panel renderer/contract mismatches, python quick-launch initial badge wrong, zero client-side launcher-routing test coverage). Fourteen sub-optimal items deferred — most cleared by Sprint 49 + Sprint 50.5.
+
+**Sprint 47** (mixed 4+1 infrastructure, 2026-05-01): the orchestrator-side machinery for declaring agents per-lane. Frontmatter parser (`packages/server/src/sprint-frontmatter.js`) + per-agent boot-prompt templates (`docs/multi-agent-substrate/boot-prompts/`) + cross-agent STATUS.md merger (`packages/server/src/status-merger.js`). The infrastructure ships; the actual mixed-agent dogfood ships in Sprint 49.
+
+**Sprint 47.5 hotfix** (2026-05-02 12:30 ET): a routine `npm install -g @jhizzard/termdeck-stack@0.4.11` re-broke `memory_recall` because the installer wrote literal `${SUPABASE_URL}` placeholders into the mnestra MCP env block (Claude Code does not shell-expand MCP env values). Hotfixed with a concrete-value writer + a repair pass for already-broken installs. Mnestra @0.3.4 added a defense-in-depth fallback that ignores `${...}` placeholders.
+
+**Sprint 48** (per-agent MCP auto-wire + global launcher, 2026-05-02 13:18 ET): Codex / Gemini / Grok adapters gained `mcpConfig` fields; a 207-LOC `mcp-autowire.js` helper writes the Mnestra MCP block into each agent's config in three different shapes (TOML append for Codex, JSON record-merge for Gemini, JSON array upsert for Grok). The global `termdeck-stack start|stop|status` launcher boots the full stack with one command. v0.17.0 + v0.5.0 coordinated release.
+
+**Sprint 49** (real mixed-agent dogfood, 2026-05-02 14:08-14:20 ET): the first TermDeck sprint where T1/T2/T3 ran on **non-Claude agents**. T1=Codex (escapeHtml dedup), T2=Gemini (flashback pagination), T3=Grok (graph chip presets), T4=Claude (auto-wire-on-launch + termdeck-stack@0.5.1 publish). All four lanes posted DONE in 12 minutes wall-clock — fastest sprint since Sprint 41/44 and the proof-point that mixed-agent overhead is negligible. v1.0.0 trigger criteria met but bump deferred: three "visible signal lies to the human" UX bugs surfaced during the inject AND multi-agent memory plumbing had a write-side gap (only Claude `/exit` writes a memory row).
+
+**Sprint 50 (this release)** closes both gaps. Per-agent SessionEnd hook trigger so `/exit` on any agent writes its work to memory; `source_agent` provenance column so consumers can filter; UX trust trio (launcher buttons + accurate panel labels + spinner that doesn't freeze mid-work). Sprint 50.5 (worktree-isolated mixed-agent dogfood close-out) validated all three under real load before this v1.0.0 bump.
+
+### Sprint 50 lanes (this release)
+
+- **T1 — Per-agent SessionEnd hook trigger (+ Grok SQLite extraction).** NEW server-side `onPanelClose(session)` in `packages/server/src/index.js` that fires the bundled hook with the correct adapter-specific payload when a non-Claude panel closes. EXTENDED adapter contract from 9 → 10 fields with `resolveTranscriptPath(session)`. Codex / Gemini / Grok adapters implement their transcript-path resolution. Grok's SQLite-backed transcript (`~/.grok/grok.db`) is extracted via `better-sqlite3` and synthesized into a JSONL feed for the existing parser — closes the Sprint 45 carry-over. Closing a Codex / Gemini / Grok panel now writes one `session_summary` row to `memory_items`; Claude's existing hook still fires for Claude panels (no double-write).
+
+- **T2 — Memory `source_agent` column + recall filter.** NEW Mnestra migration `015_source_agent.sql` adds the column + partial index (NULL-skipping) + comment. Bundled hook (`packages/stack-installer/assets/hooks/memory-session-end.js`) populates `source_agent` from the new payload field. Mnestra `memory_recall` MCP tool gains an optional `source_agents: string[]` filter param — `memory_recall(source_agents=['claude'])` returns only Claude-authored rows, default returns all (no breaking change). Companion mnestra release: `@jhizzard/mnestra@0.4.0` minor bump because the new column + filter param is a user-visible feature.
+
+- **T3 — UX trust trio (launcher buttons + panel labels + spinner freeze).** Adapter-driven launcher buttons in the panel chooser read from the `AGENT_ADAPTERS` registry — one labeled button per registered adapter; click POSTs to the existing panel-create API with the right `command`. Panel labels read from `meta.type` (resolved adapter `displayName`), not from the launch command — "shell" no longer lies when the panel hosts Claude or Grok. Status spinner CSS gains `animation-iteration-count: infinite` AND re-triggers on `lastActivity` updates — no more frozen spinner during long Claude reasoning phases.
+
+- **T4 — Worktree-isolated dogfood close-out + v1.0.0 publish.** Sprint 50.5 — a worktree-isolated mixed-agent sub-sprint nested inside Sprint 50's normal close-out. Each lane picked a small Sprint 46 deferral (T1=codex URL state codec edge case, T2=gemini AGENT-RUNTIMES `approvalModel` doc, T3=grok stripAnsi spinner stripping, T4=claude dead `triggerProactiveMemoryQuery` cleanup). Per-lane `.worktrees/sprint-50.5-T{1..4}/` paths so a botched lane is `git worktree remove` away from clean main. Validates: (i) launcher buttons actually open the right agent, (ii) panel labels show correct names, (iii) per-agent SessionEnd hooks fire and write 4 rows with correct `source_agent` values, (iv) `memory_recall(source_agents=['claude'])` returns expected rows.
+
+### Validation
+
+- **Memory writes from all four agents confirmed.** Closing one of each (Codex / Gemini / Grok / Claude) produced 4 new `session_summary` rows in `memory_items` with the correct `source_agent` values. Verified via `select source_agent, count(*) from memory_items where source_type='session_summary' group by 1`. Sprint 50 inject baseline = 12 rows; post-50.5 dogfood = 16+ rows.
+- **Recall filter works.** `memory_recall(source_agents=['claude'])` returns Claude-authored rows; `memory_recall(source_agents=['claude','codex'])` returns the union; `memory_recall()` returns all (no breaking change to existing callers).
+- **Launcher buttons present.** Panel chooser shows one button per registered adapter. Each opens a panel with the correct `meta.type` AND label.
+- **Spinner stays alive.** Long Claude reasoning phases (manually reproduced in the Sprint 50.5 dogfood T4 lane) keep the spinner animating throughout. Status field transitions to `idle` cleanly when the agent posts DONE.
+- **Worktree isolation holds.** All four Sprint 50.5 lanes DONE in their own worktrees; merge back to main with zero conflicts (files touched are disjoint by design — graph.js / AGENT-RUNTIMES.md / session.js / app.js).
+- **Test coverage:** all Sprint 49+ tests stay green plus new coverage for the per-agent hook trigger (~6 tests), the `source_agent` column + filter (mnestra-side), the launcher-button rendering, the spinner CSS, and each Sprint 50.5 lane's deferral fix. Pre-existing 22 failures in `tests/project-taxonomy.test.js` remain unrelated (out-of-repo `~/.claude/hooks/memory-session-end.js` PROJECT_MAP, Sprint 40 carry-over).
+- **Mnestra full test suite stays green** including the new `source_agents` filter coverage.
+
+### What's locked in for v1.x
+
+- **Adapter contract is now 10 fields:** `name`, `displayName`, `spawn`, `prompt`, `parseTranscript`, `costBand`, `acceptsPaste`, `mcpConfig`, `sessionType`, `resolveTranscriptPath`. (Sprint 50.5 T2 staged an 11th field — `approvalModel: 'auto' | 'per-step'` — as a docs-only addition; code rollout deferred to a v1.x sprint.) Registered in `packages/server/src/agent-adapters/index.js`. Adding a new agent (Aider, Continue, etc.) is a 100-200 LOC adapter file plus a one-line registration.
+- **Sprint frontmatter format:** YAML-subset top-level + `lanes:` sequence with `tag` + `agent`. Forward-compatible — pre-Sprint-47 PLANNING.md files have no frontmatter and default all lanes to `claude`.
+- **Memory schema:** `memory_items.source_agent text` (nullable for historical rows pre-Sprint-50). Recall RPC accepts optional `source_agents text[]` filter. The 12 historical `session_summary` rows from Sprint 48-49 were backfilled with `source_agent='claude'` (they came from Claude Code).
+
+### What's queued for v1.x (forward look)
+
+- **Sprint 51 — Cost-monitoring expandable dashboard panel.** Reads each adapter's `costBand` field and the new `source_agent` column to surface "your last 30 days of memory spend, broken down by source LLM" + per-active-panel running cost estimate for per-token agents. v1.x feature — the data plumbing ships in v1.0.0; Sprint 51 ships the visible panel.
+- **Grok 16-sub-agent observability.** Grok's `task` tool emits parseable stdout patterns that TermDeck's `session.js` analyzer can pick up. UX: collapsible tree / side-metadata pane showing agent pills.
+- **`mnestra doctor` subcommand** (Brad's third upstream suggestion 2026-04-28). Cross-repo work; queued.
+- **Optional `~/.zshrc` source-line offer** in the stack-installer wizard so standalone Claude Code launches outside TermDeck inherit secrets.
+- **`approvalModel` adapter-contract code rollout** (Sprint 50.5 T2 shipped docs only). Future orchestrator logic can right-size lane budgets (1.5-2× wall-clock for `per-step` agents like Gemini) and flag operators when overnight orchestration includes a `per-step` lane.
+- **Sprint 40 carry-overs:** harness session-end hook PROJECT_MAP forward-fix; analyzer broadening for `PATTERNS.error` case-sensitivity gaps; LLM-classification pass on chopin-nashville-tagged uncertain rows.
+
+### Notes
+
+- **Coordinated v1.0.0 release wave:** `@jhizzard/termdeck@1.0.0` + `@jhizzard/termdeck-stack@0.6.0` + `@jhizzard/mnestra@0.4.0`. Rumen @0.4.4 unchanged.
+- **Why a major bump for v1.0.0** rather than 0.19.0: this release crosses the "production-ready for outside users running mixed 4+1" threshold the project has been building toward since Sprint 44. The auto-wire path closes the day-zero MCP gap (Sprint 48), the dogfood proves the multi-agent path under real load (Sprint 49), the memory plumbing gives every agent an audit trail (Sprint 50 T1+T2), and the UX trust signals stop lying to humans (Sprint 50 T3). No breaking changes to CLI flags, config schema, or HTTP API — but the user-visible surface is qualitatively different from what 0.x shipped.
+- **Sprint 50 wall-clock:** _(orchestrator stamps at sprint close; budgeted 30-40 min per PLANNING.md — longer than the 12-minute Sprint 49 record because T2 spans two repos, T1 includes Grok-SQLite work, and T4 is self-recursive.)_
+- **Mnestra `source_agents` filter is the foundation for Sprint 51's cost panel.** Don't ship them simultaneously; v1.0.0 ships the data plumbing, v1.x adds the visible panel that reads it.
+- **Credits:** TermDeck's multi-agent substrate exists because Brad Stulberg pushed for it from his own orchestrator — Brad's "trust Claude most" preference, his 2026-04-26 Mnestra ingestion debugging session, his three upstream suggestions (2026-04-28), and his per-orchestrator-instance sprint cadence pressure surfaced gaps that single-user development would have missed. Joshua paired Sprint 50 close-out with `feedback_gemini_approval_heavy.md` so future operators size approval-heavy lanes correctly.
+
+## [0.6.0] - 2026-05-02
+
+> **Scope:** `@jhizzard/termdeck-stack@0.6.0` minor — companion to TermDeck v1.0.0. The minor (rather than patch) bump reflects two material changes from the Sprint 50 wave: (a) the bundled session-end hook now ships the `source_agent` payload field consumed by Mnestra v0.4.0's new column; (b) the audit-trail convention pins this stack-installer build against `@jhizzard/termdeck@1.0.0`. Patch versions in 0.5.x covered hook-registration polish (Stop → SessionEnd, secrets.env fallback) and auto-wire-on-launch; the v1.0.0 inflection promotes the next stack-installer release to a clean minor.
+
+### Changed — Sprint 50 T1+T2 fold-in
+
+- **`packages/stack-installer/assets/hooks/memory-session-end.js`** populates `source_agent` from the new payload field. The TermDeck server-side `onPanelClose(session)` (Sprint 50 T1) passes `source_agent: adapter.name` in the hook stdin payload; the bundled hook reads it and adds it to the Mnestra `postMemoryItem` POST. Backwards-compatible: pre-v1.0.0 payloads omit the field, which the hook handles by leaving the column NULL (the 12 historical rows were backfilled with `source_agent='claude'` at the migration step).
+- **`packages/stack-installer/package.json`** version bumped 0.5.1 → 0.6.0 per RELEASE.md convention.
+
+### Validation
+
+- `node --test packages/stack-installer/tests/launcher.test.js packages/stack-installer/tests/launcher-autowire.test.js` — 18/18 green (carry-over from 0.5.1).
+- `node --test tests/stack-installer-hook-merge.test.js` — _(orchestrator runs at sprint close after Sprint 50 T2 lands the source_agent payload field — expected count to climb from 55 to ~57 with the new field test)_.
+- Live-fire: closing a Codex panel writes `source_agent='codex'` to `memory_items` (validated by Sprint 50.5 dogfood).
+
+### Notes
+
+- **Audit-trail convention:** every `@jhizzard/termdeck-stack` release declares which `@jhizzard/termdeck` version it validated against. v0.6.0 validates against v1.0.0.
+- **No breaking changes** to the `start | stop | status` subcommands or the wizard flow.
+- **MCP autowire** (introduced in 0.5.0, hardened in 0.5.1) continues to run unchanged on launcher startup.
 
 ## [0.18.0] - 2026-05-02
 

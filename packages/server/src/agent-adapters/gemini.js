@@ -47,6 +47,59 @@ function statusFor(data) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// resolveTranscriptPath — Sprint 50 T1.
+//
+// Gemini CLI persists chats at
+//   ~/.gemini/tmp/<basename(cwd)>/chats/session-<ISO-ts>-<short-id>.json
+// (single-JSON-object shape that matches parseGeminiJson, verified
+// 2026-05-02 substrate probe). Pick the most recently modified file whose
+// mtime is at-or-after `session.meta.createdAt`. Falls back to walking
+// every project directory under `~/.gemini/tmp/*/chats/` if the basename
+// heuristic produces no candidate (e.g., Gemini renormalized the project
+// name to deduplicate against an existing one).
+// ──────────────────────────────────────────────────────────────────────────
+
+async function resolveTranscriptPath(session) {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  if (!session || !session.meta || !session.meta.cwd) return null;
+  const createdAtMs = session.meta.createdAt
+    ? Date.parse(session.meta.createdAt)
+    : 0;
+  const tmpRoot = path.join(os.homedir(), '.gemini', 'tmp');
+  const cwdBase = path.basename(session.meta.cwd);
+  const primary = path.join(tmpRoot, cwdBase, 'chats');
+  const extras = [];
+  try {
+    for (const proj of fs.readdirSync(tmpRoot)) {
+      const candidate = path.join(tmpRoot, proj, 'chats');
+      if (candidate !== primary) extras.push(candidate);
+    }
+  } catch (_) { /* tmp root absent */ }
+  let bestPath = null;
+  let bestMtime = -Infinity;
+  const scan = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch (_) { return; }
+    for (const name of entries) {
+      if (!name.startsWith('session-') || !name.endsWith('.json')) continue;
+      const full = path.join(dir, name);
+      let st;
+      try { st = fs.statSync(full); } catch (_) { continue; }
+      if (createdAtMs && st.mtimeMs < createdAtMs) continue;
+      if (st.mtimeMs > bestMtime) {
+        bestMtime = st.mtimeMs;
+        bestPath = full;
+      }
+    }
+  };
+  scan(primary);
+  if (!bestPath) for (const dir of extras) scan(dir);
+  return bestPath;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // parseTranscript — Gemini CLI session JSON format (NOT JSONL).
 //
 // Captured shape (from `gemini -p "say hi"` 2026-05-01):
@@ -177,6 +230,8 @@ function buildMnestraBlock({ secrets } = {}) {
 const geminiAdapter = {
   name: 'gemini',
   sessionType: 'gemini',
+  // Sprint 50 T3 — see claude.js for rationale.
+  displayName: 'Gemini CLI',
   matches: (cmd) => typeof cmd === 'string' && /gemini/i.test(cmd),
   spawn: {
     binary: 'gemini',
@@ -199,6 +254,8 @@ const geminiAdapter = {
   },
   statusFor,
   parseTranscript,
+  // Sprint 50 T1 — 10th adapter field. Walks ~/.gemini/tmp/<proj>/chats.
+  resolveTranscriptPath,
   bootPromptTemplate,
   costBand: 'pay-per-token',
   // Sprint 47 T3 — Gemini's CLI is paste-friendly per the single-JSON-object

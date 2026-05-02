@@ -15,9 +15,12 @@
  * without needing them in the parent shell.
  *
  * Behavior:
- *   1. Reads {transcript_path, cwd, session_id, sessionType?} from stdin (Claude
- *      Code SessionEnd payload, or a future server-driven invocation for
- *      non-Claude agents).
+ *   1. Reads {transcript_path, cwd, session_id, sessionType?, source_agent?}
+ *      from stdin (Claude Code SessionEnd payload, or — Sprint 50 T1 — a
+ *      server-driven invocation for non-Claude agents). source_agent
+ *      defaults to 'claude' when absent (Claude Code's existing hook
+ *      payload doesn't carry it; the TermDeck server's per-adapter
+ *      onPanelClose interceptor sets it explicitly for codex/gemini/grok).
  *   2. Loads ~/.termdeck/secrets.env into process.env if any required key is
  *      absent OR is a literal `${VAR}` placeholder (Sprint 47.5 hotfix
  *      discipline — Claude Code does not expand `${VAR}` in MCP env, and we
@@ -268,6 +271,57 @@ function parseGeminiJson(raw) {
   return messages;
 }
 
+// Sprint 50 T1 — Grok parser. Mirrors packages/server/src/agent-adapters/grok.js
+// parseTranscript: accepts either a JSON array or JSONL of `{role, content}`
+// objects, where content is a string OR an array of `{type, text, ...}` parts
+// (AI SDK provider shape). Tool-call / tool-result / reasoning parts are
+// skipped — only the `type:'text'` parts contribute to the summary.
+//
+// The JSON envelope is produced server-side by the Grok adapter's
+// `resolveTranscriptPath` (which extracts from ~/.grok/grok.db SQLite via
+// better-sqlite3 and writes a tempfile). The hook itself never opens grok.db
+// — that would require better-sqlite3 to be reachable from ~/.claude/hooks/,
+// which isn't part of the install contract. The transcript_path the server
+// hands the hook is the tempfile, and the sessionType in the payload is
+// 'grok' so this parser is the one selected.
+function parseGrokJson(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  let messages = null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) messages = parsed;
+  } catch (_) { /* fall through to JSONL */ }
+  if (!messages) {
+    messages = [];
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const obj = JSON.parse(trimmed);
+        if (obj && typeof obj === 'object') messages.push(obj);
+      } catch (_) { continue; }
+    }
+  }
+  const out = [];
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') continue;
+    const role = msg.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    const content = msg.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
+        .map((c) => c.text)
+        .join(' ');
+    }
+    if (text) out.push({ role, content: text.slice(0, 400) });
+  }
+  return out;
+}
+
 function parseAutoDetect(raw) {
   // Fallback when sessionType is absent. Tries Gemini's single-JSON shape
   // first (cheap to detect — starts with `{` and has a top-level `messages`
@@ -327,10 +381,10 @@ const TRANSCRIPT_PARSERS = {
   'claude-code': parseClaudeJsonl,
   'codex': parseCodexJsonl,
   'gemini': parseGeminiJson,
-  // Sprint 45 T3 — grok parser entry goes here once the adapter lands.
-  // Source-of-truth lives in packages/server/src/agent-adapters/grok.js;
-  // mirror that adapter's parseTranscript function body into this dispatch
-  // table at sprint close so the bundled hook can ingest grok transcripts.
+  // Sprint 50 T1 — grok parser. Server-side `resolveTranscriptPath` extracts
+  // ~/.grok/grok.db rows via better-sqlite3 and writes a JSON envelope to a
+  // tempfile; the hook reads that tempfile with parseGrokJson here.
+  'grok': parseGrokJson,
 };
 const DEFAULT_SESSION_TYPE = 'auto';
 
@@ -390,7 +444,25 @@ async function embedText(text, openaiKey) {
   }
 }
 
-async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, project, sessionId }) {
+// Sprint 50 T2: every row written by this hook carries an LLM-provenance
+// tag (memory_items.source_agent). Defaults to 'claude' for backwards
+// compat with Claude Code's existing SessionEnd payload, which doesn't
+// supply the field; TermDeck server's per-adapter onPanelClose
+// interceptor (Sprint 50 T1) sets it explicitly to 'codex'/'gemini'/'grok'
+// for non-Claude panels. The set is open-ended on the server side; this
+// constant gates only the spelling-mistake/empty-string case.
+const ALLOWED_SOURCE_AGENTS = new Set([
+  'claude', 'codex', 'gemini', 'grok', 'orchestrator',
+]);
+
+function normalizeSourceAgent(raw) {
+  if (typeof raw !== 'string') return 'claude';
+  const v = raw.trim().toLowerCase();
+  if (!v) return 'claude';
+  return ALLOWED_SOURCE_AGENTS.has(v) ? v : 'claude';
+}
+
+async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, project, sessionId, sourceAgent }) {
   try {
     const res = await fetch(`${supabaseUrl}/rest/v1/memory_items`, {
       method: 'POST',
@@ -407,6 +479,7 @@ async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, pr
         category: 'workflow',
         project,
         source_session_id: sessionId || null,
+        source_agent: normalizeSourceAgent(sourceAgent),
       }),
     });
     if (!res.ok) {
@@ -442,6 +515,17 @@ async function processStdinPayload(input) {
     process.env.TERMDECK_SESSION_TYPE ||
     DEFAULT_SESSION_TYPE;
 
+  // Sprint 50 T2: provenance tag the row with the LLM that produced it.
+  // Default 'claude' — Claude Code's native SessionEnd payload doesn't
+  // carry source_agent, so any unset path is implicitly Claude. The
+  // TermDeck server's per-adapter onPanelClose interceptor (Sprint 50 T1)
+  // sets it explicitly for non-Claude panels.
+  const sourceAgent =
+    data.source_agent ||
+    data.sourceAgent ||
+    process.env.TERMDECK_SOURCE_AGENT ||
+    'claude';
+
   if (!transcriptPath) { log('no-transcript-path: skipping'); return; }
 
   let stat;
@@ -472,9 +556,10 @@ async function processStdinPayload(input) {
     embedding,
     project,
     sessionId,
+    sourceAgent,
   });
 
-  if (ok) log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} sessionType=${sessionType}`);
+  if (ok) log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)}`);
 }
 
 // Module-export contract for testability. When run as a script (require.main === module),
@@ -502,7 +587,11 @@ if (require.main === module) {
     parseClaudeJsonl,
     parseCodexJsonl,
     parseGeminiJson,
+    parseGrokJson,
     parseAutoDetect,
     selectTranscriptParser,
+    // Sprint 50 T2 — source_agent provenance plumbing.
+    normalizeSourceAgent,
+    ALLOWED_SOURCE_AGENTS,
   };
 }

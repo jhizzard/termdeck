@@ -83,7 +83,7 @@ The script is idempotent — re-running on already-synced files produces no diff
 
 ## 5. The adapter contract
 
-Each agent ships a single module at `packages/server/src/agent-adapters/<name>.js` that implements a 9-field contract (Sprint 47 T3 added `acceptsPaste`; Sprint 48 T1 added `mcpConfig`):
+Each agent ships a single module at `packages/server/src/agent-adapters/<name>.js` that implements a 10-field contract (Sprint 47 T3 added `acceptsPaste`; Sprint 48 T1 added `mcpConfig`; Sprint 50 T1 added `resolveTranscriptPath`):
 
 ```js
 {
@@ -92,6 +92,7 @@ Each agent ships a single module at `packages/server/src/agent-adapters/<name>.j
   patterns: { prompt, thinking, editing, tool, error }, // for the output analyzer
   statusFor: (state) => { status, statusDetail },       // status-badge generator
   parseTranscript: (raw) => Memory[],          // for the session-end memory hook
+  resolveTranscriptPath: async (session) => string | null, // Sprint 50 T1 — locate the on-disk transcript for an exited panel
   bootPromptTemplate: (lane, sprint) => string, // 4+1 inject prompt
   costBand: 'free' | 'pay-per-token' | 'subscription',  // for Sprint 46 cost annotations
   acceptsPaste: boolean,                        // Sprint 47 T3 — bracketed-paste capable
@@ -106,6 +107,7 @@ Each agent ships a single module at `packages/server/src/agent-adapters/<name>.j
 | `patterns` | `{ prompt: RegExp, thinking: RegExp, editing: RegExp, tool: RegExp, error?: RegExp }` | Lifted from the existing `PATTERNS.claudeCode` map. The output analyzer reads these to detect what the agent is doing. | `{ prompt: /^[>❯]\s/m, thinking: /\b(thinking\|Thinking)\b/, … }` |
 | `statusFor` | `(state) => { status, statusDetail }` | Replaces the hard-coded `switch(meta.type)` blocks in `_updateStatus`. `state` is the analyzer's `{ matchedKey, captureGroups }` payload. | `state => state.matchedKey === 'thinking' ? { status: 'thinking', statusDetail: 'Claude is reasoning...' } : …` |
 | `parseTranscript` | `(raw: string) => Memory[]` | The session-end memory hook calls this to lift the agent's transcript format into Mnestra-shaped `Memory[]`. Claude's format is JSONL `{ message: { role, content } }`; Codex/Gemini/Grok formats are agent-specific. | Reads JSONL, normalizes `{ role, content }` pairs into `Memory{ project, sessionId, content, … }`. |
+| `resolveTranscriptPath` | `async (session) => string \| null` | Sprint 50 T1. Locates the chat-shape transcript for a session that just closed, given `session.id`, `session.meta.cwd`, and `session.meta.createdAt`. The server-side `onPanelClose` consumer calls this and feeds the result to the bundled `~/.claude/hooks/memory-session-end.js` so non-Claude agents (Codex / Gemini / Grok) write `session_summary` rows the same way Claude Code already does. Returns `null` when no transcript exists or the dependency can't load (e.g. Grok needs `better-sqlite3` available in the server's tree, which is the case in production but is the no-op fallback for safety). Claude implements this for contract uniformity, but `onPanelClose` skips claude-typed sessions to avoid double-writes — Claude's own SessionEnd hook handles its rows. | **Claude:** lists `~/.claude/projects/<dir-hash>/`, picks newest `.jsonl` whose mtime is at-or-after `session.meta.createdAt`. **Codex:** walks today's + yesterday's `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, parses each first line, returns the rollout where `session_meta.payload.cwd === session.meta.cwd`. **Gemini:** picks newest `~/.gemini/tmp/<basename(cwd)>/chats/session-*.json`. **Grok:** opens `~/.grok/grok.db` via `better-sqlite3`, finds the workspace by `canonical_path`, picks the most recent session, materializes its `messages.message_json` rows as a JSON-array envelope to `os.tmpdir()/termdeck-grok-<id>.json`, and returns that tempfile path (the bundled hook can't reach `better-sqlite3` from `~/.claude/hooks/`). |
 | `bootPromptTemplate` | `(lane, sprint) => string` | Generates the multi-line bracketed-paste body for 4+1 inject. Sprint 46's inject script reads `lane.agent` and dispatches to the right adapter's template. | Emits the 6-step boot sequence (`memory_recall`, read CLAUDE.md, etc.) the orchestrator currently writes by hand. |
 | `costBand` | `'free' \| 'pay-per-token' \| 'subscription'` | Surfaces in PLANNING.md cost annotations starting Sprint 46. | `'subscription'` for Claude Max, `'pay-per-token'` for the API path. |
 | `acceptsPaste` | `boolean` | Whether the agent's CLI accepts bracketed-paste cleanly in its input box. `true` lets the 4+1 inject helper use the two-stage submit pattern; `false` triggers chunked-stdin fallback in `sprint-inject.js`. Sprint 47 T3 addition. | `true` for Claude Code, Codex, Gemini, Grok (all four supported agents). |
