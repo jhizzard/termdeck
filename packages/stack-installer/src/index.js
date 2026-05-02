@@ -436,33 +436,60 @@ function _isSessionEndHookEntry(entry) {
     && entry.command.includes('memory-session-end.js');
 }
 
-// Pure: merges our Stop entry into the given settings object. Idempotent.
-// Returns { settings, status } where status is 'already-installed' or
-// 'installed'. Mutates the input.
+// Pure: merges our SessionEnd entry into the given settings object. Idempotent.
+// Returns { settings, status } where status is 'already-installed', 'installed',
+// or 'migrated-from-stop' (when an old `Stop` entry pointing at our hook is
+// detected and moved over to `SessionEnd`). Mutates the input.
+//
+// Why SessionEnd, not Stop: the `Stop` event fires after every assistant turn,
+// so a Stop-registered session-summary hook embeds + INSERTs the same growing
+// transcript dozens of times per session. The `SessionEnd` event fires once
+// per Claude Code session close (`/exit`, Ctrl+D, terminal close, kill) — the
+// correct semantics for "summarize this session." Sprint 48 close-out moved
+// the registration; the migration branch below heals existing installs from
+// `@jhizzard/termdeck-stack@<=0.5.0` that wired the hook under `Stop`.
 function _mergeSessionEndHookEntry(settings, opts = {}) {
   const command = opts.command || HOOK_COMMAND;
   const timeout = opts.timeout != null ? opts.timeout : HOOK_TIMEOUT_SECONDS;
+  const entry = { type: 'command', command, timeout };
 
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
-  if (!Array.isArray(settings.hooks.Stop)) settings.hooks.Stop = [];
 
-  for (const group of settings.hooks.Stop) {
+  // Migrate any pre-Sprint-48 Stop registration of OUR hook to SessionEnd.
+  // We only touch entries that match `_isSessionEndHookEntry` — any unrelated
+  // Stop hooks the user has are preserved verbatim.
+  let migrated = false;
+  if (Array.isArray(settings.hooks.Stop)) {
+    for (const group of settings.hooks.Stop) {
+      if (!group || !Array.isArray(group.hooks)) continue;
+      const before = group.hooks.length;
+      group.hooks = group.hooks.filter((e) => !_isSessionEndHookEntry(e));
+      if (group.hooks.length !== before) migrated = true;
+    }
+    settings.hooks.Stop = settings.hooks.Stop.filter(
+      (g) => g && Array.isArray(g.hooks) && g.hooks.length > 0
+    );
+    if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+  }
+
+  if (!Array.isArray(settings.hooks.SessionEnd)) settings.hooks.SessionEnd = [];
+
+  for (const group of settings.hooks.SessionEnd) {
     if (!group || !Array.isArray(group.hooks)) continue;
     if (group.hooks.some(_isSessionEndHookEntry)) {
-      return { settings, status: 'already-installed' };
+      return { settings, status: migrated ? 'migrated-from-stop' : 'already-installed' };
     }
   }
 
-  const entry = { type: 'command', command, timeout };
-  const emptyMatcher = settings.hooks.Stop.find(
+  const emptyMatcher = settings.hooks.SessionEnd.find(
     (g) => g && g.matcher === '' && Array.isArray(g.hooks)
   );
   if (emptyMatcher) {
     emptyMatcher.hooks.push(entry);
   } else {
-    settings.hooks.Stop.push({ matcher: '', hooks: [entry] });
+    settings.hooks.SessionEnd.push({ matcher: '', hooks: [entry] });
   }
-  return { settings, status: 'installed' };
+  return { settings, status: migrated ? 'migrated-from-stop' : 'installed' };
 }
 
 function _readSettingsJson(filePath) {
@@ -583,14 +610,23 @@ async function installSessionEndHook(opts = {}) {
   } else {
     const merged = _mergeSessionEndHookEntry(read.settings);
     if (merged.status === 'already-installed') {
-      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json Stop hook', 'already installed');
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json SessionEnd hook', 'already installed');
       settingsStatus = 'already-installed';
+    } else if (merged.status === 'migrated-from-stop') {
+      if (dryRun) {
+        statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would migrate Stop hook → SessionEnd in ${settingsPath}`);
+        settingsStatus = 'would-migrate';
+      } else {
+        _writeSettingsJson(settingsPath, merged.settings);
+        statusLine(`${ANSI.green}↻${ANSI.reset}`, 'settings.json SessionEnd hook', 'migrated from Stop (was firing on every turn)');
+        settingsStatus = 'migrated';
+      }
     } else if (dryRun) {
-      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would merge Stop hook into ${settingsPath}`);
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would merge SessionEnd hook into ${settingsPath}`);
       settingsStatus = 'would-install';
     } else {
       _writeSettingsJson(settingsPath, merged.settings);
-      statusLine(`${ANSI.green}+${ANSI.reset}`, 'settings.json Stop hook', 'merged');
+      statusLine(`${ANSI.green}+${ANSI.reset}`, 'settings.json SessionEnd hook', 'merged');
       settingsStatus = 'installed';
     }
   }

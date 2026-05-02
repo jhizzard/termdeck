@@ -2,25 +2,40 @@
  * TermDeck session-end memory hook (Mnestra-direct, no rag-system dependency).
  *
  * Vendored into ~/.claude/hooks/memory-session-end.js by @jhizzard/termdeck-stack.
- * Wired into ~/.claude/settings.json under hooks.Stop. Fires on Claude Code Stop event.
+ * Wired into ~/.claude/settings.json under hooks.SessionEnd — fires once per
+ * Claude Code session close (`/exit`, Ctrl+D, terminal close, or process kill).
+ *
+ * History: this hook was originally registered under hooks.Stop, which fires
+ * after every assistant turn. That meant the same transcript got embedded and
+ * INSERTed dozens of times per session (and most fired with env-var-missing
+ * because Claude Code launched outside TermDeck doesn't have SUPABASE_URL in
+ * scope). Sprint 48 close-out moved registration to SessionEnd (one row per
+ * session, fires deterministically on /exit) AND added the secrets-env
+ * fallback below so a standalone-Claude-Code launch picks up the credentials
+ * without needing them in the parent shell.
  *
  * Behavior:
  *   1. Reads {transcript_path, cwd, session_id, sessionType?} from stdin (Claude
- *      Code Stop payload, or a future server-driven invocation for non-Claude
- *      agents).
- *   2. Skips small transcripts (< MIN_TRANSCRIPT_BYTES, default 5KB).
- *   3. Validates env vars; logs and exits cleanly if any required key is missing.
- *   4. Detects project from cwd against PROJECT_MAP (else "global"). Extend the
+ *      Code SessionEnd payload, or a future server-driven invocation for
+ *      non-Claude agents).
+ *   2. Loads ~/.termdeck/secrets.env into process.env if any required key is
+ *      absent OR is a literal `${VAR}` placeholder (Sprint 47.5 hotfix
+ *      discipline — Claude Code does not expand `${VAR}` in MCP env, and we
+ *      can't trust the parent shell to have sourced secrets.env).
+ *   3. Skips small transcripts (< MIN_TRANSCRIPT_BYTES, default 5KB).
+ *   4. Validates env vars; logs and exits cleanly if any required key is still
+ *      missing after the secrets.env fallback.
+ *   5. Detects project from cwd against PROJECT_MAP (else "global"). Extend the
  *      map by editing the array below — see assets/hooks/README.md for guidance.
- *   5. Dispatches to a transcript parser by sessionType (Sprint 45 T4): Claude
+ *   6. Dispatches to a transcript parser by sessionType (Sprint 45 T4): Claude
  *      JSONL, Codex JSONL, Gemini single-JSON, or auto-detect when sessionType
  *      is absent. Builds a coarse summary from the resulting message list
  *      (last ~30 message excerpts).
- *   6. Embeds the summary via OpenAI text-embedding-3-small.
- *   7. POSTs ONE row to Supabase /rest/v1/memory_items with source_type='session_summary'.
- *   8. Logs every step to ~/.claude/hooks/memory-hook.log.
+ *   7. Embeds the summary via OpenAI text-embedding-3-small.
+ *   8. POSTs ONE row to Supabase /rest/v1/memory_items with source_type='session_summary'.
+ *   9. Logs every step to ~/.claude/hooks/memory-hook.log.
  *
- * Required env vars (validated at entry):
+ * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
  *   - SUPABASE_SERVICE_ROLE_KEY      service-role key (NOT the anon key — needs INSERT on memory_items)
  *   - OPENAI_API_KEY            sk-... for text-embedding-3-small
@@ -47,6 +62,14 @@ const os = require('os');
 
 const LOG_FILE = join(os.homedir(), '.claude', 'hooks', 'memory-hook.log');
 
+// Resolved per-call so tests can override via TERMDECK_HOOK_SECRETS_PATH
+// (the const-at-load-time pattern would freeze the path before any test
+// that mutates HOME or the override env var gets a chance to take effect).
+function resolveSecretsPath() {
+  return process.env.TERMDECK_HOOK_SECRETS_PATH
+    || join(os.homedir(), '.termdeck', 'secrets.env');
+}
+
 // PROJECT_MAP — minimal default. Users extend by adding entries to this array.
 // Patterns match against the cwd reported by Claude Code at Stop time.
 // First match wins; falls through to "global".
@@ -72,9 +95,59 @@ function detectProject(cwd) {
   return 'global';
 }
 
+// Treat values shaped like `${VAR}` as unset. Claude Code does not expand
+// shell placeholders in MCP env or hook env, so a literal `${SUPABASE_URL}`
+// is non-empty-but-invalid — the same trap that caused the Sprint 47.5
+// hotfix on the stack-installer + mnestra MCP. Mirroring that discipline
+// here keeps the hook resilient if any future tooling regresses to the
+// placeholder pattern.
+function isUnexpandedPlaceholder(v) {
+  return typeof v === 'string' && v.startsWith('${') && v.endsWith('}');
+}
+
+// Load ~/.termdeck/secrets.env into process.env when keys are absent or
+// hold an unexpanded `${VAR}` placeholder. Concrete values already in
+// process.env always win — the fallback only fills gaps. Silent no-op if
+// the file is missing. Mirrors mnestra's loadTermdeckSecretsFallback so
+// the hook works in three launch contexts:
+//   1. Inside TermDeck PTY (Sprint 48 T4 PTY env merge supplies the vars).
+//   2. Standalone Claude Code launched from a shell with secrets.env sourced.
+//   3. Standalone Claude Code launched from a vanilla shell (this fallback).
+function loadTermdeckSecretsFallback() {
+  const secretsPath = resolveSecretsPath();
+  if (!existsSync(secretsPath)) return;
+  let raw;
+  try { raw = readFileSync(secretsPath, 'utf8'); }
+  catch (err) {
+    log(`secrets-env-read-failed: ${err && err.message ? err.message : String(err)}`);
+    return;
+  }
+  let loaded = 0;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = trimmed.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    const cur = process.env[key];
+    if (cur && !isUnexpandedPlaceholder(cur)) continue;
+    let v = m[2];
+    if (v.length >= 2 && (v[0] === '"' || v[0] === "'") && v[v.length - 1] === v[0]) {
+      v = v.slice(1, -1);
+    }
+    process.env[key] = v;
+    loaded++;
+  }
+  if (loaded > 0) debug(`secrets-env-loaded: ${loaded} keys from ${secretsPath}`);
+}
+
 function readEnv() {
+  loadTermdeckSecretsFallback();
   const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
-  const missing = required.filter((k) => !process.env[k]);
+  const missing = required.filter((k) => {
+    const v = process.env[k];
+    return !v || isUnexpandedPlaceholder(v);
+  });
   if (missing.length) {
     log(`env-var-missing: ${missing.join(', ')} — set these in ~/.termdeck/secrets.env or your shell to enable Mnestra ingestion. Skipping.`);
     return null;

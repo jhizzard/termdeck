@@ -74,13 +74,13 @@ test('_isSessionEndHookEntry rejects unrelated entries and bad input', () => {
 
 // ── _mergeSessionEndHookEntry ───────────────────────────────────────
 
-test('merge into empty settings creates the full hooks.Stop structure', () => {
+test('merge into empty settings creates the full hooks.SessionEnd structure', () => {
   const settings = {};
   const { status } = _mergeSessionEndHookEntry(settings);
   assert.equal(status, 'installed');
-  assert.ok(Array.isArray(settings.hooks.Stop));
-  assert.equal(settings.hooks.Stop.length, 1);
-  const group = settings.hooks.Stop[0];
+  assert.ok(Array.isArray(settings.hooks.SessionEnd));
+  assert.equal(settings.hooks.SessionEnd.length, 1);
+  const group = settings.hooks.SessionEnd[0];
   assert.equal(group.matcher, '');
   assert.equal(group.hooks.length, 1);
   assert.deepEqual(group.hooks[0], {
@@ -90,19 +90,19 @@ test('merge into empty settings creates the full hooks.Stop structure', () => {
   });
 });
 
-test('merge into settings with empty hooks.Stop appends a new matcher group', () => {
-  const settings = { hooks: { Stop: [] } };
+test('merge into settings with empty hooks.SessionEnd appends a new matcher group', () => {
+  const settings = { hooks: { SessionEnd: [] } };
   const { status } = _mergeSessionEndHookEntry(settings);
   assert.equal(status, 'installed');
-  assert.equal(settings.hooks.Stop.length, 1);
-  assert.equal(settings.hooks.Stop[0].matcher, '');
-  assert.equal(settings.hooks.Stop[0].hooks[0].command, HOOK_COMMAND);
+  assert.equal(settings.hooks.SessionEnd.length, 1);
+  assert.equal(settings.hooks.SessionEnd[0].matcher, '');
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
 });
 
 test('merge appends into an existing empty-matcher group rather than creating a new one', () => {
   const settings = {
     hooks: {
-      Stop: [
+      SessionEnd: [
         {
           matcher: '',
           hooks: [{ type: 'command', command: 'node ~/.claude/hooks/other.js', timeout: 10 }],
@@ -112,16 +112,16 @@ test('merge appends into an existing empty-matcher group rather than creating a 
   };
   const { status } = _mergeSessionEndHookEntry(settings);
   assert.equal(status, 'installed');
-  assert.equal(settings.hooks.Stop.length, 1, 'no new matcher group created');
-  assert.equal(settings.hooks.Stop[0].hooks.length, 2);
-  assert.equal(settings.hooks.Stop[0].hooks[0].command, 'node ~/.claude/hooks/other.js');
-  assert.equal(settings.hooks.Stop[0].hooks[1].command, HOOK_COMMAND);
+  assert.equal(settings.hooks.SessionEnd.length, 1, 'no new matcher group created');
+  assert.equal(settings.hooks.SessionEnd[0].hooks.length, 2);
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, 'node ~/.claude/hooks/other.js');
+  assert.equal(settings.hooks.SessionEnd[0].hooks[1].command, HOOK_COMMAND);
 });
 
 test('merge with a non-empty matcher group present creates a new empty-matcher group', () => {
   const settings = {
     hooks: {
-      Stop: [
+      SessionEnd: [
         {
           matcher: 'specific-tool',
           hooks: [{ type: 'command', command: 'node ~/.claude/hooks/specific.js' }],
@@ -131,10 +131,10 @@ test('merge with a non-empty matcher group present creates a new empty-matcher g
   };
   const { status } = _mergeSessionEndHookEntry(settings);
   assert.equal(status, 'installed');
-  assert.equal(settings.hooks.Stop.length, 2);
-  assert.equal(settings.hooks.Stop[0].matcher, 'specific-tool');
-  assert.equal(settings.hooks.Stop[1].matcher, '');
-  assert.equal(settings.hooks.Stop[1].hooks[0].command, HOOK_COMMAND);
+  assert.equal(settings.hooks.SessionEnd.length, 2);
+  assert.equal(settings.hooks.SessionEnd[0].matcher, 'specific-tool');
+  assert.equal(settings.hooks.SessionEnd[1].matcher, '');
+  assert.equal(settings.hooks.SessionEnd[1].hooks[0].command, HOOK_COMMAND);
 });
 
 test('merge is idempotent — second invocation reports already-installed and does not duplicate', () => {
@@ -146,10 +146,58 @@ test('merge is idempotent — second invocation reports already-installed and do
   assert.equal(JSON.stringify(settings), before, 'second merge is a no-op');
 });
 
-test('merge detects pre-existing hook in any matcher group regardless of matcher value', () => {
+test('merge migrates pre-Sprint-48 Stop registration to SessionEnd', () => {
+  // Simulate an install from @jhizzard/termdeck-stack@<=0.5.0 where the
+  // hook was wired under hooks.Stop. The merge function should detect our
+  // hook in Stop, remove it, and add it to SessionEnd. Status reports
+  // 'migrated-from-stop' so the wizard can tell the user the migration
+  // happened (and explains why their session-summary rows might suddenly
+  // start landing).
   const settings = {
     hooks: {
       Stop: [
+        {
+          matcher: '',
+          hooks: [{ type: 'command', command: 'node ~/.claude/hooks/memory-session-end.js', timeout: 30 }],
+        },
+      ],
+    },
+  };
+  const { status } = _mergeSessionEndHookEntry(settings);
+  assert.equal(status, 'migrated-from-stop');
+  assert.equal(settings.hooks.Stop, undefined, 'orphaned Stop key removed');
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
+});
+
+test('merge migration preserves unrelated Stop hooks that are NOT ours', () => {
+  // The user might have a separate Stop hook (e.g. a personal logger).
+  // The migration must only touch entries matching our hook command;
+  // anything else stays put under Stop.
+  const settings = {
+    hooks: {
+      Stop: [
+        {
+          matcher: '',
+          hooks: [
+            { type: 'command', command: 'node ~/.claude/hooks/memory-session-end.js', timeout: 30 },
+            { type: 'command', command: 'node ~/my-personal-logger.js' },
+          ],
+        },
+      ],
+    },
+  };
+  const { status } = _mergeSessionEndHookEntry(settings);
+  assert.equal(status, 'migrated-from-stop');
+  assert.ok(Array.isArray(settings.hooks.Stop), 'Stop key kept because the user-owned logger is still there');
+  assert.equal(settings.hooks.Stop[0].hooks.length, 1);
+  assert.equal(settings.hooks.Stop[0].hooks[0].command, 'node ~/my-personal-logger.js');
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
+});
+
+test('merge detects pre-existing hook in any matcher group regardless of matcher value', () => {
+  const settings = {
+    hooks: {
+      SessionEnd: [
         {
           matcher: 'somefilter',
           hooks: [{ type: 'command', command: 'node ~/.claude/hooks/memory-session-end.js' }],
@@ -159,7 +207,7 @@ test('merge detects pre-existing hook in any matcher group regardless of matcher
   };
   const { status } = _mergeSessionEndHookEntry(settings);
   assert.equal(status, 'already-installed');
-  assert.equal(settings.hooks.Stop.length, 1, 'no new group added when already present');
+  assert.equal(settings.hooks.SessionEnd.length, 1, 'no new group added when already present');
 });
 
 test('merge preserves unrelated top-level keys and unrelated hooks (PreToolUse, etc)', () => {
@@ -178,7 +226,7 @@ test('merge preserves unrelated top-level keys and unrelated hooks (PreToolUse, 
   assert.equal(settings.skipAutoPermissionPrompt, false);
   assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, 'echo before');
   assert.equal(settings.hooks.SessionStart[0].hooks[0].command, 'echo start');
-  assert.equal(settings.hooks.Stop[0].hooks[0].command, HOOK_COMMAND);
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
 });
 
 test('merge tolerates a non-object hooks key by replacing it (defensive)', () => {
@@ -186,14 +234,14 @@ test('merge tolerates a non-object hooks key by replacing it (defensive)', () =>
   const { status } = _mergeSessionEndHookEntry(settings);
   assert.equal(status, 'installed');
   assert.equal(typeof settings.hooks, 'object');
-  assert.ok(Array.isArray(settings.hooks.Stop));
+  assert.ok(Array.isArray(settings.hooks.SessionEnd));
 });
 
 test('merge accepts custom command and timeout via opts', () => {
   const settings = {};
   _mergeSessionEndHookEntry(settings, { command: 'node /custom/path.js', timeout: 5 });
-  assert.equal(settings.hooks.Stop[0].hooks[0].command, 'node /custom/path.js');
-  assert.equal(settings.hooks.Stop[0].hooks[0].timeout, 5);
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, 'node /custom/path.js');
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].timeout, 5);
 });
 
 // ── _readSettingsJson / _writeSettingsJson ──────────────────────────
@@ -233,14 +281,14 @@ test('_readSettingsJson returns malformed for non-object top-level (array)', () 
 test('_writeSettingsJson writes mode 0600 atomically', () => {
   const dir = freshTmpDir();
   const p = path.join(dir, 'sub', 'settings.json'); // sub-dir auto-created
-  _writeSettingsJson(p, { hooks: { Stop: [] } });
+  _writeSettingsJson(p, { hooks: { SessionEnd: [] } });
   assert.ok(fs.existsSync(p));
   const stat = fs.statSync(p);
   assert.equal(stat.mode & 0o777, 0o600);
   // Tmp file should not be lying around.
   assert.equal(fs.existsSync(p + '.tmp'), false);
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
-  assert.deepEqual(parsed, { hooks: { Stop: [] } });
+  assert.deepEqual(parsed, { hooks: { SessionEnd: [] } });
 });
 
 // ── _compareHookFiles ───────────────────────────────────────────────
@@ -289,7 +337,7 @@ test('installSessionEndHook on fresh dir copies file and merges settings.json', 
   assert.ok(fs.existsSync(destPath));
   assert.ok(fs.existsSync(settingsPath));
   const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-  assert.equal(settings.hooks.Stop[0].hooks[0].command, HOOK_COMMAND);
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
 
   // File contents byte-identical to vendored source.
   assert.ok(fs.readFileSync(HOOK_SOURCE).equals(fs.readFileSync(destPath)));
@@ -355,7 +403,7 @@ test('installSessionEndHook with existing different hook prompts and respects ke
   assert.equal(result.settingsStatus, 'installed');
   assert.ok(fs.readFileSync(destPath).equals(originalBytes), 'existing hook untouched');
   const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-  assert.equal(settings.hooks.Stop[0].hooks[0].command, HOOK_COMMAND);
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
 }));
 
 test('installSessionEndHook with existing different hook + overwrite=true replaces it', silenceStdout(async () => {
@@ -405,7 +453,7 @@ test('installSessionEndHook preserves unrelated settings.json keys end-to-end', 
   assert.equal(after.skipAutoPermissionPrompt, false);
   assert.equal(after.agentPushNotifEnabled, true);
   assert.equal(after.hooks.PreToolUse[0].hooks[0].command, 'echo before');
-  assert.equal(after.hooks.Stop[0].hooks[0].command, HOOK_COMMAND);
+  assert.equal(after.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND);
 }));
 
 test('installSessionEndHook with malformed settings.json reports without modifying file', silenceStdout(async () => {
@@ -523,15 +571,22 @@ test('detectProject matches when entries are added at runtime',
   }
 );
 
+// Sprint 48 close-out: readEnv() now calls loadTermdeckSecretsFallback()
+// before validating, so tests pin TERMDECK_HOOK_SECRETS_PATH at a non-
+// existent path to keep the fallback a no-op. Otherwise the developer's
+// real ~/.termdeck/secrets.env would leak in and these tests would
+// false-pass with concrete values.
 test('readEnv returns null + logs when SUPABASE_URL missing', withEnv({
   SUPABASE_URL: null,
   SUPABASE_SERVICE_ROLE_KEY: 'k', OPENAI_API_KEY: 'sk-x',
+  TERMDECK_HOOK_SECRETS_PATH: '/nonexistent/secrets.env',
 }, () => {
   assert.equal(readEnv(), null);
 }));
 
 test('readEnv returns null when all three missing', withEnv({
   SUPABASE_URL: null, SUPABASE_SERVICE_ROLE_KEY: null, OPENAI_API_KEY: null,
+  TERMDECK_HOOK_SECRETS_PATH: '/nonexistent/secrets.env',
 }, () => {
   assert.equal(readEnv(), null);
 }));
@@ -540,12 +595,69 @@ test('readEnv returns trimmed config with all three present', withEnv({
   SUPABASE_URL: 'https://abc.supabase.co/',
   SUPABASE_SERVICE_ROLE_KEY: 'service-key-value',
   OPENAI_API_KEY: 'sk-test',
+  TERMDECK_HOOK_SECRETS_PATH: '/nonexistent/secrets.env',
 }, () => {
   const env = readEnv();
   assert.equal(env.supabaseUrl, 'https://abc.supabase.co'); // trailing slash stripped
   assert.equal(env.supabaseKey, 'service-key-value');
   assert.equal(env.openaiKey, 'sk-test');
 }));
+
+test('readEnv loads ~/.termdeck/secrets.env when env vars are missing', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const tmp = path.join(os.tmpdir(), `termdeck-test-secrets-${Date.now()}.env`);
+  fs.writeFileSync(tmp,
+    'SUPABASE_URL=https://from-secrets.supabase.co\n' +
+    'SUPABASE_SERVICE_ROLE_KEY=secrets-key\n' +
+    'OPENAI_API_KEY="sk-from-quoted"\n'
+  );
+  return withEnv({
+    SUPABASE_URL: null, SUPABASE_SERVICE_ROLE_KEY: null, OPENAI_API_KEY: null,
+    TERMDECK_HOOK_SECRETS_PATH: tmp,
+  }, () => {
+    try {
+      const env = readEnv();
+      assert.ok(env, 'readEnv should return a config when fallback fires');
+      assert.equal(env.supabaseUrl, 'https://from-secrets.supabase.co');
+      assert.equal(env.supabaseKey, 'secrets-key');
+      assert.equal(env.openaiKey, 'sk-from-quoted'); // quotes stripped
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  })();
+});
+
+test('readEnv treats unexpanded ${VAR} placeholders as missing', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const tmp = path.join(os.tmpdir(), `termdeck-test-secrets-${Date.now()}-pl.env`);
+  fs.writeFileSync(tmp,
+    'SUPABASE_URL=https://override.supabase.co\n' +
+    'SUPABASE_SERVICE_ROLE_KEY=override-key\n' +
+    'OPENAI_API_KEY=sk-override\n'
+  );
+  return withEnv({
+    // process.env contains the broken placeholder shape from a buggy MCP
+    // wiring or stack-installer regression — the fallback should override.
+    SUPABASE_URL: '${SUPABASE_URL}',
+    SUPABASE_SERVICE_ROLE_KEY: '${SUPABASE_SERVICE_ROLE_KEY}',
+    OPENAI_API_KEY: '${OPENAI_API_KEY}',
+    TERMDECK_HOOK_SECRETS_PATH: tmp,
+  }, () => {
+    try {
+      const env = readEnv();
+      assert.ok(env, 'placeholder-shaped values must not block the fallback');
+      assert.equal(env.supabaseUrl, 'https://override.supabase.co');
+      assert.equal(env.supabaseKey, 'override-key');
+      assert.equal(env.openaiKey, 'sk-override');
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  })();
+});
 
 test('buildSummary returns null for missing transcript file', () => {
   assert.equal(buildSummary('/nonexistent/transcript.jsonl'), null);
