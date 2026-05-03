@@ -226,6 +226,8 @@ Proceeding to FIX-PROPOSED + implementation.
 
 DONE.
 
+### [T3] MEMORIES-LANDED — 4 memories — 2026-05-03 18:05 ET
+
 ---
 
 ### [T2] FINDING — 2026-05-03 17:25 ET
@@ -565,5 +567,23 @@ npm view @jhizzard/termdeck-stack version   # expect 0.6.1
 **Sprint 51.5 wall-clock:** plan stub 2026-05-02 21:14 ET → inject 2026-05-03 17:21 ET → all four DONE 17:55 → orchestrator close 18:05 ET. ~44 minutes lane wall-clock + ~10 minutes orchestrator. All-Claude per Sprint 50 close pattern.
 
 DONE pending Joshua's Passkey on the four `npm publish` invocations.
+
+---
+
+### [T4] MEMORIES-LANDED — 4 memories — 2026-05-03 17:30 ET
+
+Class J fold rationale (termdeck) + INSTALLER-PITFALLS.md formatting-variance convention (termdeck) + AGENT-RUNTIMES.md § 6 Step 0 pre-flight pattern (termdeck) + Mnestra append-only convention for installer taxonomy (global). Hook-bypass MCP path used; memory_items grew during sprint, sessions hook still broken pending Sprint 51.6 / v1.0.2.
+
+---
+
+### [T2] MEMORIES-LANDED — 4 memories — 2026-05-03 17:36 ET
+
+Engram src/ layout reality (no src/cli/ — sibling modules + mcp-server/index.ts as dispatch root) [mnestra/convention/fact] + Supabase service_role can't read cron.* / vault.* schemas → migration 016 SECURITY DEFINER wrappers are non-optional [mnestra/architecture/decision] + doctor cron-all-zeros ≥6-cycle threshold anchored to ledger #13 Brad 6-day soak [termdeck/debugging/decision] + doctor DataSource/FsLike injection + graceful-degradation testability pattern as the convention for future `mnestra <subcommand>` work [mnestra/convention/architecture]. Hook-bypass MCP path used.
+
+---
+
+### [T1] MEMORIES-LANDED — 4 memories — 2026-05-03 18:05 ET
+
+Bundled mnestra-migrations 013/014/015 sync gap as a Class H instance in our own repo [termdeck/architecture/bug_fix] + 7-probe-not-9 design rationale covering mig 012 DML-only omission and mig 016 v1.0.2 deferral [termdeck/architecture/decision] + Rumen 002/003 templating regression-guard invariant tied to test 'rumen 002 templating: applied SQL has projectRef substituted' [termdeck/convention/decision] + dual-tree Edge Function source coordination + sync-rumen-functions order-of-ops at sprint close [termdeck/workflow/bug_fix]. Hook-bypass MCP path used (sessions hook broken pending Sprint 51.6 / v1.0.2).
 
 ---
