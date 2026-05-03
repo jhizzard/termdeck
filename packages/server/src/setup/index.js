@@ -13,5 +13,6 @@ module.exports = {
   migrationTemplating: require('./migration-templating'),
   pgRunner: require('./pg-runner'),
   migrationRunner: require('./migration-runner'),
-  preconditions: require('./preconditions')
+  preconditions: require('./preconditions'),
+  auditUpgrade: require('./audit-upgrade')
 };

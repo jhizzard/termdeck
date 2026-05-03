@@ -45,7 +45,8 @@ const {
   supabaseUrl: urlHelper,
   migrations,
   pgRunner,
-  preconditions
+  preconditions,
+  auditUpgrade: auditUpgradeMod
 } = require(SETUP_DIR);
 
 const HELP = [
@@ -339,6 +340,43 @@ async function applyMigrations(client, dryRun) {
   }
 }
 
+// Sprint 51.5 T1 — schema-introspection audit-upgrade. Runs AFTER the
+// fresh-install applyMigrations() loop completes, but reports separately.
+// On a Sprint-37-era project that pre-dated several mnestra migrations,
+// applyMigrations now has the full bundled set (Sprint 51.5 synced 013-015
+// from canonical engram), so this audit is mostly a belt-and-suspenders
+// confirmation. It still surfaces drift if, e.g., the user manually
+// dropped a column post-install. Mnestra-kind only — rumen cron probes
+// reference vault secrets the user hasn't set up yet at this point. Run
+// init-rumen for the rumen-side audit.
+async function runMnestraAudit(client, projectRef, dryRun) {
+  step('Audit-upgrade: probing for missing mnestra schema artifacts...');
+  if (dryRun) { ok('(dry-run)'); return; }
+  const probes = auditUpgradeMod.PROBES.filter((p) => p.kind === 'mnestra');
+  let result;
+  try {
+    result = await auditUpgradeMod.auditUpgrade({
+      pgClient: client,
+      projectRef,
+      probes
+    });
+  } catch (err) {
+    fail(err.message);
+    return;
+  }
+  if (result.applied.length === 0 && result.errors.length === 0) {
+    ok(`(install up to date — ${result.probed.length} probes all present)`);
+    return;
+  }
+  ok(`(probed ${result.probed.length}, applied ${result.applied.length})`);
+  for (const name of result.applied) {
+    process.stdout.write(`    ✓ applied ${name}\n`);
+  }
+  for (const e of result.errors) {
+    process.stdout.write(`    ! ${e.name}: ${e.error}\n`);
+  }
+}
+
 async function checkExistingStore(client) {
   step('Checking for existing memory_items table...');
   try {
@@ -538,6 +576,7 @@ async function main(argv) {
   try {
     await checkExistingStore(client);
     await applyMigrations(client, false);
+    await runMnestraAudit(client, inputs.projectUrl.projectRef, false);
     writeYamlConfig(false);
     // v0.6.9: post-write outcome verification. Confirms each migration's
     // expected schema bits actually landed — including memory_items.
