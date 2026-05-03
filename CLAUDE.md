@@ -14,6 +14,7 @@ TermDeck is a browser-based terminal multiplexer with metadata overlays, RAG-awa
 | Modify code, add a feature, fix a bug | `docs/ARCHITECTURE.md` |
 | Ship a release (`npm publish`, version bump, CHANGELOG) | **`docs/RELEASE.md` — STRICT** |
 | Diagnose an install or runtime issue | `docs/ARCHITECTURE.md` § Known issues |
+| **Touch the installer / wizard / migration runner / bundled hooks** | **`docs/INSTALLER-PITFALLS.md` — MANDATORY** (10-class failure taxonomy + 11-item pre-ship checklist; every PR in this surface must trace to a class it avoids) |
 | Run or coordinate a 4+1 sprint | `~/.claude/CLAUDE.md` § 4+1 mandate + active `docs/sprint-N-<name>/PLANNING.md` |
 | Onboard a new TermDeck user | `docs/GETTING-STARTED.md` |
 | Pick the next sprint after the active plan ships | `docs/BACKLOG.md` (P0 section + categorized backlog) |

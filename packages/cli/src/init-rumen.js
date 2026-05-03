@@ -20,7 +20,9 @@
 //   4. Apply rumen migration 001 via pg
 //   5. supabase functions deploy rumen-tick AND graph-inference (Sprint 43 T3)
 //      from a single staging dir with multi-function supabase/config.toml
-//   6. supabase secrets set DATABASE_URL=... ANTHROPIC_API_KEY=... [OPENAI_API_KEY=...]
+//   6. supabase secrets set, ONE call per key (DATABASE_URL, ANTHROPIC_API_KEY,
+//      [OPENAI_API_KEY], [GRAPH_LLM_CLASSIFY=1]) — per-secret to avoid the
+//      v2.90.0 multi-arg drop documented in INSTALLER-PITFALLS.md Class J.
 //   7. Test rumen-tick with a manual POST (graph-inference is cron-only)
 //   8. Apply pg_cron schedule migrations 002 (rumen-tick) AND 003 (graph-inference)
 //      with project ref substituted
@@ -38,7 +40,8 @@ const {
   migrations,
   migrationTemplating,
   pgRunner,
-  preconditions
+  preconditions,
+  auditUpgrade: auditUpgradeMod
 } = require(SETUP_DIR);
 
 const {
@@ -303,6 +306,57 @@ async function applyRumenTables(secrets, dryRun) {
   }
 }
 
+// Sprint 51.5 T1 — schema-introspection audit-upgrade. Probes for missing
+// mnestra schema artifacts AND missing rumen cron schedules. Runs before
+// the existing init-rumen flow so the user sees what's about to be applied
+// up front. Idempotent: a re-run on an up-to-date project reports
+// "install up to date" and applies nothing.
+//
+// Brad's 2026-05-02 jizzard-brain report (INSTALLER-PITFALLS.md ledger #13)
+// is the originating motivation: he upgraded npm packages but his database
+// stayed frozen at first-kickstart because no installer code path diffed an
+// existing install against the bundled migration set. After v1.0.1 ships,
+// `npm install -g @jhizzard/termdeck@1.0.1 && termdeck init --rumen` will
+// surface and apply every missing artifact in one pass.
+//
+// Errors are surfaced inline but do NOT abort the wizard — a single
+// failing probe (e.g., pg_cron not enabled when probing for cron.job)
+// shouldn't block the rest of the audit or the rest of the init flow.
+async function runRumenAudit(projectRef, secrets, dryRun) {
+  step('Audit-upgrade: probing for missing schema + cron artifacts...');
+  if (dryRun) { ok('(dry-run)'); return true; }
+  let client;
+  try {
+    client = await pgRunner.connect(secrets.DATABASE_URL);
+  } catch (err) {
+    fail(err.message);
+    return false;
+  }
+  try {
+    const result = await auditUpgradeMod.auditUpgrade({
+      pgClient: client,
+      projectRef
+    });
+    if (result.applied.length === 0 && result.errors.length === 0) {
+      ok(`(install up to date — ${result.probed.length} probes all present)`);
+      return true;
+    }
+    ok(`(probed ${result.probed.length}, applied ${result.applied.length})`);
+    for (const name of result.applied) {
+      process.stdout.write(`    ✓ applied ${name}\n`);
+    }
+    for (const e of result.errors) {
+      process.stdout.write(`    ! ${e.name}: ${e.error}\n`);
+    }
+    return true;
+  } catch (err) {
+    fail(err.message);
+    return true; // non-blocking
+  } finally {
+    try { await client.end(); } catch (_err) { /* ignore */ }
+  }
+}
+
 // Sprint 43 T3: rumen-tick is the only function with a `__RUMEN_VERSION__`
 // placeholder (its `npm:@jhizzard/rumen@<ver>` import is rewritten at deploy
 // time). graph-inference pins its own deps (`npm:postgres@3.4.4`) and is
@@ -400,29 +454,238 @@ ${fnBlocks}`;
   return stage;
 }
 
-function setFunctionSecrets(secrets, dryRun) {
+// Sprint 51.5 T3: per-secret CLI loop. Pre-Sprint-51.5 this issued a single
+// `supabase secrets set KEY1=VAL1 KEY2=VAL2 ...` call with all keys as
+// positional args. Brad's 2026-05-03 4-project install pass observed
+// supabase CLI v2.90.0 silently dropping some args from a multi-arg call —
+// even materializing stray entries from misparsed argv (his email landed as
+// a secret name). Documented as INSTALLER-PITFALLS.md Class J. The
+// deterministic fix is one CLI invocation per secret, exit code checked per
+// call, stderr surfaced with the failing key name. Order is preserved for
+// log readability (DATABASE_URL → ANTHROPIC_API_KEY → optional → optional).
+function setFunctionSecrets(secrets, dryRun, opts = {}) {
+  const orderedKeys = ['DATABASE_URL', 'ANTHROPIC_API_KEY'];
+  if (secrets.OPENAI_API_KEY) orderedKeys.push('OPENAI_API_KEY');
+  if (secrets.GRAPH_LLM_CLASSIFY === '1') orderedKeys.push('GRAPH_LLM_CLASSIFY');
+
   const haveOpenAI = Boolean(secrets.OPENAI_API_KEY);
-  const label = haveOpenAI
-    ? 'DATABASE_URL, ANTHROPIC_API_KEY, OPENAI_API_KEY'
-    : 'DATABASE_URL, ANTHROPIC_API_KEY';
-  step(`Setting function secrets (${label})...`);
+  step(`Setting function secrets per-call (${orderedKeys.join(', ')})...`);
   if (dryRun) { ok('(dry-run)'); return true; }
-  const args = [
-    'secrets', 'set',
-    `DATABASE_URL=${secrets.DATABASE_URL}`,
-    `ANTHROPIC_API_KEY=${secrets.ANTHROPIC_API_KEY}`
-  ];
-  if (haveOpenAI) {
-    args.push(`OPENAI_API_KEY=${secrets.OPENAI_API_KEY}`);
+
+  // Test surface: opts.runner is an optional injected function that mimics
+  // runShellCaptured((bin, args) => { ok, code, stdout, stderr }). Production
+  // path passes nothing and shells out to the real supabase CLI.
+  const runner = (typeof opts.runner === 'function') ? opts.runner : runShellCaptured;
+
+  for (const key of orderedKeys) {
+    const value = secrets[key];
+    if (value === undefined || value === null || value === '') {
+      fail(`secret ${key} missing from in-memory secrets map — wizard wiring bug`);
+      return false;
+    }
+    const r = runner('supabase', ['secrets', 'set', `${key}=${value}`]);
+    if (!r || !r.ok) {
+      fail(`supabase secrets set ${key} failed (exit ${r ? r.code : 'no-result'})`);
+      if (r && r.stderr) process.stderr.write(r.stderr + '\n');
+      return false;
+    }
   }
-  const r = runShellCaptured('supabase', args);
-  if (!r.ok) {
-    fail(`secrets set failed (exit ${r.code})`);
-    if (r.stderr) process.stderr.write(r.stderr + '\n');
-    return false;
-  }
-  ok(haveOpenAI ? '(hybrid mode)' : '(keyword-only mode — OPENAI_API_KEY not set)');
+  const llmTag = secrets.GRAPH_LLM_CLASSIFY === '1' ? ', graph LLM classify on' : '';
+  ok(`${haveOpenAI ? '(hybrid mode' : '(keyword-only mode — OPENAI_API_KEY not set'}${llmTag})`);
   return true;
+}
+
+// Sprint 51.5 T3: Build a Supabase SQL-Editor deeplink that pre-fills the
+// vault.create_secret() call for one secret. Used as the fallback when
+// auto-apply via pgRunner can't write to vault.secrets (permission denied,
+// missing extension, etc.) AND as the manual-fix surface in any wizard text
+// that previously instructed users to "click Vault in the dashboard" — the
+// Vault dashboard panel was quietly removed/relocated in current Supabase
+// UIs (Brad 2026-05-03 takeaway #2; INSTALLER-PITFALLS.md Class B).
+//
+// vault.create_secret signature is `(secret text, name text [, description text])`
+// — value-then-name. Both arguments are escaped as Postgres string literals
+// (single-quote doubling). The full URL is roughly:
+//   https://supabase.com/dashboard/project/<ref>/sql/new?content=<encoded SQL>
+// Click → SQL Editor opens with the call pre-filled → user clicks Run.
+function vaultSqlEditorUrl(projectRef, secretName, secretValue) {
+  if (!projectRef || typeof projectRef !== 'string') {
+    throw new Error('vaultSqlEditorUrl: projectRef is required');
+  }
+  const value = String(secretValue == null ? '' : secretValue).replace(/'/g, "''");
+  const name = String(secretName == null ? '' : secretName).replace(/'/g, "''");
+  const sql = `select vault.create_secret('${value}', '${name}');`;
+  return `https://supabase.com/dashboard/project/${projectRef}/sql/new?content=${encodeURIComponent(sql)}`;
+}
+
+// Sprint 51.5 T3: Ensure the two Vault secrets the cron schedules need are
+// present, auto-creating them via the user's pg connection when possible.
+//
+// Required:
+//   - rumen_service_role_key            (used by 002_pg_cron_schedule.sql)
+//   - graph_inference_service_role_key  (used by 003_graph_inference_schedule.sql)
+//
+// Both keys hold the same value (`secrets.SUPABASE_SERVICE_ROLE_KEY`). Brad's
+// 2026-05-02 recovery on jizzard-brain literally cloned rumen → graph_inference
+// in vault.
+//
+// Strategy:
+//   1. Open a pg connection to DATABASE_URL (same path as applyRumenTables).
+//   2. Probe vault.secrets for both names. (Reads vault.secrets, NOT
+//      vault.decrypted_secrets — we don't need the decrypted value, just
+//      presence.)
+//   3. For any missing name, call `vault.create_secret($value, $name)`.
+//   4. On per-secret failure (permission denied, etc.), surface a SQL-Editor
+//      deeplink the user can click; do not fail the wizard hard — the
+//      preconditions audit will catch a still-missing rumen_service_role_key
+//      with its own hint, and the user has the actionable URL in front of
+//      them either way.
+//
+// Returns `{ ok, created: [...], deeplinks: [{ name, url, error }] }`.
+async function ensureVaultSecrets({ projectRef, secrets, dryRun, _pgClient }) {
+  const required = [
+    { name: 'rumen_service_role_key', value: secrets.SUPABASE_SERVICE_ROLE_KEY },
+    { name: 'graph_inference_service_role_key', value: secrets.SUPABASE_SERVICE_ROLE_KEY }
+  ];
+
+  step('Ensuring Vault secrets (rumen_service_role_key, graph_inference_service_role_key)...');
+  if (dryRun) { ok('(dry-run)'); return { ok: true, created: [], deeplinks: [] }; }
+
+  if (!secrets.SUPABASE_SERVICE_ROLE_KEY) {
+    fail('SUPABASE_SERVICE_ROLE_KEY missing from in-memory secrets — preflight should have rejected');
+    return { ok: false, created: [], deeplinks: [], error: 'service-role-key-missing' };
+  }
+
+  let client = _pgClient;
+  let ownsClient = false;
+  if (!client) {
+    try {
+      client = await pgRunner.connect(secrets.DATABASE_URL);
+      ownsClient = true;
+    } catch (err) {
+      fail(err.message);
+      return { ok: false, created: [], deeplinks: [], error: 'pg-connect-failed' };
+    }
+  }
+
+  let existing = new Set();
+  try {
+    const probe = await client.query(
+      'SELECT name FROM vault.secrets WHERE name = ANY($1::text[])',
+      [required.map((x) => x.name)]
+    );
+    existing = new Set((probe.rows || []).map((r) => r.name));
+  } catch (err) {
+    fail(`vault.secrets probe failed: ${err.message}`);
+    if (ownsClient) { try { await client.end(); } catch (_e) { /* ignore */ } }
+    // Emit deeplinks for both — user can click through manually.
+    const deeplinks = required.map(({ name, value }) => ({
+      name,
+      url: vaultSqlEditorUrl(projectRef, name, value),
+      error: err.message
+    }));
+    printVaultDeeplinks(deeplinks);
+    return { ok: false, created: [], deeplinks, error: 'vault-probe-failed' };
+  }
+
+  const missing = required.filter((x) => !existing.has(x.name));
+  if (missing.length === 0) {
+    if (ownsClient) { try { await client.end(); } catch (_e) { /* ignore */ } }
+    ok('(both already present)');
+    return { ok: true, created: [], deeplinks: [] };
+  }
+
+  const created = [];
+  const deeplinks = [];
+  for (const { name, value } of missing) {
+    try {
+      await client.query('SELECT vault.create_secret($1, $2)', [value, name]);
+      created.push(name);
+    } catch (err) {
+      deeplinks.push({
+        name,
+        url: vaultSqlEditorUrl(projectRef, name, value),
+        error: err && err.message ? err.message : String(err)
+      });
+    }
+  }
+  if (ownsClient) { try { await client.end(); } catch (_e) { /* ignore */ } }
+
+  if (deeplinks.length > 0) {
+    fail(`auto-created ${created.length} of ${missing.length}; ${deeplinks.length} need a manual SQL Editor click`);
+    printVaultDeeplinks(deeplinks);
+    return { ok: false, created, deeplinks };
+  }
+
+  ok(`(created ${created.length}: ${created.map((n) => n).join(', ')})`);
+  return { ok: true, created, deeplinks: [] };
+}
+
+function printVaultDeeplinks(deeplinks) {
+  process.stderr.write(
+    '\nThe Supabase Vault dashboard panel has been removed in current Supabase UIs.\n' +
+    'Open each link below and click Run in SQL Editor to create the secret:\n\n'
+  );
+  for (const d of deeplinks) {
+    process.stderr.write(`  ${d.name}\n    ${d.url}\n`);
+    if (d.error) process.stderr.write(`    (auto-apply error: ${d.error})\n`);
+    process.stderr.write('\n');
+  }
+}
+
+// Sprint 51.5 T3: Install-time prompt for the GRAPH_LLM_CLASSIFY toggle.
+//
+// graph-inference (the daily cron Edge Function) defaults every new edge to
+// `relates_to` unless GRAPH_LLM_CLASSIFY=1 AND ANTHROPIC_API_KEY are set as
+// Edge Function secrets. Pre-Sprint-51.5, no install path covered this — the
+// wizard set ANTHROPIC_API_KEY (already required) but never set
+// GRAPH_LLM_CLASSIFY, leaving the LLM classifier off by default. This is
+// INSTALLER-PITFALLS.md Class F (default-vs-runtime asymmetry — Joshua may
+// or may not have set the flag manually; new installs definitely don't).
+//
+// Side-effect: mutates `secrets.GRAPH_LLM_CLASSIFY` to '1' on Y-path. The
+// per-secret loop in setFunctionSecrets reads that key and pushes it into
+// the supabase secrets set sequence. On N-path the key is left undefined
+// and the loop skips it; the wizard prints the manual flip command so the
+// user can opt in later without re-running the whole wizard.
+//
+// --yes accepts the default (Y). --dry-run reports the plan and assumes Y.
+async function promptGraphLlmClassify({ secrets, flags }) {
+  const explainer =
+    '\nGraph edge classification\n' +
+    '─────────────────────────\n' +
+    'When enabled, the daily graph-inference cron uses Claude Haiku 4.5 to label\n' +
+    'each new edge with a relationship type (supersedes, contradicts, elaborates,\n' +
+    'caused_by, blocks, inspired_by, cross_project_link, relates_to).\n' +
+    '\n' +
+    'Cost: ~$0.003 per 1k edges classified (a typical project sees a few hundred\n' +
+    'new edges per day). Disabled = every edge is typed "relates_to".\n\n';
+
+  if (flags.dryRun) {
+    process.stdout.write(explainer);
+    process.stdout.write('? Enable AI-classified graph edges? [Y/n] (dry-run, defaulting Y)\n');
+    secrets.GRAPH_LLM_CLASSIFY = '1';
+    return { enabled: true, source: 'dry-run' };
+  }
+  if (flags.yes) {
+    process.stdout.write(explainer);
+    process.stdout.write('? Enable AI-classified graph edges? [Y/n] (--yes, defaulting Y)\n');
+    secrets.GRAPH_LLM_CLASSIFY = '1';
+    return { enabled: true, source: '--yes' };
+  }
+
+  process.stdout.write(explainer);
+  const yes = await prompts.confirm('? Enable AI-classified graph edges?', { defaultYes: true });
+  if (yes) {
+    secrets.GRAPH_LLM_CLASSIFY = '1';
+    process.stdout.write('  → Will set GRAPH_LLM_CLASSIFY=1 + ANTHROPIC_API_KEY in Edge Function secrets.\n\n');
+    return { enabled: true, source: 'prompt' };
+  }
+  process.stdout.write(
+    '  → GRAPH_LLM_CLASSIFY left unset. Edges will default to "relates_to".\n' +
+    '    To enable later: supabase secrets set GRAPH_LLM_CLASSIFY=1\n\n'
+  );
+  return { enabled: false, source: 'prompt' };
 }
 
 async function testFunction(projectRef, secrets, dryRun) {
@@ -601,13 +864,22 @@ function wireAccessTokenInMcpJson({ token, mcpJsonPath, _testFs } = {}) {
   return { status: 'updated', path: targetPath };
 }
 
-function printNextSteps(projectRef) {
+function printNextSteps(projectRef, vaultResult, llmResult) {
   const rumenTickUrl = `https://${projectRef}.supabase.co/functions/v1/rumen-tick`;
   const graphInferenceUrl = `https://${projectRef}.supabase.co/functions/v1/graph-inference`;
   const now = new Date();
   // Round up to the next 15-minute mark so the hint is accurate.
   const next = new Date(now.getTime());
   next.setUTCMinutes(Math.ceil((now.getUTCMinutes() + 1) / 15) * 15, 0, 0);
+
+  const vaultLine = (vaultResult && vaultResult.ok)
+    ? '  Vault secrets: rumen_service_role_key + graph_inference_service_role_key in place.'
+    : '  Vault secrets: open the SQL Editor URLs above and click Run for any deeplinks shown.';
+
+  const llmLine = llmResult && llmResult.enabled
+    ? '  Graph edges: classified by Claude Haiku 4.5 (GRAPH_LLM_CLASSIFY=1).'
+    : '  Graph edges: untyped (relates_to). To enable: supabase secrets set GRAPH_LLM_CLASSIFY=1';
+
   process.stdout.write(`
 Rumen is deployed.
 
@@ -618,13 +890,12 @@ Edge Functions:
                     ${graphInferenceUrl}
 
 Next steps:
-  1. Monitor rumen jobs: psql "$DATABASE_URL" -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
-  2. Store service_role keys in Supabase Vault — required for both cron schedules:
-       rumen_service_role_key            (used by 002_pg_cron_schedule.sql)
-       graph_inference_service_role_key  (used by 003_graph_inference_schedule.sql)
-  3. Rumen insights flow back into Mnestra's memory_items via rumen_insights.
-  4. graph-inference fills memory_relationships edges nightly (cosine similarity ≥ 0.85).
-  5. TermDeck's Flashback will surface cross-project patterns automatically.
+${vaultLine}
+${llmLine}
+  Monitor rumen jobs: psql "$DATABASE_URL" -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
+  Rumen insights flow back into Mnestra's memory_items via rumen_insights.
+  graph-inference fills memory_relationships edges nightly (cosine similarity ≥ 0.85).
+  TermDeck's Flashback will surface cross-project patterns automatically.
 `);
 }
 
@@ -656,6 +927,22 @@ async function main(argv) {
       process.stdout.write('Cancelled.\n');
       return 0;
     }
+  }
+
+  // Sprint 51.5 T3: ensure both Vault secrets are present BEFORE the
+  // precondition audit (which checks vault.decrypted_secrets for
+  // rumen_service_role_key). Auto-applies via pgRunner; on permission
+  // failure prints SQL-Editor deeplinks and lets the audit's own hint
+  // catch the still-missing secret. The Vault dashboard panel was quietly
+  // removed in current Supabase UIs (Brad 2026-05-03 takeaway #2;
+  // INSTALLER-PITFALLS.md Class B), which is why we no longer instruct
+  // users to "click Vault."
+  let vaultResult = { ok: true, created: [], deeplinks: [] };
+  if (!flags.dryRun) {
+    vaultResult = await ensureVaultSecrets({ projectRef, secrets, dryRun: false });
+    // Continue regardless — preconditions audit will catch a still-missing
+    // secret with its own hint, and the user already has the deeplinks if
+    // any auto-apply failed.
   }
 
   // v0.6.9: front-loaded precondition audit. Runs BEFORE link so we don't
@@ -691,6 +978,14 @@ async function main(argv) {
     // already-set) are silent — they're all expected paths.
   }
 
+  // Sprint 51.5 T1 — audit-upgrade BEFORE the rest of the flow. Surfaces
+  // and applies any drift between the bundled artifact set and what's
+  // actually live on the user's project. Non-blocking on failure (probe
+  // errors get logged inline; main flow continues).
+  if (!flags.dryRun) {
+    await runRumenAudit(projectRef, secrets, flags.dryRun);
+  }
+
   if (!(await applyRumenTables(secrets, flags.dryRun))) return 5;
 
   step('Resolving @jhizzard/rumen version from npm registry...');
@@ -703,6 +998,12 @@ async function main(argv) {
   }
 
   if (!deployFunctions(resolved.version, flags.dryRun)) return 6;
+
+  // Sprint 51.5 T3: install-time prompt for AI edge classification. Sets
+  // secrets.GRAPH_LLM_CLASSIFY in-memory; the per-secret loop below picks
+  // it up. On --yes / --dry-run defaults to enabled (Y).
+  const llmResult = await promptGraphLlmClassify({ secrets, flags });
+
   if (!setFunctionSecrets(secrets, flags.dryRun)) return 7;
   if (!(await testFunction(projectRef, secrets, flags.dryRun))) return 8;
   if (!flags.skipSchedule) {
@@ -720,7 +1021,7 @@ async function main(argv) {
     process.stdout.write('→ Skipping pg_cron schedule (per --skip-schedule) ✓\n');
   }
 
-  printNextSteps(projectRef);
+  printNextSteps(projectRef, vaultResult, llmResult);
   return 0;
 }
 
@@ -741,3 +1042,10 @@ module.exports._wireAccessTokenInMcpJson = wireAccessTokenInMcpJson;
 // Sprint 43 T3: stage helper exposed so init-rumen-deploy.test.js can pin
 // the multi-function staging contract without shelling out to `supabase`.
 module.exports._stageRumenFunctions = stageRumenFunctions;
+// Sprint 51.5 T3: per-secret CLI loop, Vault SQL-Editor URL builder, and
+// Vault-secret ensure helper exposed for tests/init-rumen-secrets-per-call,
+// init-rumen-graph-llm, and init-rumen-vault-deeplinks.
+module.exports._setFunctionSecrets = setFunctionSecrets;
+module.exports._vaultSqlEditorUrl = vaultSqlEditorUrl;
+module.exports._ensureVaultSecrets = ensureVaultSecrets;
+module.exports._promptGraphLlmClassify = promptGraphLlmClassify;

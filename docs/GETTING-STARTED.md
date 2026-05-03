@@ -254,7 +254,7 @@ CREATE EXTENSION IF NOT EXISTS pg_net;
 SELECT extname FROM pg_extension WHERE extname IN ('pg_cron', 'pg_net');  -- expect 2 rows
 ```
 
-Add Vault secret: Dashboard > Database > Vault > New secret. Name: `rumen_service_role_key` (exact). Value: your service_role key from Settings > API.
+Vault secrets (`rumen_service_role_key` and `graph_inference_service_role_key`) are auto-created by the wizard in Step 4 below; you no longer need a manual dashboard step. If the wizard's auto-apply ever fails (permission denied, etc.), it falls back to printing a SQL-Editor deeplink per missing secret — click the link, then click Run. The Vault dashboard panel was removed in current Supabase UIs, so SQL Editor is now the canonical manual surface.
 
 ### Step 4 — Run the init wizard
 

@@ -135,6 +135,8 @@ Sprint 44 ships the registry shape with **only Claude registered**. `session.js:
 
 This is the recipe Sprint 45 T1 follows. It also doubles as the recipe for any future agent (a hypothetical `Llama CLI`, an internal Anthropic preview build, a custom open-weights wrapper).
 
+**Step 0 — Read [`docs/INSTALLER-PITFALLS.md`](./INSTALLER-PITFALLS.md) before any adapter work that touches the bundled hook, settings file, MCP config, or any developer-private path.** Adapter work routinely lands in surfaces governed by the failure-class taxonomy: Class B (path mismatch with Claude Code / Cursor / MCP host config files), Class E (private-path imports from the bundled hook), Class H (assets shipped via `npm pack` but missed at install time). Every adapter PR should be traceable to "this PR avoids classes X, Y" the same way the installer PRs are. If your adapter exposes a new install or upgrade incident, append a ledger entry there.
+
 **Step 1 — Read the CLI's documentation.** Find:
 
 - Binary name and PATH (`which codex` → `/usr/local/bin/codex`).

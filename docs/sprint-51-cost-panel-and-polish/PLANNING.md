@@ -4,6 +4,8 @@
 **Target version:** `@jhizzard/termdeck@1.1.0` (minor — new user-visible cost panel + UX polish; no breaking changes). Companion: `@jhizzard/termdeck-stack@0.6.1` (audit trail; no functional change unless T2 click-stability fix touches the wizard's launcher button DOM advice).
 **Last-published baselines (v1.0.0 release wave 2026-05-02 15:48 ET):** `termdeck@1.0.0`, `termdeck-stack@0.6.0`, `mnestra@0.4.0`, `rumen@0.4.4`.
 
+> **⚠️ Sprint 51 may pivot to Sprint 51.5 first.** A real-user P0 surfaced 2026-05-02: stack-installer has no upgrade-detection path, so projects predating Sprint 38 never got migrations 009–015 / TermDeck migration 003 / graph-inference Edge Function. Reported by Brad's Claude Code on `jizzard-brain`. Synthesis at [`docs/INSTALLER-PITFALLS.md`](../INSTALLER-PITFALLS.md). v1.0.1 hotfix sprint authored at [`docs/sprint-51.5-installer-upgrade-and-doctor/PLANNING.md`](../sprint-51.5-installer-upgrade-and-doctor/PLANNING.md). **Orchestrator decides at kickoff** whether to ship 51.5 first then 51 as Sprint 52, or interleave — read both PLANNINGs and call it.
+
 ## Why this sprint
 
 v1.0.0 ships the trust-fundamental gates (per-agent MCP auto-wire + multi-agent memory + UX trust trio + dogfood validation). Sprint 51 is the **first post-v1.0.0 polish-and-feature wave** — three small UX cleanups Joshua flagged during Sprint 50 close (each one independently erodes new-user trust) plus the cost-monitoring panel that closes the "outside users may surprise themselves with bills" failure mode of mixed-agent adoption. None of these are v1.0.0 blockers — they're v1.1.0 confidence builders.
@@ -36,8 +38,9 @@ The cost panel deliberately rides naturally on top of Sprint 48's `costBand` ada
 
 ## Other carry-overs
 
+- **🚨 Sprint 51.5 v1.0.1 hotfix — installer upgrade-aware migration detection + mnestra doctor** ([PLANNING](../sprint-51.5-installer-upgrade-and-doctor/PLANNING.md)). Brad's 2026-05-02 schema-vs-package-drift report. Orchestrator decides whether to ship 51.5 before Sprint 51 or fold the doctor lane (T2) into Sprint 51 as the existing carry-over. Reference: [`docs/INSTALLER-PITFALLS.md`](../INSTALLER-PITFALLS.md) (NEW 2026-05-02 — read before any installer-adjacent change).
 - **Upstream rumen `createJob.started_at` patch** (cross-repo work; needs `@jhizzard/rumen` patch release). 2-line fix at `~/Documents/Graciella/rumen/src/index.ts:177`. Sprint 51 may or may not pick this up depending on T1-T4 budget.
-- **`mnestra doctor` subcommand** (Brad's third upstream suggestion 2026-04-28). Sprint 51 candidate side-task (~50 LOC in mnestra repo).
+- **`mnestra doctor` subcommand** (Brad's third upstream suggestion 2026-04-28). Sprint 51 candidate side-task (~50 LOC in mnestra repo). **Note:** if Sprint 51.5 ships first, this lane is absorbed there as T2 — strike from Sprint 51.
 - Sprint 40 carry-over: harness session-end hook PROJECT_MAP forward-fix.
 - Sprint 40 carry-over: analyzer broadening — `PATTERNS.error` case-sensitivity gaps.
 - Sprint 40 carry-over: LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.

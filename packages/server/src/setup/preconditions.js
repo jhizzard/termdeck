@@ -52,6 +52,23 @@ function extensionsDashboardUrl(secrets) {
   return `https://supabase.com/dashboard/project/${parsed.projectRef}/database/extensions`;
 }
 
+// Sprint 51.5 T3: Build a SQL-Editor deeplink that pre-fills a
+// vault.create_secret() call. Used when the audit's vault probe finds the
+// secret missing and the wizard's auto-apply step (init-rumen.js
+// `ensureVaultSecrets`) was unable to create it via pgRunner. The Vault
+// dashboard panel was quietly removed/relocated in current Supabase UIs
+// (Brad 2026-05-03 takeaway #2; INSTALLER-PITFALLS.md Class B), so SQL
+// Editor is the working manual surface.
+function vaultSqlEditorUrl(secrets, secretName, secretValue) {
+  if (!secrets || !secrets.SUPABASE_URL) return null;
+  const parsed = supabaseUrlHelper.parseProjectUrl(secrets.SUPABASE_URL);
+  if (!parsed.ok) return null;
+  const value = String(secretValue == null ? '' : secretValue).replace(/'/g, "''");
+  const name = String(secretName == null ? '' : secretName).replace(/'/g, "''");
+  const sql = `select vault.create_secret('${value}', '${name}');`;
+  return `https://supabase.com/dashboard/project/${parsed.projectRef}/sql/new?content=${encodeURIComponent(sql)}`;
+}
+
 // Render a single gap into 2-3 lines of CLI output (one indented hint per
 // non-empty `hint` line). Format aligned with the rest of the wizard's
 // step lines.
@@ -206,14 +223,28 @@ async function auditRumenPreconditions({ secrets, env, _pgClient } = {}) {
           'If permission is denied, the Vault is not accessible to this connection — double-check secrets.env.'
       });
     } else if (!vault.ok) {
+      // Sprint 51.5 T3: the Supabase Vault dashboard panel was quietly removed
+      // / relocated in current Supabase UIs (Brad 2026-05-03 takeaway #2;
+      // INSTALLER-PITFALLS.md Class B). The wizard's `ensureVaultSecrets`
+      // step (init-rumen.js) auto-creates this key via pgRunner when the
+      // user's connection has vault.create_secret privileges; this hint only
+      // fires when auto-apply also failed, in which case the SQL Editor is
+      // the working manual surface. Build a project-specific deeplink when
+      // we can derive the project ref so the user gets one click instead of
+      // a "find the SQL Editor yourself" instruction.
+      const sqlEditorUrl = vaultSqlEditorUrl(secrets, 'rumen_service_role_key',
+        '<paste your service_role JWT from Project Settings → API>');
+      const sqlEditorLine = sqlEditorUrl
+        ? `  Open: ${sqlEditorUrl}\n  Replace the placeholder with your service_role key from Project Settings → API, then click Run.`
+        : '  Open the Supabase SQL Editor and run:\n' +
+          "    select vault.create_secret('<service_role JWT>', 'rumen_service_role_key');";
       gaps.push({
         key: 'rumen_service_role_key',
         message: 'Vault secret "rumen_service_role_key" is missing',
         hint:
-          'Create it in the Supabase dashboard:\n' +
-          '  Project Settings → Vault → New secret\n' +
-          '  Name: rumen_service_role_key  (exact, case-sensitive)\n' +
-          '  Value: your service_role key from Project Settings → API\n' +
+          "The wizard tries to auto-create this via vault.create_secret() and only surfaces this hint when auto-apply also failed.\n" +
+          'Create it manually via the SQL Editor (the Vault dashboard panel was removed in current Supabase UIs):\n' +
+          sqlEditorLine + '\n' +
           '(The pg_cron schedule calls the Edge Function with this key as the bearer token.)'
       });
     }
@@ -384,6 +415,7 @@ module.exports = {
   printAuditReport,
   printVerifyReport,
   extensionsDashboardUrl,
+  vaultSqlEditorUrl,
   // Test surface
   _probeSupabaseAuth: probeSupabaseAuth,
   _safeQuery: safeQuery
