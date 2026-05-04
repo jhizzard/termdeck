@@ -41,6 +41,8 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
+const { spawnSync } = require('child_process');
 
 const migrations = require('./migrations');
 const { applyTemplating } = require('./migration-templating');
@@ -183,6 +185,47 @@ const PROBES = Object.freeze([
     functionSlug: 'graph-inference',
     requiredMarker: "Deno.env.get('SUPABASE_DB_URL')",
     presentWhen: 'sourceMatch'
+  },
+  // Sprint 52 — Class O: deployed-state pin drift between npm-published
+  // packages and Supabase-deployed Edge Functions. `npm publish` doesn't
+  // touch Supabase; `init --rumen` redeploys. If a user upgraded the npm
+  // package but didn't re-run init --rumen, the Edge Function is pinned to
+  // whatever rumen version was current at last deploy.
+  //
+  // probeKind 'edgeFunctionPin':
+  //   - Downloads deployed Edge Function body via Management API.
+  //   - Greps the npm:<pkg>@<version> import line.
+  //   - Compares against the EXPECTED version. Two resolution shapes:
+  //     - 'npmRegistry': run `npm view <pkg> version` (used when bundled
+  //       source has a __RUMEN_VERSION__-style placeholder substituted at
+  //       deploy time).
+  //     - 'bundledSource': read bundled file, grep same npm:<pkg>@<version>
+  //       (used when bundled source pins a static version verbatim).
+  //   - On drift: returns absent → goes to skipped[] with a recommendation
+  //     pointing at `termdeck init --rumen --yes`.
+  //   - On unreachable Management API / npm view failure: skipped with the
+  //     fail-soft reason (mirrors functionSource probe degradation pattern).
+  //
+  // YELLOW (skipped[]) is the right severity — pin drift is non-blocking
+  // for the wizard and non-blocking for any single Rumen tick. It just
+  // means stale runtime. The user-actionable fix is `init --rumen --yes`.
+  {
+    name: 'rumen-tick deployed pin matches current @jhizzard/rumen',
+    kind: 'rumen',
+    probeKind: 'edgeFunctionPin',
+    functionSlug: 'rumen-tick',
+    importPattern: /npm:@jhizzard\/rumen@(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)/,
+    expectedFrom: 'npmRegistry',
+    npmRegistryPkg: '@jhizzard/rumen'
+  },
+  {
+    name: 'graph-inference deployed pin matches bundled postgres',
+    kind: 'rumen',
+    probeKind: 'edgeFunctionPin',
+    functionSlug: 'graph-inference',
+    importPattern: /npm:postgres@(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)/,
+    expectedFrom: 'bundledSource',
+    bundledPath: 'packages/server/src/setup/rumen/functions/graph-inference/index.ts'
   }
 ]);
 
@@ -251,12 +294,157 @@ async function probeFunctionSource(target, { projectRef, fetchImpl }) {
   };
 }
 
+// Sprint 52 — Class O: deployed-state pin drift between npm-published
+// packages and Supabase-deployed Edge Functions.
+//
+// Probes one Edge Function for npm:<pkg>@<version> drift between the
+// deployed body and the EXPECTED version. Returns:
+//   - { present: true } when deployed pin == expected pin (no drift)
+//   - { present: false, probeError: '<recommendation>' } when drift is
+//     detected — caller routes to skipped[] (YELLOW, non-blocking).
+//   - { present: false, probeError: '<reason>' } when probe can't run
+//     (no fetch impl, no token, Management API HTTP error, npm view
+//     failure, deployed body doesn't match the importPattern).
+//
+// Required ctx:
+//   - projectRef: passed through from auditUpgrade()
+//   - SUPABASE_ACCESS_TOKEN in env (sbp_*) — same as functionSource probe
+// Optional ctx:
+//   - fetchImpl: test injection for HTTP. Defaults to globalThis.fetch.
+//   - npmViewImpl: test injection for `npm view <pkg> version`. Defaults
+//     to a real spawnSync('npm', ['view', pkg, 'version']). Returns
+//     { ok, version, error }.
+//   - readFileImpl: test injection for bundled-source reads. Defaults to
+//     fs.readFileSync(absPath, 'utf-8').
+//   - repoRoot: optional — used to resolve target.bundledPath. Defaults to
+//     packages/server/src/setup/.. relative resolution (3 levels up from
+//     this file is the repo root).
+async function probeEdgeFunctionPin(target, ctx = {}) {
+  const fn = ctx.fetchImpl || (typeof globalThis !== 'undefined' ? globalThis.fetch : undefined);
+  if (typeof fn !== 'function') {
+    return { present: false, probeError: 'no fetch implementation available' };
+  }
+  if (!ctx.projectRef) {
+    return { present: false, probeError: 'projectRef required for edgeFunctionPin probe' };
+  }
+  const accessToken = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!accessToken) {
+    return {
+      present: false,
+      probeError: 'SUPABASE_ACCESS_TOKEN not set; cannot fetch deployed function body. Set the personal access token (`supabase login` writes it to ~/.supabase/access-token) to enable Edge Function pin-drift detection.'
+    };
+  }
+
+  // Resolve EXPECTED version first — if this fails we can short-circuit
+  // before the Management API round trip.
+  let expected;
+  if (target.expectedFrom === 'npmRegistry') {
+    if (!target.npmRegistryPkg) {
+      return { present: false, probeError: `edgeFunctionPin probe ${target.name} missing npmRegistryPkg` };
+    }
+    const npmView = ctx.npmViewImpl || defaultNpmViewVersion;
+    let r;
+    try { r = await npmView(target.npmRegistryPkg); }
+    catch (err) { return { present: false, probeError: `npm view ${target.npmRegistryPkg} failed: ${err.message}` }; }
+    if (!r || !r.ok) {
+      return {
+        present: false,
+        probeError: `npm view ${target.npmRegistryPkg} version failed: ${r && r.error ? r.error : 'unknown error'}`
+      };
+    }
+    expected = r.version;
+  } else if (target.expectedFrom === 'bundledSource') {
+    if (!target.bundledPath || !target.importPattern) {
+      return { present: false, probeError: `edgeFunctionPin probe ${target.name} missing bundledPath or importPattern` };
+    }
+    const repoRoot = ctx.repoRoot || path.resolve(__dirname, '..', '..', '..', '..', '..');
+    const bundledAbs = path.isAbsolute(target.bundledPath)
+      ? target.bundledPath
+      : path.join(repoRoot, target.bundledPath);
+    const readImpl = ctx.readFileImpl || ((p) => fs.readFileSync(p, 'utf-8'));
+    let bundledBody;
+    try { bundledBody = readImpl(bundledAbs); }
+    catch (err) { return { present: false, probeError: `bundled source read failed at ${bundledAbs}: ${err.message}` }; }
+    const m = bundledBody.match(target.importPattern);
+    if (!m) {
+      return { present: false, probeError: `bundled source at ${target.bundledPath} does not contain ${target.importPattern} — has the import been removed or renamed?` };
+    }
+    expected = m[1];
+  } else {
+    return { present: false, probeError: `edgeFunctionPin probe ${target.name} has unknown expectedFrom: ${target.expectedFrom}` };
+  }
+
+  // Fetch deployed body via Management API.
+  let res;
+  try {
+    res = await fn(
+      `https://api.supabase.com/v1/projects/${ctx.projectRef}/functions/${target.functionSlug}/body`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+  } catch (err) {
+    return { present: false, probeError: `Management API fetch failed: ${err.message}` };
+  }
+  if (!res.ok) {
+    return {
+      present: false,
+      probeError: `Management API returned HTTP ${res.status} for ${target.functionSlug}/body — function may not be deployed yet, or access token lacks permission.`
+    };
+  }
+  let body;
+  try { body = await res.text(); }
+  catch (err) { return { present: false, probeError: `body decode failed: ${err.message}` }; }
+
+  const m = body.match(target.importPattern);
+  if (!m) {
+    return {
+      present: false,
+      probeError: `deployed ${target.functionSlug} body does not match ${target.importPattern} — function may be at an unexpected source revision; re-run \`termdeck init --rumen --yes\` to redeploy from bundled.`
+    };
+  }
+  const deployed = m[1];
+  if (deployed === expected) {
+    return { present: true };
+  }
+  return {
+    present: false,
+    probeError: `pin drift on ${target.functionSlug}: deployed=${deployed}, expected=${expected}. Run \`termdeck init --rumen --yes\` to redeploy from current.`
+  };
+}
+
+// Default `npm view <pkg> version` shellout. Returns { ok, version, error }.
+// Synchronous spawnSync with 15s timeout — same shape as init-rumen.js
+// resolveRumenVersion helper. Wrapped in a thenable so the probe can await.
+function defaultNpmViewVersion(pkg) {
+  return Promise.resolve().then(() => {
+    const r = spawnSync('npm', ['view', pkg, 'version'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15000
+    });
+    if (r.status === 0) {
+      const v = (r.stdout || '').trim();
+      if (/^\d+\.\d+\.\d+/.test(v)) return { ok: true, version: v };
+      return { ok: false, error: `unexpected output: ${JSON.stringify(v)}` };
+    }
+    const stderr = (r.stderr || '').trim();
+    return {
+      ok: false,
+      error: stderr ? stderr.split('\n').pop() : `exit ${r.status === null ? 'timeout' : r.status} — offline?`
+    };
+  });
+}
+
 // Run a probe and decide present/absent based on the probe's contract.
 // Sprint 51.6 T3: dispatches by target.probeKind. Default is the legacy
 // pgClient.query path; 'functionSource' calls probeFunctionSource (HTTP).
+// Sprint 52 (Class O): 'edgeFunctionPin' calls probeEdgeFunctionPin (HTTP
+// + npm view / bundled-source resolution).
 async function probeOne(pgClient, target, ctx = {}) {
   if (target.probeKind === 'functionSource') {
     return probeFunctionSource(target, ctx);
+  }
+  if (target.probeKind === 'edgeFunctionPin') {
+    return probeEdgeFunctionPin(target, ctx);
   }
   let result;
   try {
@@ -343,7 +531,10 @@ async function auditUpgrade({
   dryRun = false,
   probes,
   _migrations,
-  _fetch
+  _fetch,
+  _npmView,
+  _readFile,
+  _repoRoot
 } = {}) {
   if (!pgClient || typeof pgClient.query !== 'function') {
     throw new Error('auditUpgrade: pgClient with .query() is required');
@@ -365,7 +556,13 @@ async function auditUpgrade({
 
   for (const target of targets) {
     probed.push(target.name);
-    const probeResult = await probeOne(pgClient, target, { projectRef, fetchImpl: _fetch });
+    const probeResult = await probeOne(pgClient, target, {
+      projectRef,
+      fetchImpl: _fetch,
+      npmViewImpl: _npmView,
+      readFileImpl: _readFile,
+      repoRoot: _repoRoot
+    });
     if (probeResult.present) {
       present.push(target.name);
       continue;
@@ -374,10 +571,15 @@ async function auditUpgrade({
     // Sprint 51.6 T3 — Bug D: functionSource probes go to skipped[] (not
     // missing[]). The corresponding fix is a re-run of `init --rumen` which
     // calls deployFunctions; audit-upgrade does not auto-redeploy.
-    if (target.probeKind === 'functionSource') {
+    // Sprint 52 — Class O: same treatment for edgeFunctionPin probes —
+    // pin drift is non-blocking (YELLOW), recommendation in skipped reason.
+    if (target.probeKind === 'functionSource' || target.probeKind === 'edgeFunctionPin') {
+      const fallbackReason = target.probeKind === 'edgeFunctionPin'
+        ? 'pin drift — redeploy via init --rumen'
+        : 'function source drift — redeploy via init --rumen';
       skipped.push({
         name: target.name,
-        reason: probeResult.probeError || 'function source drift — redeploy via init --rumen',
+        reason: probeResult.probeError || fallbackReason,
       });
       continue;
     }
@@ -420,6 +622,7 @@ module.exports = {
   // selection / apply pathway behavior without needing a live pg client.
   _probeOne: probeOne,
   _probeFunctionSource: probeFunctionSource,
+  _probeEdgeFunctionPin: probeEdgeFunctionPin,
   _applyOne: applyOne,
   _resolveMigrationFile: resolveMigrationFile
 };

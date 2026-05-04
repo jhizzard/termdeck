@@ -134,17 +134,21 @@ function makeFetchMock(spec) {
 
 // ── Probe-set sanity ────────────────────────────────────────────────────────
 
-// Sprint 51.6 T3: probe set grows from 7 to 10 — adds memory_sessions.session_id
+// Sprint 51.6 T3: probe set grew from 7 to 10 — adds memory_sessions.session_id
 // (mig 017) plus two functionSource probes (Bug D — rumen-tick + graph-inference
 // deployed source drift detection).
-test('PROBES has 10 entries covering 6 mnestra + 4 rumen targets', () => {
-  assert.equal(PROBES.length, 10);
+// Sprint 52 (Class O): probe set grows from 10 to 12 — adds two edgeFunctionPin
+// probes (rumen-tick + graph-inference) for deployed-state pin drift.
+test('PROBES has 12 entries covering 6 mnestra + 6 rumen targets', () => {
+  assert.equal(PROBES.length, 12);
   const mnestra = PROBES.filter((p) => p.kind === 'mnestra');
   const rumen = PROBES.filter((p) => p.kind === 'rumen');
   assert.equal(mnestra.length, 6);
-  assert.equal(rumen.length, 4);
+  assert.equal(rumen.length, 6);
   // Migration-backed probes still need a bundled file + probeSql.
-  for (const p of PROBES.filter((q) => q.probeKind !== 'functionSource')) {
+  const migrationProbes = PROBES.filter((q) =>
+    q.probeKind !== 'functionSource' && q.probeKind !== 'edgeFunctionPin');
+  for (const p of migrationProbes) {
     assert.ok(p.migrationFile, `probe ${p.name} missing migrationFile`);
     assert.ok(p.probeSql, `probe ${p.name} missing probeSql`);
   }
@@ -153,8 +157,23 @@ test('PROBES has 10 entries covering 6 mnestra + 4 rumen targets', () => {
     assert.ok(p.functionSlug, `functionSource probe ${p.name} missing functionSlug`);
     assert.ok(p.requiredMarker, `functionSource probe ${p.name} missing requiredMarker`);
   }
+  // edgeFunctionPin probes carry functionSlug + importPattern + expectedFrom.
+  for (const p of PROBES.filter((q) => q.probeKind === 'edgeFunctionPin')) {
+    assert.ok(p.functionSlug, `edgeFunctionPin probe ${p.name} missing functionSlug`);
+    assert.ok(p.importPattern instanceof RegExp,
+      `edgeFunctionPin probe ${p.name} missing importPattern (RegExp)`);
+    assert.ok(p.expectedFrom === 'npmRegistry' || p.expectedFrom === 'bundledSource',
+      `edgeFunctionPin probe ${p.name} has invalid expectedFrom: ${p.expectedFrom}`);
+    if (p.expectedFrom === 'npmRegistry') {
+      assert.ok(p.npmRegistryPkg, `edgeFunctionPin probe ${p.name} missing npmRegistryPkg`);
+    }
+    if (p.expectedFrom === 'bundledSource') {
+      assert.ok(p.bundledPath, `edgeFunctionPin probe ${p.name} missing bundledPath`);
+    }
+  }
   // Both rumen schedule probes must be templated (require projectRef).
-  const cronProbes = rumen.filter((p) => p.probeKind !== 'functionSource');
+  const cronProbes = rumen.filter((p) =>
+    p.probeKind !== 'functionSource' && p.probeKind !== 'edgeFunctionPin');
   assert.equal(cronProbes.every((p) => p.templated === true), true,
     'both rumen schedule probes must be templated');
 });
@@ -172,7 +191,11 @@ test('PROBES order matches dependency requirement: M-009 before M-013, M-013 bef
 // Sprint 51.6 T3: existing SQL-probe tests filter functionSource probes out
 // so they exercise only the 8 migration-backed probes (6 mnestra + 2 rumen
 // cron). functionSource probes have their own dedicated tests below.
-const SQL_PROBES = PROBES.filter((p) => p.probeKind !== 'functionSource');
+// Sprint 52: also filter edgeFunctionPin probes — they have their own
+// dedicated tests in tests/audit-upgrade-edge-function-pin.test.js.
+const SQL_PROBES = PROBES.filter(
+  (p) => p.probeKind !== 'functionSource' && p.probeKind !== 'edgeFunctionPin'
+);
 
 test('all SQL probes present → applied=[] (idempotent up-to-date case)', async () => {
   // Every probe SQL returns 1 row → present. Nothing to apply.
@@ -401,7 +424,11 @@ test('every migration-backed PROBES.migrationFile resolves to a real bundled fil
     .map((f) => path.basename(f));
   // Sprint 51.6 T3: functionSource probes do not have a migrationFile —
   // their fix is a redeploy via init-rumen, not an SQL migration.
-  const migrationProbes = PROBES.filter((p) => p.probeKind !== 'functionSource');
+  // Sprint 52: same for edgeFunctionPin probes — pin drift is fixed by
+  // a redeploy, not an SQL migration.
+  const migrationProbes = PROBES.filter(
+    (p) => p.probeKind !== 'functionSource' && p.probeKind !== 'edgeFunctionPin'
+  );
   for (const probe of migrationProbes) {
     const set = probe.kind === 'mnestra' ? mnestraFiles : rumenFiles;
     assert.ok(set.includes(probe.migrationFile),
@@ -442,7 +469,8 @@ test('packages/server/src/setup index re-exports auditUpgrade', () => {
   assert.equal(typeof setup.auditUpgrade.auditUpgrade, 'function');
   assert.ok(Array.isArray(setup.auditUpgrade.PROBES) ||
     Object.isFrozen(setup.auditUpgrade.PROBES));
-  assert.equal(setup.auditUpgrade.PROBES.length, 10);
+  // Sprint 52: 10 → 12 (added rumen-tick-pin + graph-inference-pin).
+  assert.equal(setup.auditUpgrade.PROBES.length, 12);
 });
 
 // ── Sprint 51.6 T3: functionSource probe (Bug D — Edge Function drift) ──
