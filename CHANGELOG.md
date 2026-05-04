@@ -16,6 +16,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sprint 46 deferrals still open after Sprint 50.5 close-out.** The Sprint 50.5 dogfood cleared four (T1 URL state codec edge case, T2 — replaced with `approvalModel` doc work — T3 TUI spinner spam, T4 dead `triggerProactiveMemoryQuery`); ten deferrals remain in `docs/sprint-46-dashboard-audit/AUDIT-FINDINGS.md` § Sprint 47 deferrals (most need design calls, not lane work).
 - Sprint 40 carry-overs: harness session-end hook PROJECT_MAP forward-fix (out-of-repo `~/.claude/hooks/memory-session-end.js`); analyzer broadening for `PATTERNS.error` case-sensitivity gaps; LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.
 
+## [1.0.6] - 2026-05-04
+
+> **v1.0.6 mini-sprint hotfix — Sprint 51.9: `memory_hybrid_search` signature-drift guard (Codex T4-CODEX share-blind catch).** Triggered mid-Sprint-51.5b dogfood (3+1+1 audit) at 14:42 ET when Codex T4-CODEX's MCP-wired `memory_recall` failed against petvetbid with a Postgres ambiguous-overload error on `public.memory_hybrid_search(...)`. petvetbid had TWO overloads coexisting: the canonical 8-arg shape (mig 002 + mig 004) AND a 10-arg drift overload with extra `recency_weight`/`decay_days` parameters from a pre-canonical Mnestra iteration or the rag-system writer's bootstrap. Sprint 52.1 (v1.0.5) closed the same Class A pattern for `match_memories` four hours earlier; T4-CODEX caught the cousin that Joshua's daily-driver Claude usage never surfaced because Claude Code uses the local rag-system spawner path, not the Mnestra MCP `memory_hybrid_search` endpoint. Wave: `@jhizzard/termdeck@1.0.6` + `@jhizzard/termdeck-stack@0.6.6` (audit-trail bump). Mnestra and Rumen unchanged. Single-lane direct fix, ~25 min wall-clock, shipped in parallel with Sprint 51.5b's other lanes still in flight.
+
+### Added
+
+- **`do $$` signature-drift guard** at `packages/server/src/setup/mnestra-migrations/002_mnestra_search_function.sql`, immediately before `create or replace function memory_hybrid_search`. Same shape as Sprint 52.1's mig 001 guard for `match_memories`. Iterates `pg_proc` joined to `pg_namespace`, filters `proname = 'memory_hybrid_search' AND nspname = 'public'`, executes `drop function <regprocedure-cast>` per overload. Drops every overload regardless of arg list. Idempotent on greenfield. Scoped to `public` schema. No CASCADE. Mig 004 subsequently `CREATE OR REPLACE`s the same 8-arg signature with the match_count cap variant; net end-state is exactly ONE 8-arg `memory_hybrid_search` in public schema.
+- **Mirrored to canonical Mnestra repo** at `~/Documents/Graciella/engram/migrations/002_mnestra_search_function.sql` (byte-identical). Maintains the Sprint 51.5 T1 hygiene.
+- **NEW shape regression suite at `tests/migration-002-shape.test.js`** (7 tests). Pins: file existence, byte-identical to Mnestra-repo primary (skipped when repo absent), do$$ guard placement before CREATE OR REPLACE, schema scope (`nspname = 'public'`), no CASCADE, pg_proc-with-regprocedure-execute pattern, canonical 8-arg signature preserved (`query_text, query_embedding, match_count, full_text_weight, semantic_weight, rrf_k, filter_project, filter_source_type`).
+
+### Changed
+
+- **`@jhizzard/termdeck-stack` 0.6.5 → 0.6.6 audit-trail bump.** Stack-installer JS source unchanged this release; bumped per RELEASE.md convention so the published trail validates against `@jhizzard/termdeck@1.0.6`.
+
+### Fixed
+
+- **MCP `memory_recall` ambiguous-overload error on long-lived v0.6.x-era installs** (Codex T4-CODEX 2026-05-04 14:42 ET catch). Pre-v1.0.6: any user with a 10-arg drift overload of `memory_hybrid_search` coexisting with the canonical 8-arg shape would hit `function memory_hybrid_search(text, vector, integer, double precision, double precision, integer, text, text) is not unique` when calling from PostgREST/MCP. Post-v1.0.6: mig 002's do$$ prelude drops all overloads; mig 002's CREATE lands the canonical 8-arg; mig 004's CREATE OR REPLACE updates the body with the match_count cap. Net: one 8-arg overload, no ambiguity.
+
+### Notes
+
+- **Same auditor caught both Class A drift cousins in the v1.0.x onion.** Sprint 51.7 T4-CODEX deferred-finding ledger #17 (`match_memories` drift, closed v1.0.5). Sprint 51.5b T4-CODEX live-finding ledger #18 (`memory_hybrid_search` drift, closed v1.0.6). The 3+1+1 pattern's value: Codex's MCP-wired adversarial probes catch what all-Claude lanes share-blind on. Joshua's daily-driver Claude usage went through the local rag-system path and never invoked `memory_hybrid_search` directly; Codex's MCP recall is the first probe to actually hit it.
+- **Final v1.0.x onion state** (closed across five sprints in 26 hours):
+  - v1.0.1 (51.5): mig sync + Vault UI removal + Edge Function templating + Rumen secrets shape
+  - v1.0.2 (51.6): Class M — bundled hook write-path absence
+  - v1.0.3 (51.7): Class M follow-up — wizard wire-up bug + bundled hook metadata completeness
+  - v1.0.4 (51.8): Class N — settings.json wiring lockstep drift (Brad's catch)
+  - v1.0.5 (52.1): Class A #17 — `match_memories` signature drift (Codex T4-CODEX deferred catch from 51.7)
+  - v1.0.6 (51.9): Class A #18 — `memory_hybrid_search` signature drift (Codex T4-CODEX live catch from 51.5b)
+- **Suite results.** Migration shape suite + hook matrix combined: 158/158 pass across `tests/migration-002-shape.test.js` (NEW, 7/7) + `tests/migration-001-shape.test.js` (8/8) + `tests/migration-012-shape.test.js` + `tests/migration-templating.test.js` + `tests/migration-loader-precedence.test.js` + 5 hook test files. Server suite unchanged: 40/40. Zero new fails.
+- **Sprint 51.5b in-flight at publish time.** T1/T2/T3 still probing v1.0.5 surfaces; the mid-sprint v1.0.6 patch lets T4-CODEX pivot Phase 2 from "validate v1.0.5 + workaround" to "validate v1.0.6's guard against the same drift fixture." Substrate update: Sprint 51.5b STATUS.md gets an `[orchestrator]` post announcing the patch.
+- **Pre-ship checklist + linter candidate** (Sprint 52+, unchanged from v1.0.5 notes): every `CREATE OR REPLACE FUNCTION` in a migration on a long-lived install needs a drift-tolerant prelude. Two Class A incidents in the same day from the same migration-author shape (mig 001's match_memories, mig 002's memory_hybrid_search) is proof of pattern. Worth a migration-authoring linter that flags any `create or replace function` without a corresponding `do $$ ... drop function ... end $$;` block.
+
 ## [1.0.5] - 2026-05-04
 
 > **v1.0.5 mini-sprint hotfix — Sprint 52.1: `match_memories` signature-drift guard.** Triggered by Sprint 51.7's deferred Class A side-finding (T4-CODEX 2026-05-04 11:38 ET): `packages/server/src/setup/mnestra-migrations/001_mnestra_tables.sql` declares `match_memories` with return-table columns `(id, content, source_type, category, project, metadata, similarity)`, but long-lived v0.6.x-era installs (Joshua's petvetbid, Brad's jizzard-brain) had it created earlier with the rag-system writer's drift shape `(id, content, metadata, source_type, category, project, created_at, similarity)`. Postgres rejects `CREATE OR REPLACE FUNCTION` when the return-table changes — `cannot change return type of existing function` — and the wizard's `applyMigrations()` step throws exit 5. Sprint 51.7 fixed Class M (DB failure no longer strands hook upgrade) and Sprint 51.8 fixed Class N (settings.json wiring lockstep), so this drift was the only remaining blocker keeping `termdeck init --mnestra` from finishing cleanly on existing v0.6.x installs. Single-lane direct fix, ~30 min wall-clock. Wave: `@jhizzard/termdeck@1.0.5` + `@jhizzard/termdeck-stack@0.6.5` (audit-trail bump). Mnestra and Rumen unchanged.
