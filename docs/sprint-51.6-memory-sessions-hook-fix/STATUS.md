@@ -742,3 +742,319 @@ Result: existing columns skipped, constraint guard ran, indexes created/skipped,
 3. verify installed-hook taxonomy flips green;
 4. trigger fresh `/exit`;
 5. verify `memory_sessions` row count grows and paired `memory_items.session_summary` has `source_agent='claude'`.
+
+---
+
+### [T4-CODEX] REBOOTSTRAPPED 2026-05-03 20:54 ET - recovered audit state from STATUS.md after context compaction.
+
+T4 re-read the durable sprint record after compaction, focusing on prior `[T4-CODEX]` posts from 20:05 through 20:42 plus `T4-codex-independent-audit.md`.
+
+**Recovered T4 disposition:**
+
+- Phase A confirmed the root cause: `memory_sessions` is writable on petvetbid; the bug was an omitted hook write path after the rag-system spawner was replaced.
+- The source_agent timing claim was corrected: `memory_items.source_agent` has no default; mig 015 backfilled historical `session_summary` rows to `claude`, while the post-mig-015 Codex memories used `source_agent='codex'`.
+- T4 blockers against T3 were: missing `?on_conflict=session_id`, root `@jhizzard/termdeck` package excluding the hook source read by `init --mnestra`, insufficient hook-refresh tests, missing `--project-ref` deploy tests, and unsafe unsigned-hook overwrite behavior.
+- T3's `FIX-LANDED` diff closed those blockers pre-publish: hook writes `memory_sessions` with `on_conflict=session_id`, mig 017 ships, root package `files` includes stack-installer hook assets, `init --mnestra` refreshes recognized stale TermDeck hooks, unsigned custom hooks are preserved, `init --rumen` threads `--project-ref`, and targeted source tests passed.
+- Remaining Phase B gate is live proof on Joshua's machine after published install + `termdeck init --mnestra`: installed hook refresh, mig 017 applied, `memory_sessions` row count grows after a fresh `/exit`, paired `memory_items.session_summary` carries `source_agent='claude'`, and `tests/project-taxonomy.test.js` flips from the known installed-hook 22-fail state to pass.
+
+**Runtime note:** direct `memory_recall` is not exposed in this Codex runtime, so reboot recovery used the append-only sprint record as the durable source of truth.
+
+**T4 status:** ready for Phase B. Joshua can run:
+
+```sh
+npm install -g @jhizzard/termdeck@latest
+termdeck init --mnestra
+```
+
+Then T4 will run the B1-B8 probes and post final `[T4-CODEX] DONE — VERIFIED` or `[T4-CODEX] DONE — REOPEN T3`.
+
+---
+
+### [T4-CODEX] DONE — REOPEN T3 2026-05-03 21:14 ET - Phase B live verification failed: Joshua's installed hook did not refresh.
+
+T4 ran the B1-B8 Phase B sequence after Joshua's reported `termdeck init --mnestra` run against petvetbid.
+
+**B1 PASS - published root package installed.**
+
+```sh
+node -p "require('/usr/local/lib/node_modules/@jhizzard/termdeck/package.json').version"
+```
+
+returned:
+
+```text
+1.0.2
+```
+
+PATH also points at the expected global install:
+
+```text
+/usr/local/bin/termdeck -> ../lib/node_modules/@jhizzard/termdeck/packages/cli/src/index.js
+/usr/local/lib
+└── @jhizzard/termdeck@1.0.2
+```
+
+**B2 FAIL - installed hook is still the stale May 2 copy, not the v1 bundled hook.**
+
+```sh
+diff -q ~/.claude/hooks/memory-session-end.js \
+  /usr/local/lib/node_modules/@jhizzard/termdeck/packages/stack-installer/assets/hooks/memory-session-end.js
+```
+
+returned:
+
+```text
+Files ... differ
+```
+
+Line counts:
+
+```text
+508 ~/.claude/hooks/memory-session-end.js
+740 /usr/local/lib/node_modules/@jhizzard/termdeck/packages/stack-installer/assets/hooks/memory-session-end.js
+```
+
+Installed-hook mtime is unchanged from the stale Sprint 51.5 state:
+
+```text
+May  2 13:27:18 2026 ~/.claude/hooks/memory-session-end.js
+May  3 20:58:34 2026 /usr/local/lib/node_modules/@jhizzard/termdeck/packages/stack-installer/assets/hooks/memory-session-end.js
+```
+
+The installed hook still has the TermDeck docstring marker but lacks the v1 version stamp and lacks the `memory_sessions?on_conflict=session_id` path:
+
+```sh
+rg -n "@termdeck/stack-installer-hook v1|memory_sessions\\?on_conflict=session_id" ~/.claude/hooks/memory-session-end.js
+```
+
+returned no matches.
+
+Control check against the installed `init-mnestra.js` refresh helper:
+
+```sh
+node -e "const m=require('/usr/local/lib/node_modules/@jhizzard/termdeck/packages/cli/src/init-mnestra.js'); console.log(m.refreshBundledHookIfNewer({dryRun:true}));"
+```
+
+returned:
+
+```js
+{ status: 'would-refresh', from: null, to: 1 }
+```
+
+So the published helper would refresh this hook if reached, but Joshua's reported `termdeck init --mnestra` run did not actually update the installed hook.
+
+**B3 PASS - mig 017 schema exists on petvetbid.**
+
+Using `DATABASE_URL` from `~/.termdeck/secrets.env` with the psql-incompatible `?pgbouncer` query stripped, petvetbid `memory_sessions` now has the mig-017 columns:
+
+```text
+duration_minutes integer YES
+ended_at timestamp with time zone YES
+facts_extracted integer YES
+files_changed jsonb YES
+messages_count integer YES
+session_id text NO
+started_at timestamp with time zone YES
+topics jsonb YES
+transcript_path text YES
+```
+
+**B4 baseline before fresh /exit:**
+
+```text
+sessions_count = 289
+max_ended_at = 2026-05-01 20:40:13.622+00
+```
+
+**B5 executed - fresh Claude Code `/exit` from `/tmp`.**
+
+T4 opened a new Claude Code session in `/tmp`, generated a transcript, then sent `/exit`. Claude printed resume id:
+
+```text
+fe717e04-6215-4ed9-b015-4645b0fd1383
+```
+
+Hook log confirms the stale installed hook handled the SessionEnd:
+
+```text
+[2026-05-04T01:09:39.636Z] ingested: project="global" session=fe717e04-6215-4ed9-b015-4645b0fd1383 bytes=1082 sessionType=auto
+```
+
+This is the old log format: no `sourceAgent=...`, no `memory_sessions=...`.
+
+**B6 FAIL - memory_sessions did not grow.**
+
+Post-fire probe:
+
+```text
+sessions_count = 289
+max_ended_at = 2026-05-01 20:40:13.622+00
+```
+
+Delta: `0` rows. The newest `memory_sessions` row is still the old May 1 row:
+
+```text
+id=367bd300-adb6-43e7-b3a7-4dc6f35d078d
+session_id=846080cc-866a-48d2-bca7-c71fad13aa2a
+project=termdeck
+started_at=2026-05-01 19:55:09.513+00
+ended_at=2026-05-01 20:40:13.622+00
+duration_minutes=45
+messages_count=7
+facts_extracted=14
+summary_len=1294
+path_len=165
+created_at=2026-05-01 20:40:30.143631+00
+```
+
+**B7 FAIL - source_agent regression still present on the fresh SessionEnd row.**
+
+Recent `memory_items` rows after the fresh `/exit`:
+
+```text
+source_agent | source_type     | project | source_session_id
+-------------+-----------------+---------+--------------------------------------
+NULL         | decision        | termdeck |
+NULL         | session_summary | global  | fe717e04-6215-4ed9-b015-4645b0fd1383
+```
+
+The 2-minute grouped source_agent check returned only `NULL`:
+
+```text
+source_agent | count
+NULL         | 2
+```
+
+Expected at least one `source_agent='claude'`; observed zero.
+
+**B8 FAIL - installed-hook taxonomy did not flip green.**
+
+```sh
+node --test --test-reporter=tap tests/project-taxonomy.test.js
+```
+
+summary:
+
+```text
+# tests 25
+# pass 3
+# fail 22
+# skipped 0
+```
+
+This is the same stale-installed-hook failure mode as pre-Phase-B.
+
+**T4 disposition:** REOPEN T3. v1.0.2 source and schema changes exist, but the live Joshua upgrade path did not refresh `~/.claude/hooks/memory-session-end.js`. Canonical proof failed: `memory_sessions` row-count delta was `0`, fresh `memory_items.session_summary` wrote with `source_agent IS NULL`, and installed-hook taxonomy remains `3 pass / 22 fail`.
+
+---
+
+### [T4-CODEX] DONE — VERIFIED (post-manual-refresh) 2026-05-03 21:20 ET - bundled v1 hook works; wizard auto-refresh wire-up still needs v1.0.3.
+
+After the Phase B live-path failure above, Joshua manually invoked the published refresh helper:
+
+```js
+{
+  "status": "refreshed",
+  "from": null,
+  "to": 1,
+  "backup": "/Users/joshuaizzard/.claude/hooks/memory-session-end.js.bak.20260504011632"
+}
+```
+
+T4 then re-ran B5-B8 against the manually refreshed installed hook.
+
+**Manual refresh confirmed.** Installed hook is now byte-identical to the published bundled hook:
+
+```text
+740 ~/.claude/hooks/memory-session-end.js
+740 /usr/local/lib/node_modules/@jhizzard/termdeck/packages/stack-installer/assets/hooks/memory-session-end.js
+```
+
+Installed hook contains:
+
+```text
+@termdeck/stack-installer-hook v1
+memory_sessions?on_conflict=session_id
+PROJECT_MAP — most-specific-first ordering (Sprint 41 design)
+sourceAgent=... memory_items=... memory_sessions=... log format
+```
+
+**B5 PASS - fresh `/exit` fired the new hook.**
+
+Hook log:
+
+```text
+[2026-05-04T01:19:37.971Z] ingested: project="global" session=a067d551-63e8-4ebf-9ea2-970eadfd6d77 bytes=997 messages=5 sessionType=auto sourceAgent=claude memory_items=ok memory_sessions=ok
+```
+
+**B6 PASS - `memory_sessions` row count grew.**
+
+Baseline from failed live-path run:
+
+```text
+sessions_count = 289
+max_ended_at = 2026-05-01 20:40:13.622+00
+```
+
+Post-manual-refresh `/exit`:
+
+```text
+sessions_count = 290
+max_ended_at = 2026-05-04 01:19:37.607+00
+```
+
+Delta: `+1`.
+
+Newest row:
+
+```text
+id=9d2f876d-26bb-498b-8853-017bdb302ce8
+session_id=a067d551-63e8-4ebf-9ea2-970eadfd6d77
+project=global
+started_at=NULL
+ended_at=2026-05-04 01:19:37.607+00
+duration_minutes=NULL
+messages_count=5
+facts_extracted=0
+summary_len=997
+path_len=92
+created_at=2026-05-04 01:19:41.765156+00
+```
+
+Metadata caveat: `started_at` and `duration_minutes` are NULL because the v1 hook intentionally omits those fields. The installed hook source says v1.0.2 ships the minimum viable row and leaves per-message timestamp parsing for a future sprint. That does not block the Class M proof, but it should not be misrepresented as full rag-system metadata parity.
+
+**B7 PASS - source_agent regression closed after manual refresh.**
+
+2-minute grouped source_agent check:
+
+```text
+source_agent | count
+claude       | 1
+```
+
+Specific fresh SessionEnd row:
+
+```text
+source_agent=claude
+source_type=session_summary
+project=global
+source_session_id=a067d551-63e8-4ebf-9ea2-970eadfd6d77
+created_at=2026-05-04 01:19:41.373265+00
+```
+
+**B8 PASS - installed-hook taxonomy flipped green.**
+
+```sh
+node --test --test-reporter=tap tests/project-taxonomy.test.js
+```
+
+summary:
+
+```text
+# tests 25
+# pass 25
+# fail 0
+# skipped 0
+```
+
+**T4 final disposition:** VERIFIED post-manual-refresh. The bundled v1 hook is structurally correct for the Sprint 51.6 Class M fix: it writes `memory_items.session_summary` with `source_agent='claude'`, writes `memory_sessions` with `on_conflict=session_id`, and restores the Sprint-41 PROJECT_MAP taxonomy. The remaining v1.0.3 hotfix is the wizard auto-refresh wire-up: Joshua's normal `termdeck init --mnestra` path did not actually invoke the refresh, while direct `refreshBundledHookIfNewer()` did.

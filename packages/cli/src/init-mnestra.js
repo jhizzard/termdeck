@@ -10,7 +10,9 @@
 //      existing values. Done BEFORE any database work so a later pg connect
 //      or migration failure doesn't lose the user's typed-in keys.
 //   3. Connect via `pg` using the direct URL
-//   4. Apply the six bundled Mnestra migrations in order
+//   4. Apply all bundled Mnestra migrations in order (currently 17 — count
+//      grows over time; audit-upgrade probes for any not yet applied and
+//      runs them idempotently against existing installs)
 //   5. Update ~/.termdeck/config.yaml — set rag.enabled: false (MCP-only
 //      default; opt into TermDeck-side RAG via dashboard toggle) and point
 //      at ${VAR} refs (only after migrations apply cleanly — otherwise the
@@ -75,7 +77,7 @@ const HELP = [
   '     saved values if a complete set already exists in secrets.env.',
   '  2. Writes ~/.termdeck/secrets.env IMMEDIATELY (merge-aware) so a later',
   '     pg connect or migration failure does not lose what you typed in.',
-  '  3. Connects to Postgres and applies the six Mnestra schema + RPC migrations.',
+  '  3. Connects to Postgres and applies all bundled Mnestra schema + RPC migrations.',
   '  4. Updates ~/.termdeck/config.yaml — sets rag.enabled: false (MCP-only',
   '     default) and references ${VAR} keys for credentials.',
   '  5. Verifies the Mnestra store is reachable via memory_status_aggregation().',
@@ -182,7 +184,8 @@ This wizard configures TermDeck's Tier 2 memory layer (Mnestra) by:
   4. Asking for an Anthropic API key (optional, summaries)
   5. Writing ~/.termdeck/secrets.env (before any database work, so a
      pg failure cannot lose what you typed in)
-  6. Connecting to Postgres + applying six SQL migrations
+  6. Connecting to Postgres + applying all bundled SQL migrations
+     (audit-upgrade detects + applies any missing on existing installs)
   7. Updating ~/.termdeck/config.yaml — rag.enabled: false (MCP-only
      default; toggle in dashboard later) with \${VAR} refs (only after
      migrations apply cleanly)
