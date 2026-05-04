@@ -481,6 +481,92 @@ function writeYamlConfig(dryRun) {
   else ok();
 }
 
+// Sprint 51.6 T3 — hook upgrade gap fix.
+//
+// Codex's Sprint 51.6 GAP at 20:11 ET surfaced this: the bundled session-end
+// hook ships in `packages/stack-installer/assets/hooks/memory-session-end.js`,
+// and `npm install -g @jhizzard/termdeck@latest` lands the new bundled file
+// in node_modules — but `termdeck init --mnestra` never touched
+// ~/.claude/hooks/memory-session-end.js. The user's daily-driver kept
+// running the OLD installed copy forever. v1.0.2 closes that gap by adding
+// this refresh step to init --mnestra. The version stamp in the bundled
+// hook (// @termdeck/stack-installer-hook v<N>) gates the overwrite — only
+// strictly-newer bundled stamps trigger a refresh, so a hand-edited
+// installed file with v=current stays put.
+//
+// Backup is best-effort timestamped: `<dest>.bak.<YYYYMMDDhhmmss>`. Matches
+// the pattern Joshua already had on disk from earlier stack-installer runs.
+function refreshBundledHookIfNewer(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const HOME = require('os').homedir();
+  const HOOK_DEST = opts.destPath || path.join(HOME, '.claude', 'hooks', 'memory-session-end.js');
+  // Sprint 51.6 T4-CODEX audit 20:28 ET fix: bundled hook source must be on
+  // a path that ships in @jhizzard/termdeck's npm tarball. Root package.json
+  // includes `packages/stack-installer/assets/hooks/**` (added 51.6 T3) so
+  // this path resolves both in the monorepo and in the published tarball.
+  const HOOK_SOURCE = opts.sourcePath
+    || path.join(__dirname, '..', '..', 'stack-installer', 'assets', 'hooks', 'memory-session-end.js');
+  const SIG_RE = /@termdeck\/stack-installer-hook\s+v(\d+)/;
+  const TERMDECK_MARKERS = [
+    /TermDeck session-end memory hook/,
+    /@jhizzard\/termdeck-stack/,
+    /Vendored into ~\/\.claude\/hooks\/memory-session-end\.js by @jhizzard/i,
+  ];
+
+  function readHead(p) {
+    try { return fs.readFileSync(p, 'utf8').slice(0, 4096); }
+    catch (_) { return null; }
+  }
+  function readVersion(p) {
+    const head = readHead(p);
+    if (!head) return null;
+    const m = head.match(SIG_RE);
+    return m ? parseInt(m[1], 10) : null;
+  }
+  function looksTermdeckManaged(p) {
+    const head = readHead(p);
+    if (!head) return false;
+    return TERMDECK_MARKERS.some((m) => m.test(head));
+  }
+
+  if (!fs.existsSync(HOOK_SOURCE)) {
+    return { status: 'no-bundled', message: 'bundled hook source not found' };
+  }
+  const bundled = readVersion(HOOK_SOURCE);
+  if (bundled === null) {
+    return { status: 'bundled-unsigned', message: 'bundled hook missing version stamp; skipping refresh' };
+  }
+  if (!fs.existsSync(HOOK_DEST)) {
+    if (dryRun) return { status: 'would-install', bundled };
+    fs.mkdirSync(path.dirname(HOOK_DEST), { recursive: true });
+    fs.copyFileSync(HOOK_SOURCE, HOOK_DEST);
+    fs.chmodSync(HOOK_DEST, 0o644);
+    return { status: 'installed', bundled };
+  }
+  const installed = readVersion(HOOK_DEST);
+  if (installed !== null && installed >= bundled) {
+    return { status: 'up-to-date', installed, bundled };
+  }
+  // Sprint 51.6 T4-CODEX audit 20:23 ET safety gate: an unsigned installed
+  // hook gets refreshed ONLY if it looks TermDeck-managed (carries one of
+  // the docstring markers from a prior bundled cut). A genuinely custom
+  // user hook with no TermDeck fingerprint stays put.
+  if (installed === null && !looksTermdeckManaged(HOOK_DEST)) {
+    return {
+      status: 'custom-hook-preserved',
+      message: 'installed hook lacks TermDeck-managed markers; keeping as-is. Re-run with --force-overwrite to bypass.',
+      bundled,
+    };
+  }
+  if (dryRun) return { status: 'would-refresh', from: installed, to: bundled };
+  const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+  const backup = `${HOOK_DEST}.bak.${stamp}`;
+  try { fs.copyFileSync(HOOK_DEST, backup); } catch (_) { /* best-effort */ }
+  fs.copyFileSync(HOOK_SOURCE, HOOK_DEST);
+  fs.chmodSync(HOOK_DEST, 0o644);
+  return { status: 'refreshed', from: installed, to: bundled, backup };
+}
+
 function printNextSteps() {
   process.stdout.write(`
 Mnestra is configured.
@@ -578,6 +664,27 @@ async function main(argv) {
     await applyMigrations(client, false);
     await runMnestraAudit(client, inputs.projectUrl.projectRef, false);
     writeYamlConfig(false);
+    // Sprint 51.6 T3: refresh ~/.claude/hooks/memory-session-end.js when the
+    // bundled hook's version stamp is newer than the installed copy. Closes
+    // the upgrade gap where bundled fixes never reached users' machines via
+    // the standard `npm install -g @jhizzard/termdeck@latest && termdeck
+    // init --mnestra` path. Best-effort, timestamped backup, fail-soft.
+    step('Refreshing ~/.claude/hooks/memory-session-end.js (if bundled is newer)...');
+    try {
+      const r = refreshBundledHookIfNewer({ dryRun: false });
+      if (r.status === 'refreshed') {
+        ok(`refreshed v${r.from ?? 0} → v${r.to} (backup: ${path.basename(r.backup)})`);
+      } else if (r.status === 'installed') {
+        ok(`installed v${r.bundled} (no prior copy)`);
+      } else if (r.status === 'up-to-date') {
+        ok(`up-to-date (v${r.installed})`);
+      } else {
+        ok(`(${r.status}${r.message ? ': ' + r.message : ''})`);
+      }
+    } catch (err) {
+      // Don't abort init for a hook-refresh failure — log + continue.
+      process.stdout.write(`    ! hook refresh failed: ${err.message} (continuing)\n`);
+    }
     // v0.6.9: post-write outcome verification. Confirms each migration's
     // expected schema bits actually landed — including memory_items.
     // source_session_id (the v0.6.5 column whose absence cascaded into
@@ -623,3 +730,5 @@ if (require.main === module) {
 }
 
 module.exports = main;
+// Sprint 51.6 T3 — exported for tests/init-mnestra-hook-refresh.test.js.
+module.exports.refreshBundledHookIfNewer = refreshBundledHookIfNewer;

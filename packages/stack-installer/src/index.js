@@ -525,6 +525,61 @@ function _compareHookFiles(srcPath, destPath) {
   return a.equals(b) ? 'identical' : 'different';
 }
 
+// Sprint 51.6 T3 — version-aware overwrite gate. The bundled hook carries a
+// `// @termdeck/stack-installer-hook v<N>` marker; bumping <N> means "the
+// next install should overwrite a stale copy on the user's machine even
+// under --yes." Without this, --yes preserved the existing hook (the safe
+// default for hand-edited files) and never landed bundled fixes — the gap
+// Codex surfaced in Sprint 51.6 (item #2 of the 5-part fix).
+const HOOK_SIGNATURE_REGEX = /@termdeck\/stack-installer-hook\s+v(\d+)/;
+
+function _readHookSignatureVersion(filepath) {
+  try {
+    const head = fs.readFileSync(filepath, 'utf8').slice(0, 4096);
+    const m = head.match(HOOK_SIGNATURE_REGEX);
+    return m ? parseInt(m[1], 10) : null;
+  } catch (_) { return null; }
+}
+
+// Sprint 51.6 T4-CODEX audit 20:23 ET — safety gate: only auto-overwrite an
+// unsigned installed hook when it was clearly TermDeck-managed (carries one
+// of the docstring markers from a prior bundled cut). A genuinely custom
+// user hook with no TermDeck fingerprint stays put under --yes; the user
+// gets prompted (interactive) or must `--force-overwrite`. Markers are
+// matched in the first 4KB so a long custom file with TermDeck mentions
+// in the body doesn't false-positive.
+const TERMDECK_MANAGED_MARKERS = [
+  /TermDeck session-end memory hook/,
+  /@jhizzard\/termdeck-stack/,
+  /Vendored into ~\/\.claude\/hooks\/memory-session-end\.js by @jhizzard/i,
+];
+
+function _looksTermdeckManaged(filepath) {
+  try {
+    const head = fs.readFileSync(filepath, 'utf8').slice(0, 4096);
+    return TERMDECK_MANAGED_MARKERS.some((m) => m.test(head));
+  } catch (_) { return false; }
+}
+
+// Returns true when the bundled hook's version stamp is strictly newer than
+// the installed one (or the installed file is unsigned BUT visibly TermDeck-
+// managed — older installs pre-Sprint-51.6 had no marker, treat them as v0).
+// Returns false when the bundled hook itself is unsigned (safety: a missing
+// source marker means "don't auto-overwrite") OR the installed file is
+// unsigned and looks like a custom user hook (no TermDeck fingerprint).
+// Used to gate --yes overwrite under installSessionEndHook.
+function _hookSignatureUpgradeAvailable(sourcePath, destPath) {
+  const bundled = _readHookSignatureVersion(sourcePath);
+  if (bundled === null) return false; // bundled unsigned — never auto-overwrite
+  const installed = _readHookSignatureVersion(destPath);
+  if (installed === null) {
+    // Installed has no version stamp. Only auto-overwrite if it looks
+    // TermDeck-managed; otherwise preserve as a possible user-custom hook.
+    return _looksTermdeckManaged(destPath);
+  }
+  return bundled > installed;
+}
+
 async function promptYesNo({ question, defaultYes = true }) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const suffix = defaultYes ? '(Y/n)' : '(y/N)';
@@ -583,8 +638,12 @@ async function installSessionEndHook(opts = {}) {
     statusLine(`${ANSI.dim}=${ANSI.reset}`, 'hook file', 'already present, identical contents');
     fileStatus = 'already-current';
   } else {
-    // different
-    const overwrite = opts.assumeYes ? false // --yes preserves existing on overwrite
+    // different. Sprint 51.6 T3: under --yes, consult the version stamp —
+    // a strictly newer bundled stamp (or an unsigned existing file) means
+    // we should refresh; same-or-older stamp keeps existing. This closes
+    // the upgrade gap where bundled fixes never reached users' machines.
+    const overwrite = opts.assumeYes
+      ? _hookSignatureUpgradeAvailable(sourcePath, destPath)
       : opts.forceOverwrite ? true
       : await promptOverwrite();
     if (!overwrite) {
@@ -594,6 +653,12 @@ async function installSessionEndHook(opts = {}) {
       statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would overwrite ${destPath}`);
       fileStatus = 'would-overwrite';
     } else {
+      // Sprint 51.6 T3: timestamped backup before overwrite so a hand-
+      // edited PROJECT_MAP or comment is recoverable. Matches the pattern
+      // ~/.claude/hooks/memory-session-end.js.bak.<YYYYMMDDhhmmss> Joshua
+      // already had on disk from prior installs.
+      const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      try { fs.copyFileSync(destPath, `${destPath}.bak.${stamp}`); } catch (_) { /* best-effort */ }
       fs.copyFileSync(sourcePath, destPath);
       fs.chmodSync(destPath, 0o644);
       statusLine(`${ANSI.green}↻${ANSI.reset}`, 'hook file', `overwrote ${destPath}`);
@@ -788,8 +853,15 @@ module.exports._readSettingsJson = _readSettingsJson;
 module.exports._writeSettingsJson = _writeSettingsJson;
 module.exports._isSessionEndHookEntry = _isSessionEndHookEntry;
 module.exports._compareHookFiles = _compareHookFiles;
+// Sprint 51.6 T3 — version-aware hook refresh helpers. Exported so init-mnestra
+// (and tests) can gate refresh decisions on the same logic the installer uses.
+module.exports._readHookSignatureVersion = _readHookSignatureVersion;
+module.exports._hookSignatureUpgradeAvailable = _hookSignatureUpgradeAvailable;
+module.exports.HOOK_SIGNATURE_REGEX = HOOK_SIGNATURE_REGEX;
 module.exports.installSessionEndHook = installSessionEndHook;
 module.exports.HOOK_COMMAND = HOOK_COMMAND;
+module.exports.HOOK_SOURCE = HOOK_SOURCE;
+module.exports.HOOK_DEST = HOOK_DEST;
 module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;
 module.exports.HOOK_SOURCE = HOOK_SOURCE;
 module.exports._mcpInternals = _mcpInternals;

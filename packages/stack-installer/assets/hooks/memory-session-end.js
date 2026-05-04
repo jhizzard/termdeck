@@ -36,7 +36,22 @@
  *      (last ~30 message excerpts).
  *   7. Embeds the summary via OpenAI text-embedding-3-small.
  *   8. POSTs ONE row to Supabase /rest/v1/memory_items with source_type='session_summary'.
- *   9. Logs every step to ~/.claude/hooks/memory-hook.log.
+ *   9. (Sprint 51.6 T3) POSTs ONE row to Supabase /rest/v1/memory_sessions with
+ *      Prefer: resolution=merge-duplicates so SessionEnd-fires-twice resolves
+ *      to a single row. Requires Mnestra migration 017 on canonical installs;
+ *      petvetbid already has the rich schema from rag-system bootstrap.
+ *  10. Logs every step to ~/.claude/hooks/memory-hook.log.
+ *
+ * Version stamp (Sprint 51.6 T3 — hook upgrade gap fix):
+ *   The marker `@termdeck/stack-installer-hook v<N>` below is read by both
+ *   stack-installer's installSessionEndHook (version-aware overwrite under
+ *   --yes) and `termdeck init --mnestra` (refreshBundledHookIfNewer step).
+ *   Bump the integer whenever a change to this file should overwrite an
+ *   already-installed copy on the user's machine — e.g. a new write path,
+ *   a new transcript parser, a default PROJECT_MAP change. Comment-only
+ *   tweaks do not need a bump.
+ *
+ * @termdeck/stack-installer-hook v1
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
@@ -73,13 +88,43 @@ function resolveSecretsPath() {
     || join(os.homedir(), '.termdeck', 'secrets.env');
 }
 
-// PROJECT_MAP — minimal default. Users extend by adding entries to this array.
-// Patterns match against the cwd reported by Claude Code at Stop time.
+// PROJECT_MAP — most-specific-first ordering (Sprint 41 design).
+// Patterns match against the cwd reported by Claude Code at SessionEnd.
 // First match wins; falls through to "global".
+//
+// Sprint 51.6 (T1 side finding b): a previous version shipped this array
+// empty, which caused every session to tag as "global" — orphaning rows
+// from project-scoped memory_recall queries. The default below restores
+// the most-specific-first taxonomy from Sprint 41 T1, generalized for
+// universal shipping. Users still extend in place by editing this array.
+//
+// Patterns NOT specific to Joshua's filesystem (e.g. /\/PVB\//i, /\/DOR\//i)
+// are kept because they're benign on other machines — the regex simply
+// doesn't fire on cwds that don't contain those segments. The chopin-
+// nashville catch-all stays LAST (structural invariant) so a TermDeck cwd
+// inside ChopinNashville/SideHustles/ resolves to "termdeck", not the
+// catch-all.
 const PROJECT_MAP = [
-  // Example entries — uncomment + edit, or add your own:
-  // { pattern: /\/myproject\//i,        project: 'my-project' },
-  // { pattern: /work-stuff/i,           project: 'work' },
+  // ── Active code projects (most-specific FIRST) ──
+  { pattern: /\/SideHustles\/TermDeck\/termdeck/i,           project: 'termdeck' },
+  { pattern: /\/Graciella\/engram(\/|$)/i,                    project: 'mnestra' },
+  { pattern: /\/Graciella\/rumen(\/|$)/i,                     project: 'rumen' },
+  { pattern: /\/Graciella\/rag-system(\/|$)/i,                project: 'rag-system' },
+  { pattern: /\/ChopinInBohemia\/podium(\/|$)/i,              project: 'podium' },
+  { pattern: /\/ChopinInBohemia(\/|$)/i,                      project: 'chopin-in-bohemia' },
+  { pattern: /\/SideHustles\/SchedulingApp(\/|$)/i,           project: 'chopin-scheduler' },
+  { pattern: /\/ChopinNashville\/SchedulingApp(\/|$)/i,       project: 'chopin-scheduler' },
+  { pattern: /\/Graciella\/PVB(\/|$)|\/PVB\/pvb(\/|$)/i,      project: 'pvb' },
+  { pattern: /\/Unagi\/gorgias-ticket-monitor(\/|$)/i,        project: 'claimguard' },
+  { pattern: /\/ChopinNashville\/SideHustles\/ClaimGuard(\/|$)/i, project: 'claimguard' },
+  { pattern: /\/Documents\/DOR(\/|$)/i,                       project: 'dor' },
+  { pattern: /\/Graciella\/joshuaizzard-dev(\/|$)/i,          project: 'portfolio' },
+  { pattern: /\/Graciella\/imessage-reader(\/|$)/i,           project: 'imessage-reader' },
+
+  // ── chopin-nashville catch-all (MUST be LAST among /ChopinNashville/ matchers).
+  // Sprint 35 + 41 lesson: any /ChopinNashville/-matching pattern placed below
+  // this entry gets shadowed and the row mis-tags as 'chopin-nashville'.
+  { pattern: /\/ChopinNashville(\/|$)/i,                      project: 'chopin-nashville' },
 ];
 
 const MIN_TRANSCRIPT_BYTES = parseInt(process.env.TERMDECK_HOOK_MIN_BYTES || '5000', 10);
@@ -395,6 +440,11 @@ function selectTranscriptParser(sessionType) {
   return { parser: parseAutoDetect, sessionType: 'auto' };
 }
 
+// Sprint 51.6 T3: returns `{ summary, messagesCount }` instead of just the
+// summary string. messagesCount feeds the new memory_sessions write path
+// (postMemorySession), which needs the parser-derived count without
+// reparsing the transcript. Returns null when the transcript is unreadable
+// or has fewer than 5 messages — same skip semantics as before.
 function buildSummary(transcriptPath, sessionType) {
   let raw;
   try { raw = readFileSync(transcriptPath, 'utf8'); }
@@ -418,7 +468,7 @@ function buildSummary(transcriptPath, sessionType) {
     tail.map((m) => `[${m.role}] ${m.content}`).join('\n');
   // OpenAI text-embedding-3-small accepts up to 8192 tokens (~32K chars).
   // 7000 chars is a safe headroom that survives multibyte expansion.
-  return summary.slice(0, 7000);
+  return { summary: summary.slice(0, 7000), messagesCount: messages.length };
 }
 
 async function embedText(text, openaiKey) {
@@ -494,6 +544,79 @@ async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, pr
   }
 }
 
+// Sprint 51.6 T3 — companion write to memory_sessions.
+//
+// History: the bundled hook never wrote memory_sessions until v1.0.2. Joshua's
+// PRIOR personal rag-system hook spawned process-session.ts which inserted
+// memory_sessions rows; the Sprint 38 P0 rewrite replaced that hook with a
+// Mnestra-direct hook that only wrote memory_items. Result: from 2026-05-02
+// 13:24 ET (when bundled overwrote personal) until v1.0.2, no memory_sessions
+// rows accumulated. Sprint 51.6 T1+T2+T3 documented the gap; this function
+// closes it.
+//
+// Schema target: Mnestra migration 017 brings canonical engram in line with
+// petvetbid's rag-system flavor (session_id, summary_embedding, started_at,
+// ended_at, duration_minutes, messages_count, transcript_path, etc). The
+// bundled hook writes the rich shape on every install — fresh-canonical
+// (post-mig-017) and petvetbid alike.
+//
+// Idempotency: Prefer: resolution=merge-duplicates relies on the
+// memory_sessions_session_id_key unique constraint. Mig 017 adds it where
+// absent. SessionEnd-fires-twice (e.g. /exit then PTY close) resolves to a
+// single row.
+async function postMemorySession({
+  supabaseUrl, supabaseKey,
+  summary, summaryEmbedding,
+  project, sessionId,
+  transcriptPath, messagesCount,
+  endedAt
+}) {
+  if (!sessionId) {
+    log('memory-sessions-skip: sessionId missing — cannot satisfy session_id NOT NULL/UNIQUE.');
+    return false;
+  }
+  try {
+    // Sprint 51.6 T3 / T4-CODEX audit 20:23 ET: PostgREST requires both
+    // `Prefer: resolution=merge-duplicates` AND `?on_conflict=<column>`
+    // on the URL to trigger an UPSERT. Without `on_conflict=session_id`
+    // a duplicate fire would error against memory_sessions_session_id_key.
+    const res = await fetch(`${supabaseUrl}/rest/v1/memory_sessions?on_conflict=session_id`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        summary,
+        summary_embedding: Array.isArray(summaryEmbedding)
+          ? `[${summaryEmbedding.join(',')}]`
+          : null,
+        project,
+        ended_at: (endedAt instanceof Date ? endedAt : new Date()).toISOString(),
+        messages_count: typeof messagesCount === 'number' ? messagesCount : 0,
+        transcript_path: transcriptPath || null,
+        // started_at, duration_minutes, facts_extracted, files_changed, topics
+        // intentionally omitted — column defaults apply on petvetbid; nullable
+        // on canonical (post-mig-017). Future sprint may parse per-message
+        // timestamps to derive started_at + duration; v1.0.2 ships the
+        // minimum viable row.
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      log(`memory-sessions-insert-failed: HTTP ${res.status} ${body.slice(0, 200)}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    log(`memory-sessions-insert-exception: ${e.message}`);
+    return false;
+  }
+}
+
 async function processStdinPayload(input) {
   let data;
   try { data = JSON.parse(input); }
@@ -543,13 +666,14 @@ async function processStdinPayload(input) {
   const project = detectProject(cwd);
   debug(`project="${project}", session=${sessionId}, sessionType=${sessionType}`);
 
-  const summary = buildSummary(transcriptPath, sessionType);
-  if (!summary) return;
+  const built = buildSummary(transcriptPath, sessionType);
+  if (!built) return;
+  const { summary, messagesCount } = built;
 
   const embedding = await embedText(summary, env.openaiKey);
   if (!embedding) return;
 
-  const ok = await postMemoryItem({
+  const itemOk = await postMemoryItem({
     supabaseUrl: env.supabaseUrl,
     supabaseKey: env.supabaseKey,
     content: summary,
@@ -559,7 +683,24 @@ async function processStdinPayload(input) {
     sourceAgent,
   });
 
-  if (ok) log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)}`);
+  // Sprint 51.6 T3: companion memory_sessions write. Independent of the
+  // memory_items write — a memory_items failure shouldn't suppress the
+  // memory_sessions row, and vice versa. Both errors fail-soft.
+  const sessionOk = await postMemorySession({
+    supabaseUrl: env.supabaseUrl,
+    supabaseKey: env.supabaseKey,
+    summary,
+    summaryEmbedding: embedding,
+    project,
+    sessionId,
+    transcriptPath,
+    messagesCount,
+    endedAt: new Date(),
+  });
+
+  if (itemOk || sessionOk) {
+    log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} messages=${messagesCount} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)} memory_items=${itemOk ? 'ok' : 'fail'} memory_sessions=${sessionOk ? 'ok' : 'fail'}`);
+  }
 }
 
 // Module-export contract for testability. When run as a script (require.main === module),
@@ -579,6 +720,8 @@ if (require.main === module) {
     buildSummary,
     embedText,
     postMemoryItem,
+    // Sprint 51.6 T3 — memory_sessions write companion.
+    postMemorySession,
     processStdinPayload,
     LOG_FILE,
     // Sprint 45 T4 — adapter-pluggable transcript-parser surface.

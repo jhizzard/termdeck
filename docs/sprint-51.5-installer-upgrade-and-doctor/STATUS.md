@@ -587,3 +587,5 @@ Engram src/ layout reality (no src/cli/ — sibling modules + mcp-server/index.t
 Bundled mnestra-migrations 013/014/015 sync gap as a Class H instance in our own repo [termdeck/architecture/bug_fix] + 7-probe-not-9 design rationale covering mig 012 DML-only omission and mig 016 v1.0.2 deferral [termdeck/architecture/decision] + Rumen 002/003 templating regression-guard invariant tied to test 'rumen 002 templating: applied SQL has projectRef substituted' [termdeck/convention/decision] + dual-tree Edge Function source coordination + sync-rumen-functions order-of-ops at sprint close [termdeck/workflow/bug_fix]. Hook-bypass MCP path used (sessions hook broken pending Sprint 51.6 / v1.0.2).
 
 ---
+
+[CODEX] MEMORIES-LANDED — 4 memories — 2026-05-03 19:01:56 ET

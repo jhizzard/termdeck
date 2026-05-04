@@ -506,6 +506,8 @@ const {
   buildSummary,
   embedText,
   postMemoryItem,
+  // Sprint 51.6 T3 — memory_sessions write companion.
+  postMemorySession,
   processStdinPayload,
   PROJECT_MAP,
   // Sprint 50 T2 — source_agent provenance helpers.
@@ -550,26 +552,84 @@ function withEnv(vars, fn) {
   };
 }
 
-test('PROJECT_MAP defaults to empty (users extend in place)', () => {
+// Sprint 51.6 T3: bundled hook ships a non-empty PROJECT_MAP by default.
+// Sprint 41 T1's most-specific-first taxonomy was lost when stack-installer
+// overwrote Joshua's personal hook on 2026-05-02 — every memory_items row
+// since then mis-tagged as "global". v1.0.2 ships the canonical 14-entry
+// map as a default so users get sensible tagging out of the box.
+test('PROJECT_MAP defaults to most-specific-first taxonomy (Sprint 41)', () => {
   assert.equal(Array.isArray(PROJECT_MAP), true);
-  assert.equal(PROJECT_MAP.length, 0, 'bundled hook ships with no project mappings — users add their own');
+  assert.ok(PROJECT_MAP.length >= 14, `expected ≥14 entries, got ${PROJECT_MAP.length}`);
+  for (const entry of PROJECT_MAP) {
+    assert.ok(entry.pattern instanceof RegExp, 'each entry must have a regex pattern');
+    assert.equal(typeof entry.project, 'string', 'each entry must have a project string');
+  }
 });
 
-test('detectProject returns "global" with empty PROJECT_MAP', () => {
-  assert.equal(detectProject('/Users/whatever/some/project'), 'global');
+// Structural invariant Sprint 41 promised: chopin-nashville catch-all is
+// the LAST /ChopinNashville/-matching entry. Re-introducing this check at
+// the bundled-hook level keeps Joshua's installs and Brad's installs from
+// drifting into the chopin-nashville junk-drawer bug ever again.
+test('PROJECT_MAP: chopin-nashville catch-all is the LAST /ChopinNashville/ matcher', () => {
+  const matchIndices = PROJECT_MAP
+    .map((entry, i) => entry.pattern.test('/x/ChopinNashville/x') ? i : -1)
+    .filter((i) => i !== -1);
+  assert.ok(matchIndices.length > 0, 'at least one entry must match a ChopinNashville cwd');
+  const lastIndex = matchIndices[matchIndices.length - 1];
+  assert.equal(
+    PROJECT_MAP[lastIndex].project, 'chopin-nashville',
+    'the LAST ChopinNashville-matching entry must resolve to chopin-nashville (the catch-all)',
+  );
+});
+
+test('detectProject: TermDeck cwd resolves to "termdeck", not chopin-nashville', () => {
+  assert.equal(
+    detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck'),
+    'termdeck'
+  );
+  assert.equal(
+    detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/packages/server'),
+    'termdeck'
+  );
+});
+
+test('detectProject: engram folder resolves to "mnestra"', () => {
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/engram'), 'mnestra');
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/engram/migrations'), 'mnestra');
+});
+
+test('detectProject: rumen / rag-system / podium / chopin-in-bohemia split correctly', () => {
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/rumen'), 'rumen');
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/rag-system'), 'rag-system');
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/2026/ChopinInBohemia/podium'), 'podium');
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/2026/ChopinInBohemia'), 'chopin-in-bohemia');
+});
+
+test('detectProject: legitimate ChopinNashville work falls through to chopin-nashville', () => {
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/Performances'), 'chopin-nashville');
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/Sponsors'), 'chopin-nashville');
+  assert.equal(detectProject('/Users/joshuaizzard/Documents/Graciella/ChopinNashville/Jury'), 'chopin-nashville');
+});
+
+test('detectProject returns "global" when no pattern matches', () => {
+  assert.equal(detectProject('/Users/whatever/some/random/path'), 'global');
+  assert.equal(detectProject('/tmp/scratch'), 'global');
   assert.equal(detectProject(''), 'global');
 });
 
 test('detectProject matches when entries are added at runtime',
   // PROJECT_MAP is a const exported reference; mutating it is the same
-  // as what users do when editing the file. Push, test, pop.
+  // as what users do when editing the file. Snapshot defaults, push, test,
+  // restore — must NOT clobber the Sprint-51.6 default array (other tests
+  // depend on it).
   () => {
+    const snapshot = PROJECT_MAP.slice();
     PROJECT_MAP.push({ pattern: /\/myproject\//i, project: 'my-project' });
     try {
       assert.equal(detectProject('/Users/x/myproject/src'), 'my-project');
-      assert.equal(detectProject('/Users/x/other/dir'), 'global');
     } finally {
       PROJECT_MAP.length = 0;
+      PROJECT_MAP.push(...snapshot);
     }
   }
 );
@@ -684,10 +744,12 @@ test('buildSummary builds header + tail of message excerpts', () => {
   }
   const p = freshTmpFile(lines.join('\n'));
   try {
-    const summary = buildSummary(p);
-    assert.match(summary, /^Session with 8 messages\./);
-    assert.match(summary, /\[user\] msg-0/);
-    assert.match(summary, /\[assistant\] msg-7/);
+    // Sprint 51.6 T3: buildSummary now returns { summary, messagesCount }.
+    const built = buildSummary(p);
+    assert.equal(built.messagesCount, 8);
+    assert.match(built.summary, /^Session with 8 messages\./);
+    assert.match(built.summary, /\[user\] msg-0/);
+    assert.match(built.summary, /\[assistant\] msg-7/);
   } finally { fs.unlinkSync(p); }
 });
 
@@ -703,9 +765,10 @@ test('buildSummary handles array-shape content (Claude Code format)', () => {
   }
   const p = freshTmpFile(lines.join('\n'));
   try {
-    const summary = buildSummary(p);
-    assert.match(summary, /block-0/);
-    assert.match(summary, /block-5/);
+    const built = buildSummary(p);
+    assert.equal(built.messagesCount, 6);
+    assert.match(built.summary, /block-0/);
+    assert.match(built.summary, /block-5/);
   } finally { fs.unlinkSync(p); }
 });
 
@@ -719,8 +782,9 @@ test('buildSummary truncates to 7000 chars', () => {
   ).join('\n');
   const p = freshTmpFile(lines);
   try {
-    const summary = buildSummary(p);
-    assert.equal(summary.length, 7000);
+    const built = buildSummary(p);
+    assert.equal(built.messagesCount, 35);
+    assert.equal(built.summary.length, 7000);
   } finally { fs.unlinkSync(p); }
 });
 
@@ -736,8 +800,9 @@ test('buildSummary skips malformed JSONL lines without crashing', () => {
   ].join('\n');
   const p = freshTmpFile(lines);
   try {
-    const summary = buildSummary(p);
-    assert.match(summary, /Session with 5 messages\./);
+    const built = buildSummary(p);
+    assert.equal(built.messagesCount, 5);
+    assert.match(built.summary, /Session with 5 messages\./);
   } finally { fs.unlinkSync(p); }
 });
 
@@ -776,11 +841,12 @@ test('buildSummary handles Gemini single-JSON-object transcript', () => {
   });
   const p = freshTmpFile(transcript);
   try {
-    const summary = buildSummary(p);
-    assert.match(summary, /^Session with 6 messages\./,
+    const built = buildSummary(p);
+    assert.equal(built.messagesCount, 6);
+    assert.match(built.summary, /^Session with 6 messages\./,
       'Gemini transcript should yield a 6-message summary');
-    assert.match(summary, /\[user\] gem-msg-0/);
-    assert.match(summary, /\[assistant\] gem-msg-5/,
+    assert.match(built.summary, /\[user\] gem-msg-0/);
+    assert.match(built.summary, /\[assistant\] gem-msg-5/,
       'type=gemini → role=assistant in the summary header');
   } finally { fs.unlinkSync(p); }
 });
@@ -794,10 +860,11 @@ test('buildSummary Gemini-detection does NOT swallow Claude JSONL', () => {
   ).join('\n');
   const p = freshTmpFile(lines);
   try {
-    const summary = buildSummary(p);
-    assert.match(summary, /Session with 6 messages\./);
-    assert.match(summary, /claude-0/);
-    assert.match(summary, /claude-5/);
+    const built = buildSummary(p);
+    assert.equal(built.messagesCount, 6);
+    assert.match(built.summary, /Session with 6 messages\./);
+    assert.match(built.summary, /claude-0/);
+    assert.match(built.summary, /claude-5/);
   } finally { fs.unlinkSync(p); }
 });
 
@@ -987,8 +1054,11 @@ test('processStdinPayload skips on small transcript', async () => {
   } finally { fs.unlinkSync(small); }
 });
 
-test('processStdinPayload end-to-end: env present + good transcript → embed + post fire', async () => {
-  // Build a valid transcript above the 5KB threshold
+test('processStdinPayload end-to-end: env present + good transcript → embed + memory_items + memory_sessions fire', async () => {
+  // Sprint 51.6 T3: bundled hook now writes BOTH memory_items AND
+  // memory_sessions in a successful fire. Test asserts the three calls
+  // (1 OpenAI embeddings + 1 Supabase memory_items + 1 Supabase memory_sessions)
+  // and validates the memory_sessions row shape.
   const lines = [];
   for (let i = 0; i < 25; i++) {
     lines.push(JSON.stringify({
@@ -999,7 +1069,7 @@ test('processStdinPayload end-to-end: env present + good transcript → embed + 
 
   const calls = [];
   const fetchMock = async (url, opts) => {
-    calls.push({ url, body: JSON.parse(opts.body) });
+    calls.push({ url, body: JSON.parse(opts.body), headers: opts.headers });
     if (url.includes('openai.com')) {
       return { ok: true, json: async () => ({ data: [{ embedding: new Array(1536).fill(0) }] }) };
     }
@@ -1020,14 +1090,131 @@ test('processStdinPayload end-to-end: env present + good transcript → embed + 
 
   try {
     await setEnv();
-    assert.equal(calls.length, 2, 'expected one OpenAI call + one Supabase call');
+    assert.equal(calls.length, 3, 'expected 1 OpenAI + 1 memory_items + 1 memory_sessions');
     assert.match(calls[0].url, /openai\.com\/v1\/embeddings/);
     assert.equal(calls[0].body.model, 'text-embedding-3-small');
-    assert.match(calls[1].url, /\/rest\/v1\/memory_items$/);
-    assert.equal(calls[1].body.source_type, 'session_summary');
-    assert.equal(calls[1].body.project, 'global');
-    assert.equal(calls[1].body.source_session_id, 'sess-42');
+
+    // memory_items POST (existing).
+    const itemCall = calls.find((c) => /\/rest\/v1\/memory_items$/.test(c.url));
+    assert.ok(itemCall, 'expected memory_items POST');
+    assert.equal(itemCall.body.source_type, 'session_summary');
+    assert.equal(itemCall.body.project, 'global');
+    assert.equal(itemCall.body.source_session_id, 'sess-42');
+
+    // memory_sessions POST (Sprint 51.6 T3 — new). URL must include
+    // ?on_conflict=session_id for PostgREST upsert behavior.
+    const sessionCall = calls.find((c) => /\/rest\/v1\/memory_sessions\?on_conflict=session_id$/.test(c.url));
+    assert.ok(sessionCall, 'expected memory_sessions POST with on_conflict=session_id');
+    assert.equal(sessionCall.body.session_id, 'sess-42');
+    assert.equal(sessionCall.body.project, 'global');
+    assert.equal(typeof sessionCall.body.summary, 'string');
+    assert.match(sessionCall.body.summary, /^Session with 25 messages\./);
+    assert.match(sessionCall.body.summary_embedding, /^\[0(?:,0)*\]$/, 'embedding serialized as PG array literal');
+    assert.equal(sessionCall.body.messages_count, 25);
+    assert.equal(sessionCall.body.transcript_path, transcriptPath);
+    assert.match(sessionCall.body.ended_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    assert.equal(sessionCall.headers['Prefer'], 'resolution=merge-duplicates,return=minimal');
   } finally { fs.unlinkSync(transcriptPath); }
+});
+
+// Sprint 51.6 T3 — postMemorySession unit tests (mirrors postMemoryItem suite).
+
+test('postMemorySession POSTs the right shape to /rest/v1/memory_sessions with on_conflict upsert', withMockedFetch(
+  async (url, opts) => {
+    // Sprint 51.6 T3: URL must carry ?on_conflict=session_id for PostgREST
+    // upsert to merge on duplicate session_id (fired-twice idempotency).
+    assert.equal(url, 'https://abc.supabase.co/rest/v1/memory_sessions?on_conflict=session_id');
+    assert.equal(opts.method, 'POST');
+    assert.equal(opts.headers['apikey'], 'service-key');
+    assert.equal(opts.headers['Authorization'], 'Bearer service-key');
+    assert.equal(opts.headers['Prefer'], 'resolution=merge-duplicates,return=minimal');
+    const body = JSON.parse(opts.body);
+    assert.equal(body.session_id, 'sess-99');
+    assert.equal(body.project, 'termdeck');
+    assert.equal(body.summary, 'summary text');
+    assert.equal(body.summary_embedding, '[0.1,0.2,0.3]');
+    assert.equal(body.messages_count, 12);
+    assert.equal(body.transcript_path, '/tmp/t.jsonl');
+    assert.match(body.ended_at, /^2026-/);
+    return { ok: true };
+  },
+  async () => {
+    const ok = await postMemorySession({
+      supabaseUrl: 'https://abc.supabase.co',
+      supabaseKey: 'service-key',
+      summary: 'summary text',
+      summaryEmbedding: [0.1, 0.2, 0.3],
+      project: 'termdeck',
+      sessionId: 'sess-99',
+      transcriptPath: '/tmp/t.jsonl',
+      messagesCount: 12,
+      endedAt: new Date('2026-05-03T20:00:00Z'),
+    });
+    assert.equal(ok, true);
+  }
+));
+
+test('postMemorySession skips when sessionId is missing (cannot satisfy NOT NULL/UNIQUE)', async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('should not fetch when sessionId missing'); };
+  try {
+    const ok = await postMemorySession({
+      supabaseUrl: 'u', supabaseKey: 'k', summary: 's', summaryEmbedding: [1],
+      project: 'p', sessionId: '', transcriptPath: 't', messagesCount: 5, endedAt: new Date(),
+    });
+    assert.equal(ok, false);
+  } finally { globalThis.fetch = orig; }
+});
+
+test('postMemorySession returns false on non-2xx', withMockedFetch(
+  async () => ({ ok: false, status: 400, text: async () => 'bad request' }),
+  async () => {
+    const ok = await postMemorySession({
+      supabaseUrl: 'u', supabaseKey: 'k', summary: 's', summaryEmbedding: [1],
+      project: 'p', sessionId: 'sid', transcriptPath: 't', messagesCount: 1, endedAt: new Date(),
+    });
+    assert.equal(ok, false);
+  }
+));
+
+test('postMemorySession returns false on fetch exception', withMockedFetch(
+  async () => { throw new Error('refused'); },
+  async () => {
+    const ok = await postMemorySession({
+      supabaseUrl: 'u', supabaseKey: 'k', summary: 's', summaryEmbedding: [1],
+      project: 'p', sessionId: 'sid', transcriptPath: 't', messagesCount: 1, endedAt: new Date(),
+    });
+    assert.equal(ok, false);
+  }
+));
+
+test('postMemorySession allows null summary_embedding when not an array', withMockedFetch(
+  async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    assert.equal(body.summary_embedding, null);
+    return { ok: true };
+  },
+  async () => {
+    const ok = await postMemorySession({
+      supabaseUrl: 'u', supabaseKey: 'k', summary: 's', summaryEmbedding: null,
+      project: 'p', sessionId: 'sid', transcriptPath: 't', messagesCount: 1, endedAt: new Date(),
+    });
+    assert.equal(ok, true);
+  }
+));
+
+// Sprint 51.6 T3 — bundled hook carries a version stamp comment that
+// stack-installer + init-mnestra read to decide whether to overwrite a
+// stale installed hook. This test pins the marker so a future PR that
+// removes/breaks it fails loud.
+test('bundled hook has @termdeck/stack-installer-hook version stamp', () => {
+  const src = fs.readFileSync(path.resolve(
+    __dirname, '..', 'packages', 'stack-installer', 'assets', 'hooks', 'memory-session-end.js'
+  ), 'utf8').slice(0, 4096);
+  const m = src.match(/@termdeck\/stack-installer-hook\s+v(\d+)/);
+  assert.ok(m, 'bundled hook must contain `@termdeck/stack-installer-hook v<N>` marker');
+  const v = parseInt(m[1], 10);
+  assert.ok(Number.isInteger(v) && v >= 1, 'version stamp must be a positive integer');
 });
 
 test('processStdinPayload skips when env vars missing (no fetch call)', async () => {

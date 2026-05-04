@@ -337,13 +337,20 @@ async function runRumenAudit(projectRef, secrets, dryRun) {
       pgClient: client,
       projectRef
     });
-    if (result.applied.length === 0 && result.errors.length === 0) {
+    if (result.applied.length === 0 && result.errors.length === 0 && result.skipped.length === 0) {
       ok(`(install up to date — ${result.probed.length} probes all present)`);
       return true;
     }
-    ok(`(probed ${result.probed.length}, applied ${result.applied.length})`);
+    ok(`(probed ${result.probed.length}, applied ${result.applied.length}, skipped ${result.skipped.length})`);
     for (const name of result.applied) {
       process.stdout.write(`    ✓ applied ${name}\n`);
+    }
+    // Sprint 51.6 T3 — Bug D: surface skipped[] entries (functionSource
+    // probes that detected drift but can't auto-redeploy from audit). The
+    // wizard will redeploy below in the deployFunctions step, which fixes
+    // the drift; this print just makes the diagnosis visible.
+    for (const s of result.skipped) {
+      process.stdout.write(`    ⊘ skipped ${s.name}: ${s.reason}\n`);
     }
     for (const e of result.errors) {
       process.stdout.write(`    ! ${e.name}: ${e.error}\n`);
@@ -363,7 +370,20 @@ async function runRumenAudit(projectRef, secrets, dryRun) {
 // copied verbatim. If a future function adds a placeholder, list it here.
 const FUNCTIONS_WITH_VERSION_PLACEHOLDER = new Set(['rumen-tick']);
 
-function deployFunctions(rumenVersion, dryRun) {
+// Sprint 51.6 T3 — `projectRef` is required and passed explicitly to every
+// `supabase functions deploy` invocation as `--project-ref <ref>`. Brad's
+// 2026-05-03 jizzard-brain install hit Bug C: `supabase link --project-ref`
+// runs successfully (audit-upgrade probes confirm the link is live), but a
+// few subprocess calls later `supabase functions deploy` errors with
+// `Cannot find project ref. Have you run supabase link?` because the link
+// state persists per-cwd in supabase/config.toml and the staged-functions
+// directory has none. Threading --project-ref through dodges link-state
+// coupling entirely. The flag is supported by supabase CLI v1.x and v2.x.
+function deployFunctions(rumenVersion, projectRef, dryRun) {
+  if (!projectRef || typeof projectRef !== 'string') {
+    fail('deployFunctions: projectRef is required (Sprint 51.6 T3 — explicit --project-ref to dodge subprocess link-state isolation)');
+    return false;
+  }
   const fnNames = migrations.listRumenFunctions();
   if (fnNames.length === 0) {
     fail('no Rumen Edge Function source found in bundled setup or @jhizzard/rumen package');
@@ -390,10 +410,14 @@ function deployFunctions(rumenVersion, dryRun) {
   ok();
 
   for (const name of fnNames) {
-    step(`Running: supabase functions deploy ${name} --no-verify-jwt...`);
-    const r = runShell('supabase', ['functions', 'deploy', name, '--no-verify-jwt'], {
-      cwd: stage
-    });
+    // Sprint 51.6 T3 — `--project-ref <ref>` explicit, dodging supabase
+    // link-state subprocess isolation (Bug C, Brad's 2026-05-03 install).
+    step(`Running: supabase functions deploy ${name} --project-ref ${projectRef} --no-verify-jwt...`);
+    const r = runShell('supabase', [
+      'functions', 'deploy', name,
+      '--project-ref', projectRef,
+      '--no-verify-jwt',
+    ], { cwd: stage });
     if (!r.ok) {
       fail(`deploy of ${name} failed (exit ${r.code})`);
       return false;
@@ -997,7 +1021,7 @@ async function main(argv) {
     process.stderr.write(`  ! falling back to pinned FALLBACK_RUMEN_VERSION=${FALLBACK_RUMEN_VERSION}\n`);
   }
 
-  if (!deployFunctions(resolved.version, flags.dryRun)) return 6;
+  if (!deployFunctions(resolved.version, projectRef, flags.dryRun)) return 6;
 
   // Sprint 51.5 T3: install-time prompt for AI edge classification. Sets
   // secrets.GRAPH_LLM_CLASSIFY in-memory; the per-secret loop below picks
@@ -1042,6 +1066,9 @@ module.exports._wireAccessTokenInMcpJson = wireAccessTokenInMcpJson;
 // Sprint 43 T3: stage helper exposed so init-rumen-deploy.test.js can pin
 // the multi-function staging contract without shelling out to `supabase`.
 module.exports._stageRumenFunctions = stageRumenFunctions;
+// Sprint 51.6 T3 — exported for tests/init-rumen-project-ref.test.js so the
+// --project-ref invariant can be asserted without spawning a real shell.
+module.exports._deployFunctions = deployFunctions;
 // Sprint 51.5 T3: per-secret CLI loop, Vault SQL-Editor URL builder, and
 // Vault-secret ensure helper exposed for tests/init-rumen-secrets-per-call,
 // init-rumen-graph-llm, and init-rumen-vault-deeplinks.

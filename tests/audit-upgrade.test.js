@@ -81,7 +81,8 @@ function defaultMockMigrations() {
       '/mock/010_memory_recall_graph.sql',
       '/mock/013_reclassify_uncertain.sql',
       '/mock/014_explicit_grants.sql',
-      '/mock/015_source_agent.sql'
+      '/mock/015_source_agent.sql',
+      '/mock/017_memory_sessions_session_metadata.sql'
     ],
     rumenFiles: [
       '/mock/002_pg_cron_schedule.sql',
@@ -98,6 +99,8 @@ function defaultMockMigrations() {
         'grant select, insert, update, delete on all tables in schema public to service_role;',
       '015_source_agent.sql':
         'alter table memory_items add column if not exists source_agent text;',
+      '017_memory_sessions_session_metadata.sql':
+        'alter table memory_sessions add column if not exists session_id text;',
       '002_pg_cron_schedule.sql':
         "select cron.schedule('rumen-tick', '*/15 * * * *', $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/rumen-tick'); $$);",
       '003_graph_inference_schedule.sql':
@@ -106,33 +109,72 @@ function defaultMockMigrations() {
   });
 }
 
+// Sprint 51.6 T3 — fetch mock for functionSource probe tests. Returns a
+// configurable body string; a "current" body contains the SUPABASE_DB_URL
+// fallback marker, a "stale" one does not.
+function makeFetchMock(spec) {
+  return async (url, opts) => {
+    const m = url.match(/\/projects\/([^/]+)\/functions\/([^/]+)\/body/);
+    if (!m) {
+      throw new Error(`unexpected fetch URL: ${url}`);
+    }
+    const slug = m[2];
+    const cfg = spec[slug];
+    if (!cfg) {
+      return { ok: false, status: 404, text: async () => `no mock for ${slug}` };
+    }
+    if (cfg.networkError) throw new Error(cfg.networkError);
+    return {
+      ok: cfg.ok !== false,
+      status: cfg.status || 200,
+      text: async () => cfg.body || '',
+    };
+  };
+}
+
 // ── Probe-set sanity ────────────────────────────────────────────────────────
 
-test('PROBES has 7 entries covering 5 mnestra + 2 rumen targets', () => {
-  assert.equal(PROBES.length, 7);
+// Sprint 51.6 T3: probe set grows from 7 to 10 — adds memory_sessions.session_id
+// (mig 017) plus two functionSource probes (Bug D — rumen-tick + graph-inference
+// deployed source drift detection).
+test('PROBES has 10 entries covering 6 mnestra + 4 rumen targets', () => {
+  assert.equal(PROBES.length, 10);
   const mnestra = PROBES.filter((p) => p.kind === 'mnestra');
   const rumen = PROBES.filter((p) => p.kind === 'rumen');
-  assert.equal(mnestra.length, 5);
-  assert.equal(rumen.length, 2);
-  // Every probe maps to a bundled migration file.
-  for (const p of PROBES) {
+  assert.equal(mnestra.length, 6);
+  assert.equal(rumen.length, 4);
+  // Migration-backed probes still need a bundled file + probeSql.
+  for (const p of PROBES.filter((q) => q.probeKind !== 'functionSource')) {
     assert.ok(p.migrationFile, `probe ${p.name} missing migrationFile`);
     assert.ok(p.probeSql, `probe ${p.name} missing probeSql`);
   }
+  // functionSource probes carry functionSlug + requiredMarker, no SQL/migration.
+  for (const p of PROBES.filter((q) => q.probeKind === 'functionSource')) {
+    assert.ok(p.functionSlug, `functionSource probe ${p.name} missing functionSlug`);
+    assert.ok(p.requiredMarker, `functionSource probe ${p.name} missing requiredMarker`);
+  }
   // Both rumen schedule probes must be templated (require projectRef).
-  assert.equal(rumen.every((p) => p.templated === true), true,
+  const cronProbes = rumen.filter((p) => p.probeKind !== 'functionSource');
+  assert.equal(cronProbes.every((p) => p.templated === true), true,
     'both rumen schedule probes must be templated');
 });
 
-test('PROBES order matches dependency requirement: M-009 before M-013, M-013 before M-015', () => {
+test('PROBES order matches dependency requirement: M-009 before M-013, M-013 before M-015, M-015 before M-017', () => {
   const idx = (name) => PROBES.findIndex((p) => p.name === name);
   assert.ok(idx('memory_relationships.weight') < idx('memory_items.reclassified_by'));
   assert.ok(idx('memory_items.reclassified_by') < idx('memory_items.source_agent'));
+  // Sprint 51.6: mig 017 (memory_sessions.session_id) lands AFTER mig 015.
+  assert.ok(idx('memory_items.source_agent') < idx('memory_sessions.session_id'));
 });
 
 // ── Behavior on a fresh / up-to-date install ────────────────────────────────
 
-test('all probes present → applied=[] (idempotent up-to-date case)', async () => {
+// Sprint 51.6 T3: existing SQL-probe tests filter functionSource probes out
+// so they exercise only the 8 migration-backed probes (6 mnestra + 2 rumen
+// cron). functionSource probes have their own dedicated tests below.
+const SQL_PROBES = PROBES.filter((p) => p.probeKind !== 'functionSource');
+
+test('all SQL probes present → applied=[] (idempotent up-to-date case)', async () => {
   // Every probe SQL returns 1 row → present. Nothing to apply.
   const client = makePgClient([
     { match: 'information_schema.columns', rows: [{ present: 1 }] },
@@ -144,16 +186,17 @@ test('all probes present → applied=[] (idempotent up-to-date case)', async () 
   const result = await auditUpgrade({
     pgClient: client,
     projectRef: 'abc123def456',
+    probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.probed.length, 7);
-  assert.equal(result.present.length, 7);
+  assert.equal(result.probed.length, 8);
+  assert.equal(result.present.length, 8);
   assert.equal(result.missing.length, 0);
   assert.equal(result.applied.length, 0);
   assert.equal(result.errors.length, 0);
 });
 
-test('all probes absent → all 7 migrations apply in PROBES order', async () => {
+test('all SQL probes absent → all 8 migrations apply in PROBES order', async () => {
   // Default makePgClient returns [] for any non-matched SQL → all probes absent.
   // Apply queries also succeed (return []).
   const client = makePgClient([]);
@@ -161,13 +204,14 @@ test('all probes absent → all 7 migrations apply in PROBES order', async () =>
   const result = await auditUpgrade({
     pgClient: client,
     projectRef: 'abc123def456',
+    probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.missing.length, 7);
-  assert.equal(result.applied.length, 7);
+  assert.equal(result.missing.length, 8);
+  assert.equal(result.applied.length, 8);
   assert.equal(result.errors.length, 0);
-  // Apply order matches PROBES order.
-  assert.deepEqual(result.applied, PROBES.map((p) => p.name));
+  // Apply order matches PROBES order (filtered).
+  assert.deepEqual(result.applied, SQL_PROBES.map((p) => p.name));
 });
 
 // ── Partial drift ───────────────────────────────────────────────────────────
@@ -210,10 +254,13 @@ test('partial drift: weight present, source_agent absent → only 015 applies', 
   const result = await auditUpgrade({
     pgClient: client,
     projectRef: 'abc123def456',
+    probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.deepEqual(result.missing, ['memory_items.source_agent']);
-  assert.deepEqual(result.applied, ['memory_items.source_agent']);
+  // mig 017's probe SQL also asks for 'session_id' — it's not in the canned
+  // answers above, so it ALSO comes back absent; both 015 and 017 apply.
+  assert.deepEqual(result.missing, ['memory_items.source_agent', 'memory_sessions.session_id']);
+  assert.deepEqual(result.applied, ['memory_items.source_agent', 'memory_sessions.session_id']);
   assert.equal(result.errors.length, 0);
 });
 
@@ -226,14 +273,15 @@ test('dryRun=true surfaces missing without applying', async () => {
     pgClient: client,
     projectRef: 'abc123def456',
     dryRun: true,
+    probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.missing.length, 7);
+  assert.equal(result.missing.length, 8);
   assert.equal(result.applied.length, 0,
     'dryRun must not apply anything');
   assert.equal(result.errors.length, 0);
-  // Calls should be exactly 7 probes (one per target), no apply queries.
-  assert.equal(client.calls.length, 7);
+  // Calls should be exactly 8 probes (one per SQL target), no apply queries.
+  assert.equal(client.calls.length, 8);
 });
 
 // ── Templating regression guard (Brad 2026-05-03 takeaway #5) ───────────────
@@ -346,12 +394,15 @@ test('bundled mnestra-migrations directory contains 013, 014, 015 (Sprint 51.5 s
     'M-015 must be in bundled set');
 });
 
-test('every PROBES.migrationFile resolves to a real bundled file', () => {
+test('every migration-backed PROBES.migrationFile resolves to a real bundled file', () => {
   const mnestraFiles = realMigrations.listMnestraMigrations()
     .map((f) => path.basename(f));
   const rumenFiles = realMigrations.listRumenMigrations()
     .map((f) => path.basename(f));
-  for (const probe of PROBES) {
+  // Sprint 51.6 T3: functionSource probes do not have a migrationFile —
+  // their fix is a redeploy via init-rumen, not an SQL migration.
+  const migrationProbes = PROBES.filter((p) => p.probeKind !== 'functionSource');
+  for (const probe of migrationProbes) {
     const set = probe.kind === 'mnestra' ? mnestraFiles : rumenFiles;
     assert.ok(set.includes(probe.migrationFile),
       `probe ${probe.name} references ${probe.migrationFile} but it is not in the bundled ${probe.kind} migration set`);
@@ -391,5 +442,142 @@ test('packages/server/src/setup index re-exports auditUpgrade', () => {
   assert.equal(typeof setup.auditUpgrade.auditUpgrade, 'function');
   assert.ok(Array.isArray(setup.auditUpgrade.PROBES) ||
     Object.isFrozen(setup.auditUpgrade.PROBES));
-  assert.equal(setup.auditUpgrade.PROBES.length, 7);
+  assert.equal(setup.auditUpgrade.PROBES.length, 10);
+});
+
+// ── Sprint 51.6 T3: functionSource probe (Bug D — Edge Function drift) ──
+
+test('functionSource probe reports present when deployed body contains the marker', async () => {
+  const fnSourceProbes = PROBES.filter((p) => p.probeKind === 'functionSource');
+  assert.ok(fnSourceProbes.length >= 2);
+  const fetchMock = makeFetchMock({
+    'rumen-tick': { ok: true, body: "const url = Deno.env.get('DATABASE_URL') ?? Deno.env.get('SUPABASE_DB_URL');" },
+    'graph-inference': { ok: true, body: "const url = Deno.env.get('DATABASE_URL') ?? Deno.env.get('SUPABASE_DB_URL');" },
+  });
+  const orig = process.env.SUPABASE_ACCESS_TOKEN;
+  process.env.SUPABASE_ACCESS_TOKEN = 'sbp_test_token';
+  try {
+    const client = makePgClient([]);
+    const result = await auditUpgrade({
+      pgClient: client,
+      projectRef: 'abc123def456',
+      probes: fnSourceProbes,
+      _fetch: fetchMock,
+      _migrations: defaultMockMigrations(),
+    });
+    assert.equal(result.present.length, fnSourceProbes.length,
+      'all functionSource probes should report present when marker is found');
+    assert.equal(result.skipped.length, 0);
+    assert.equal(result.missing.length, 0);
+  } finally {
+    if (orig === undefined) delete process.env.SUPABASE_ACCESS_TOKEN;
+    else process.env.SUPABASE_ACCESS_TOKEN = orig;
+  }
+});
+
+test('functionSource probe reports skipped when deployed body lacks the marker (drift detected)', async () => {
+  const fnSourceProbes = PROBES.filter((p) => p.probeKind === 'functionSource');
+  // Body missing the SUPABASE_DB_URL fallback — Brad's pre-Sprint-51.5 deploy.
+  const fetchMock = makeFetchMock({
+    'rumen-tick': { ok: true, body: "const url = Deno.env.get('DATABASE_URL');" },
+    'graph-inference': { ok: true, body: "const url = Deno.env.get('DATABASE_URL');" },
+  });
+  const orig = process.env.SUPABASE_ACCESS_TOKEN;
+  process.env.SUPABASE_ACCESS_TOKEN = 'sbp_test_token';
+  try {
+    const client = makePgClient([]);
+    const result = await auditUpgrade({
+      pgClient: client,
+      projectRef: 'abc123def456',
+      probes: fnSourceProbes,
+      _fetch: fetchMock,
+      _migrations: defaultMockMigrations(),
+    });
+    assert.equal(result.present.length, 0);
+    assert.equal(result.skipped.length, fnSourceProbes.length,
+      'drift should report via skipped[], not missing[] (no auto-apply)');
+    assert.equal(result.missing.length, 0,
+      'functionSource probes go to skipped[], NOT missing[]');
+    for (const s of result.skipped) {
+      assert.match(s.reason, /missing marker/);
+    }
+    assert.equal(result.applied.length, 0,
+      'functionSource probes never apply — redeploy is via init --rumen');
+  } finally {
+    if (orig === undefined) delete process.env.SUPABASE_ACCESS_TOKEN;
+    else process.env.SUPABASE_ACCESS_TOKEN = orig;
+  }
+});
+
+test('functionSource probe fails-soft when SUPABASE_ACCESS_TOKEN is missing', async () => {
+  const fnSourceProbes = PROBES.filter((p) => p.probeKind === 'functionSource');
+  const fetchMock = () => { throw new Error('should not fetch without access token'); };
+  const orig = process.env.SUPABASE_ACCESS_TOKEN;
+  delete process.env.SUPABASE_ACCESS_TOKEN;
+  try {
+    const client = makePgClient([]);
+    const result = await auditUpgrade({
+      pgClient: client,
+      projectRef: 'abc123def456',
+      probes: fnSourceProbes,
+      _fetch: fetchMock,
+      _migrations: defaultMockMigrations(),
+    });
+    // No access token → probe records error message, drops to skipped[].
+    assert.equal(result.skipped.length, fnSourceProbes.length);
+    for (const s of result.skipped) {
+      assert.match(s.reason, /SUPABASE_ACCESS_TOKEN not set/);
+    }
+  } finally {
+    if (orig !== undefined) process.env.SUPABASE_ACCESS_TOKEN = orig;
+  }
+});
+
+test('functionSource probe handles Management API HTTP errors fail-soft', async () => {
+  const fnSourceProbes = PROBES.filter((p) => p.probeKind === 'functionSource');
+  const fetchMock = makeFetchMock({
+    'rumen-tick': { ok: false, status: 404, body: 'function not found' },
+    'graph-inference': { ok: false, status: 401, body: 'unauthorized' },
+  });
+  const orig = process.env.SUPABASE_ACCESS_TOKEN;
+  process.env.SUPABASE_ACCESS_TOKEN = 'sbp_test_token';
+  try {
+    const client = makePgClient([]);
+    const result = await auditUpgrade({
+      pgClient: client,
+      projectRef: 'abc123def456',
+      probes: fnSourceProbes,
+      _fetch: fetchMock,
+      _migrations: defaultMockMigrations(),
+    });
+    assert.equal(result.skipped.length, fnSourceProbes.length);
+    assert.match(result.skipped[0].reason, /HTTP (?:404|401)/);
+    assert.match(result.skipped[1].reason, /HTTP (?:404|401)/);
+  } finally {
+    if (orig === undefined) delete process.env.SUPABASE_ACCESS_TOKEN;
+    else process.env.SUPABASE_ACCESS_TOKEN = orig;
+  }
+});
+
+// ── Sprint 51.6 T3: bundled mig 017 verification ────────────────────────────
+
+test('bundled mnestra-migrations directory contains 017 (memory_sessions session_metadata)', () => {
+  const fs = require('node:fs');
+  const dir = path.join(repoRoot, 'packages', 'server', 'src', 'setup', 'mnestra-migrations');
+  const files = fs.readdirSync(dir);
+  assert.ok(files.includes('017_memory_sessions_session_metadata.sql'),
+    'Sprint 51.6 T3: mig 017 must ship in the bundled tree');
+});
+
+test('mig 017 SQL contains session_id, summary_embedding, and the unique-constraint do-block', () => {
+  const fs = require('node:fs');
+  const sql = fs.readFileSync(path.join(repoRoot,
+    'packages', 'server', 'src', 'setup', 'mnestra-migrations',
+    '017_memory_sessions_session_metadata.sql'), 'utf8');
+  assert.match(sql, /add column if not exists session_id text/i);
+  assert.match(sql, /add column if not exists summary_embedding vector/i);
+  assert.match(sql, /add column if not exists started_at/i);
+  assert.match(sql, /add column if not exists ended_at/i);
+  assert.match(sql, /memory_sessions_session_id_key/);
+  assert.match(sql, /create index if not exists memory_sessions_summary_embedding_hnsw_idx/i);
 });

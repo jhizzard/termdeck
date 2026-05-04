@@ -118,6 +118,23 @@ const PROBES = Object.freeze([
     presentWhen: 'rowReturned'
   },
   {
+    // Sprint 51.6 T3 — bundled session-end hook (TermDeck v1.0.2+) writes
+    // the rich rag-system column set to memory_sessions; canonical engram
+    // mig 001 only ships (id, project, summary, metadata, created_at).
+    // Probe for memory_sessions.session_id (the most distinctive of the
+    // mig-017 columns) and apply mig 017 if absent. Idempotent on petvetbid
+    // where the columns are already present from hand-applied DDL.
+    name: 'memory_sessions.session_id',
+    kind: 'mnestra',
+    migrationFile: '017_memory_sessions_session_metadata.sql',
+    probeSql:
+      "select 1 as present from information_schema.columns " +
+      "where table_schema = 'public' " +
+      "  and table_name = 'memory_sessions' " +
+      "  and column_name = 'session_id' limit 1",
+    presentWhen: 'rowReturned'
+  },
+  {
     name: 'rumen-tick cron schedule',
     kind: 'rumen',
     migrationFile: '002_pg_cron_schedule.sql',
@@ -134,6 +151,38 @@ const PROBES = Object.freeze([
     probeSql:
       "select 1 as present from cron.job where jobname = 'graph-inference-tick' limit 1",
     presentWhen: 'rowReturned'
+  },
+  // Sprint 51.6 T3 — Brad's Bug D: function-existence probes (cron schedule
+  // checks for jobname presence) are not enough. The deployed Edge Function
+  // SOURCE may be stale even when the cron job and function both exist.
+  // jizzard-brain on 2026-05-03: deployed rumen-tick was missing the
+  // SUPABASE_DB_URL fallback that Sprint 51.5 T1 added; cron probe said
+  // "present", source was old. The marker check below detects that drift.
+  //
+  // probeKind 'functionSource' triggers a Management API fetch instead of a
+  // pgClient.query. Bumps to skipped[] (not missing[]) when drift is
+  // detected — the corresponding "apply" is a redeploy via init-rumen's
+  // deployFunctions, not an SQL migration. The wizard shows skipped[]
+  // entries with their probeError, prompting the user to re-run init.
+  //
+  // Maintenance: bump `requiredMarker` whenever a new feature is added to
+  // the bundled function source that is meaningful enough to gate redeploys
+  // on. The marker should be a string unique to the post-change version.
+  {
+    name: 'rumen-tick deployed source has SUPABASE_DB_URL fallback',
+    kind: 'rumen',
+    probeKind: 'functionSource',
+    functionSlug: 'rumen-tick',
+    requiredMarker: "Deno.env.get('SUPABASE_DB_URL')",
+    presentWhen: 'sourceMatch'
+  },
+  {
+    name: 'graph-inference deployed source has SUPABASE_DB_URL fallback',
+    kind: 'rumen',
+    probeKind: 'functionSource',
+    functionSlug: 'graph-inference',
+    requiredMarker: "Deno.env.get('SUPABASE_DB_URL')",
+    presentWhen: 'sourceMatch'
   }
 ]);
 
@@ -147,8 +196,68 @@ function resolveMigrationFile(target, files) {
   return files.find((f) => path.basename(f) === wanted) || null;
 }
 
+// Sprint 51.6 T3 — Bug D: Edge Function source-drift detection.
+//
+// Fetches the deployed Edge Function body from Supabase Management API and
+// looks for a marker string the bundled source contains. Returns absent
+// (with probeError) when the marker is missing — meaning the deployed
+// function is older than the bundle and should be redeployed.
+//
+// Requires:
+//   - projectRef passed through from auditUpgrade()
+//   - SUPABASE_ACCESS_TOKEN in env (a personal access token, format `sbp_*`)
+// Fail-soft when either is missing — recorded as probeError, treated as
+// absent. The audit caller decides whether to surface to the user.
+async function probeFunctionSource(target, { projectRef, fetchImpl }) {
+  const fn = fetchImpl || (typeof globalThis !== 'undefined' ? globalThis.fetch : undefined);
+  if (typeof fn !== 'function') {
+    return { present: false, probeError: 'no fetch implementation available' };
+  }
+  if (!projectRef) {
+    return { present: false, probeError: 'projectRef required for functionSource probe' };
+  }
+  const accessToken = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!accessToken) {
+    return {
+      present: false,
+      probeError: 'SUPABASE_ACCESS_TOKEN not set; cannot fetch deployed function body. Set the personal access token (`supabase login` writes it to ~/.supabase/access-token) to enable function-source drift detection.',
+    };
+  }
+  let res;
+  try {
+    res = await fn(
+      `https://api.supabase.com/v1/projects/${projectRef}/functions/${target.functionSlug}/body`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+  } catch (err) {
+    return { present: false, probeError: `Management API fetch failed: ${err.message}` };
+  }
+  if (!res.ok) {
+    return {
+      present: false,
+      probeError: `Management API returned HTTP ${res.status} for ${target.functionSlug}/body — function may not be deployed yet, or access token lacks permission.`
+    };
+  }
+  let body;
+  try { body = await res.text(); }
+  catch (err) { return { present: false, probeError: `body decode failed: ${err.message}` }; }
+
+  if (target.requiredMarker && body.includes(target.requiredMarker)) {
+    return { present: true };
+  }
+  return {
+    present: false,
+    probeError: `deployed ${target.functionSlug} source missing marker (${JSON.stringify(target.requiredMarker)}) — re-run \`termdeck init --rumen\` to redeploy from bundled source.`,
+  };
+}
+
 // Run a probe and decide present/absent based on the probe's contract.
-async function probeOne(pgClient, target) {
+// Sprint 51.6 T3: dispatches by target.probeKind. Default is the legacy
+// pgClient.query path; 'functionSource' calls probeFunctionSource (HTTP).
+async function probeOne(pgClient, target, ctx = {}) {
+  if (target.probeKind === 'functionSource') {
+    return probeFunctionSource(target, ctx);
+  }
   let result;
   try {
     result = await pgClient.query(target.probeSql);
@@ -233,7 +342,8 @@ async function auditUpgrade({
   projectRef,
   dryRun = false,
   probes,
-  _migrations
+  _migrations,
+  _fetch
 } = {}) {
   if (!pgClient || typeof pgClient.query !== 'function') {
     throw new Error('auditUpgrade: pgClient with .query() is required');
@@ -255,11 +365,23 @@ async function auditUpgrade({
 
   for (const target of targets) {
     probed.push(target.name);
-    const probeResult = await probeOne(pgClient, target);
+    const probeResult = await probeOne(pgClient, target, { projectRef, fetchImpl: _fetch });
     if (probeResult.present) {
       present.push(target.name);
       continue;
     }
+
+    // Sprint 51.6 T3 — Bug D: functionSource probes go to skipped[] (not
+    // missing[]). The corresponding fix is a re-run of `init --rumen` which
+    // calls deployFunctions; audit-upgrade does not auto-redeploy.
+    if (target.probeKind === 'functionSource') {
+      skipped.push({
+        name: target.name,
+        reason: probeResult.probeError || 'function source drift — redeploy via init --rumen',
+      });
+      continue;
+    }
+
     missing.push(target.name);
 
     if (dryRun) continue;
@@ -297,6 +419,7 @@ module.exports = {
   // Test surface — kept exported so audit-upgrade.test.js can pin probe
   // selection / apply pathway behavior without needing a live pg client.
   _probeOne: probeOne,
+  _probeFunctionSource: probeFunctionSource,
   _applyOne: applyOne,
   _resolveMigrationFile: resolveMigrationFile
 };
