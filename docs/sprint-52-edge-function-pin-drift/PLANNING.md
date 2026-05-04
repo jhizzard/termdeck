@@ -6,7 +6,7 @@
 
 **Target ship:** `@jhizzard/termdeck@1.0.7` + `@jhizzard/termdeck-stack@0.6.7` (audit-trail bump). Mnestra and Rumen unchanged this wave. **This is the final TermDeck publish for 2026-05-04**; after Sprint 52 ships, the project transitions to weekly-bump cadence with focus on memory-quality innovation rather than pipeline-correctness fixes.
 
-**Why this sprint exists.** The 2026-05-01 → 2026-05-04 `rumen_insights` flatline (321 rows, last write 2026-05-01 20:45 UTC) is NOT a v1.0.x onion bug. The v1.0.x cascade closed five drift classes (51.5/51.6/51.7/51.8 + 52.1/51.9), every wizard surface is now structurally clean. But Codex T4-CODEX's 15:22 ET independent probe revealed petvetbid's deployed `rumen-tick` Edge Function is pinned to `npm:@jhizzard/rumen@0.4.0` while the npm registry has `0.4.5`. Four minor versions of drift between published rumen and Joshua's deployed Edge Function. **`npm publish` doesn't update Supabase Edge Functions** — the function source lives on Supabase's infrastructure and only re-deploys when the wizard runs `supabase functions deploy`.
+**Why this sprint exists.** The 2026-05-01 → 2026-05-04 `rumen_insights` flatline (321 rows, last write 2026-05-01 20:45 UTC) is NOT a v1.0.x onion bug. The v1.0.x cascade closed five drift classes (51.5/51.6/51.7/51.8 + 52.1/51.9), every wizard surface is now structurally clean. But Codex T4-CODEX's 15:22 ET independent probe revealed the daily-driver project's deployed `rumen-tick` Edge Function is pinned to `npm:@jhizzard/rumen@0.4.0` while the npm registry has `0.4.5`. Four minor versions of drift between published rumen and Joshua's deployed Edge Function. **`npm publish` doesn't update Supabase Edge Functions** — the function source lives on Supabase's infrastructure and only re-deploys when the wizard runs `supabase functions deploy`.
 
 This is a NEW failure-class pattern: **deployed-state drift between npm-published packages and Supabase-deployed Edge Functions.** Distinct from the schema-drift class A onion just closed. Generalizes to any `init --rumen` install that hasn't been re-run since the last rumen package version bump. Brad's jizzard-brain almost certainly has the same drift. Sprint 52 closes it.
 
@@ -37,12 +37,12 @@ T1 (orchestrator codes directly):
 
 ## Acceptance criteria
 
-1. **`init --rumen --yes` against any project re-deploys both Edge Functions** (rumen-tick + graph-inference) regardless of prior deploy state. Verified on petvetbid by tailing `supabase functions logs rumen-tick` and confirming the new bundle's `__RUMEN_VERSION__` substitution shows up at next tick.
-2. **Audit-upgrade probe detects pin drift end-to-end.** Probe against petvetbid pre-Sprint-52 returns YELLOW with `deployed=0.4.0, bundled=0.4.5`. Probe against post-redeploy petvetbid returns GREEN.
+1. **`init --rumen --yes` against any project re-deploys both Edge Functions** (rumen-tick + graph-inference) regardless of prior deploy state. Verified on the daily-driver project by tailing `supabase functions logs rumen-tick` and confirming the new bundle's `__RUMEN_VERSION__` substitution shows up at next tick.
+2. **Audit-upgrade probe detects pin drift end-to-end.** Probe against the daily-driver project pre-Sprint-52 returns YELLOW with `deployed=0.4.0, bundled=0.4.5`. Probe against post-redeploy the daily-driver project returns GREEN.
 3. **Tests pass.** Full hook + migration matrix continues to pass (currently 158/158 across migration shape + hook tests at HEAD `d291ecf`). New audit-upgrade test pins the probe behavior across 4+ cases.
 4. **`npm pack --dry-run`** shows the updated `audit-upgrade.js` + `init-rumen.js` ship. No regression in `files` glob.
-5. **Joshua's daily-driver post-publish flow.** Run `npm install -g @jhizzard/termdeck@latest && termdeck init --mnestra --yes` against petvetbid; expect audit-upgrade YELLOW on rumen-tick pin drift. Then `termdeck init --rumen --yes`; expect both Edge Functions redeploy. After 1-2 ticks (15-30 min wall-clock), `select count(*), max(created_at) from rumen_insights` shows count > 321 OR max_created_at > 2026-05-01.
-6. **(Conditional) Brad's jizzard-brain unblocking.** If `rumen_insights` count starts growing on petvetbid post-redeploy, Brad's WhatsApp draft (post-T3-redraft + T4-VERIFIED) gets a confirmed "run init --rumen too" caveat and orchestrator can send.
+5. **Joshua's daily-driver post-publish flow.** Run `npm install -g @jhizzard/termdeck@latest && termdeck init --mnestra --yes` against the daily-driver project; expect audit-upgrade YELLOW on rumen-tick pin drift. Then `termdeck init --rumen --yes`; expect both Edge Functions redeploy. After 1-2 ticks (15-30 min wall-clock), `select count(*), max(created_at) from rumen_insights` shows count > 321 OR max_created_at > 2026-05-01.
+6. **(Conditional) Brad's jizzard-brain unblocking.** If `rumen_insights` count starts growing on the daily-driver project post-redeploy, Brad's WhatsApp draft (post-T3-redraft + T4-VERIFIED) gets a confirmed "run init --rumen too" caveat and orchestrator can send.
 
 ## Pre-sprint substrate (orchestrator probes before coding)
 
@@ -50,14 +50,14 @@ T1 (orchestrator codes directly):
 date '+%Y-%m-%d %H:%M ET'
 DATABASE_URL=$(grep '^DATABASE_URL=' ~/.termdeck/secrets.env | cut -d= -f2- | tr -d '"' | sed 's/?pgbouncer.*//')
 
-# Confirm v1.0.6 live + petvetbid is on it locally
+# Confirm v1.0.6 live + the daily-driver project is on it locally
 npm view @jhizzard/termdeck version           # expect 1.0.6
 npm view @jhizzard/termdeck-stack version     # expect 0.6.6
 npm view @jhizzard/rumen version              # expect 0.4.5 (unchanged)
 node -p "require('/usr/local/lib/node_modules/@jhizzard/termdeck/package.json').version"
 
-# Confirm pin-drift state on petvetbid (Codex's 15:22 ET reading)
-SUPABASE_ACCESS_TOKEN=<from-secrets> supabase functions download rumen-tick --project-ref luvvbrpaopnblvxdxwzb --use-api -o /tmp/rumen-tick-deployed
+# Confirm pin-drift state on the daily-driver project (Codex's 15:22 ET reading)
+SUPABASE_ACCESS_TOKEN=<from-secrets> supabase functions download rumen-tick --project-ref <project-ref> --use-api -o /tmp/rumen-tick-deployed
 grep -E "npm:@jhizzard/rumen@" /tmp/rumen-tick-deployed/index.ts
 # expect: 0.4.0 (or whatever's actually deployed)
 
@@ -71,7 +71,7 @@ psql "$DATABASE_URL" -c "select count(*), max(created_at) from rumen_insights"
 
 ## Risks
 
-- **Mock Management API in tests.** The audit-upgrade probe depends on Supabase's `functions download --use-api` flow, which is hard to mock cleanly. Test pattern: shape-test the probe's parsing logic with a synthetic deployed-source string fixture (no actual Management API call); rely on integration testing (live petvetbid) for end-to-end correctness. Sprint 51.6 T3's `probeFunctionSource` precedent already does this.
+- **Mock Management API in tests.** The audit-upgrade probe depends on Supabase's `functions download --use-api` flow, which is hard to mock cleanly. Test pattern: shape-test the probe's parsing logic with a synthetic deployed-source string fixture (no actual Management API call); rely on integration testing (live the daily-driver project) for end-to-end correctness. Sprint 51.6 T3's `probeFunctionSource` precedent already does this.
 - **Force-redeploy adds ~5s per Edge Function on every `init --rumen` run.** Acceptable for correctness; Joshua and Brad are the only frequent re-runners. Document as expected behavior in init-rumen's banner.
 - **Pin format detection must handle both substituted (`npm:@jhizzard/rumen@0.4.5`) and placeholder (`npm:@jhizzard/rumen@__RUMEN_VERSION__`).** Edge Function source on Supabase is post-substitution; bundled source on disk is pre-substitution. Probe parses both shapes.
 - **Class O classification is debatable.** Could fold into existing Class H (migration-runner blindness) or Class M (architectural omission). New letter feels right because the failure mode is genuinely different — neither schema nor write-path, but a runtime-deployed-state drift. T1 (orchestrator) decides at ledger #20 write-up time.
@@ -92,7 +92,7 @@ psql "$DATABASE_URL" -c "select count(*), max(created_at) from rumen_insights"
 ## After Sprint 52 ships
 
 The TermDeck product cadence flips:
-- **Today/tonight:** Brad's WhatsApp goes out (post-T3-redraft + T4-VERIFY). Brad upgrades, runs both wizards, confirms working. Joshua confirms `rumen_insights` recovers on petvetbid post his own re-runs.
+- **Today/tonight:** Brad's WhatsApp goes out (post-T3-redraft + T4-VERIFY). Brad upgrades, runs both wizards, confirms working. Joshua confirms `rumen_insights` recovers on the daily-driver project post his own re-runs.
 - **Next week:** weekly bumps only for security/critical hotfixes. Memory-quality innovation is the focus — Rumen picker rewrite (memory_sessions-direct), doctor blindness fix (Mnestra), better surfacing of insights in the dashboard, cost-monitoring panel (original Sprint 51 vision). Sprint 24 (Maestro) starts after Joshua's mail merge completes.
 
 The v1.0.x onion is the proof point: TermDeck's installer is now self-healing across 7 ledgered failure classes (#1-#19, including new Classes M/N/O surfaced today). Forward work is primarily about making memories more useful, not making the install path more correct.

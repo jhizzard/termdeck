@@ -21,9 +21,9 @@ git log --oneline -3:
 
 origin/main HEAD = d291ecf (pushed 15:40:36 ET)
 
-petvetbid rumen_insights at sprint open: 321 / last 2026-05-01 20:45 UTC
-petvetbid rumen_jobs last 5 ticks: all done with sessions_processed=0, insights_generated=0
-petvetbid deployed rumen-tick pin (per Codex 15:22 ET independent probe): npm:@jhizzard/rumen@0.4.0
+the daily-driver project rumen_insights at sprint open: 321 / last 2026-05-01 20:45 UTC
+the daily-driver project rumen_jobs last 5 ticks: all done with sessions_processed=0, insights_generated=0
+the daily-driver project deployed rumen-tick pin (per Codex 15:22 ET independent probe): npm:@jhizzard/rumen@0.4.0
 npm current rumen: 0.4.5
 
 Diagnosis: deployed-state drift between npm-published packages and Supabase Edge Functions. New failure class O.

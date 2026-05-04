@@ -28,9 +28,9 @@ You are T1 in Sprint 52 (Edge Function pin drift, single-lane direct, code-chang
 
 **v1.0.6 published 2026-05-04 ~15:35-15:40 ET.** `npm view @jhizzard/termdeck version` returns `1.0.6`; `npm view @jhizzard/termdeck-stack version` returns `0.6.6`. `origin/main` at HEAD `d291ecf`. Sprint 51.5b lanes T1/T2/T3/T4 all DONE; T3 was REOPENed by T4-CODEX at 15:22 ET for a Brad WhatsApp redraft and was nudged at 15:31:32 ET — by the time you boot, T3 may have posted v2 draft and T4 may have re-audited.
 
-**The 233/321 rumen_insights flatline persists** at v1.0.6 publish time. Codex T4-CODEX's 15:22 ET independent probe via `supabase functions download rumen-tick --project-ref luvvbrpaopnblvxdxwzb --use-api` revealed petvetbid's deployed `rumen-tick` is at `npm:@jhizzard/rumen@0.4.0` while npm current is `0.4.5`. The flatline is NOT a v1.0.x onion bug — it's deployed-state drift. v1.0.6 published doesn't touch deployed Edge Functions.
+**The 233/321 rumen_insights flatline persists** at v1.0.6 publish time. Codex T4-CODEX's 15:22 ET independent probe via `supabase functions download rumen-tick --project-ref <project-ref> --use-api` revealed the daily-driver project's deployed `rumen-tick` is at `npm:@jhizzard/rumen@0.4.0` while npm current is `0.4.5`. The flatline is NOT a v1.0.x onion bug — it's deployed-state drift. v1.0.6 published doesn't touch deployed Edge Functions.
 
-This sprint closes that drift detection + auto-redeploy. After v1.0.7 ships AND Joshua re-runs `init --rumen --yes` against petvetbid, the Edge Function refreshes to current and the next 1-2 ticks (15-30 min) should restart insight flow.
+This sprint closes that drift detection + auto-redeploy. After v1.0.7 ships AND Joshua re-runs `init --rumen --yes` against the daily-driver project, the Edge Function refreshes to current and the next 1-2 ticks (15-30 min) should restart insight flow.
 
 ## Probe sequence
 
@@ -48,9 +48,9 @@ node -p "require('/usr/local/lib/node_modules/@jhizzard/termdeck/package.json').
 psql "$DATABASE_URL" -c "select count(*), max(created_at) from rumen_insights"
 # expect at boot: 321 / 2026-05-01 20:45 (will move post-v1.0.7-publish + post-init-rumen-rerun)
 
-# Confirm petvetbid's deployed rumen-tick pin (Codex's 15:22 ET reading)
+# Confirm the daily-driver project's deployed rumen-tick pin (Codex's 15:22 ET reading)
 SUPABASE_ACCESS_TOKEN=$(grep '^SUPABASE_ACCESS_TOKEN=' ~/.termdeck/secrets.env | cut -d= -f2- | tr -d '"') \
-  supabase functions download rumen-tick --project-ref luvvbrpaopnblvxdxwzb --use-api -o /tmp/sprint-52-deployed-rumen-tick
+  supabase functions download rumen-tick --project-ref <project-ref> --use-api -o /tmp/sprint-52-deployed-rumen-tick
 grep -E "npm:@jhizzard/rumen@" /tmp/sprint-52-deployed-rumen-tick/index.ts
 # expect: 0.4.0 (per Codex 15:22 ET)
 
@@ -155,7 +155,7 @@ When green:
 
 When NOT green: leave Brad outreach for the next session. Sprint 52 publishing without the WhatsApp send is acceptable — Joshua's mail merge is the priority, Brad outreach is async.
 
-### Step 9 — Post-publish dogfood on petvetbid
+### Step 9 — Post-publish dogfood on the daily-driver project
 
 After v1.0.7 lands + push completes:
 
@@ -178,15 +178,15 @@ psql "$DATABASE_URL" -c "select count(*), max(created_at) from rumen_insights"
 - This is a code-shipping lane. Version bumps + CHANGELOG + commits ARE in scope (you're the orchestrator; the "no version bumps in lane" rule is for 3+1+1 worker lanes, not single-lane direct sprints).
 - Post shape: STATUS.md gets `### [T1]` posts in the canonical uniform shape. CHECKPOINTs every 30 min OR phase boundary (this isn't 3+1+1 with a Codex auditor, but the discipline still helps if the orchestrator session compacts mid-work).
 - Stay in TermDeck. Don't touch mnestra-package or rumen-package source — those are deferred to next-week+ sprints per PLANNING.md out-of-scope list.
-- Dogfood verification on petvetbid is part of the sprint, not optional.
+- Dogfood verification on the daily-driver project is part of the sprint, not optional.
 
 ## When you're done
 
 Post `### [T1] DONE 2026-05-04 HH:MM ET — <PASS or RED on phase X>` in STATUS.md with full evidence dump including:
 - Commit SHAs (probably 2-3 commits)
 - npm view version confirmations
-- Audit-upgrade YELLOW evidence on petvetbid pre-redeploy
-- Audit-upgrade GREEN evidence on petvetbid post-redeploy
+- Audit-upgrade YELLOW evidence on the daily-driver project pre-redeploy
+- Audit-upgrade GREEN evidence on the daily-driver project post-redeploy
 - rumen_insights count delta (will be >321 if 0.4.5's picker works, OR still 321 with deeper bug documented)
 - Brad WhatsApp send disposition (sent / pending T3 redraft / deferred to next session)
 

@@ -32,7 +32,7 @@ Six sprints shipped 2026-05-04, closing the v1.0.x onion across 5 distinct failu
 `origin/main` HEAD = `d291ecf`. `npm view @jhizzard/termdeck version` returns `1.0.6`. `npm view @jhizzard/termdeck-stack version` returns `0.6.6`. Both published 2026-05-04 ~15:35-15:40 ET.
 
 **Sprint 51.5b dogfood audit final disposition (3+1+1 with Codex T4 auditor):**
-- T1: PASS (all 5 phases green on petvetbid)
+- T1: PASS (all 5 phases green on the daily-driver project)
 - T2: PASS-with-3-findings (doctor blindness on cron return_message; Rumen Edge Function pin drift; doctor env-var DX nit)
 - T3: RED on fresh-install (mig 016 — folded into v1.0.6); REOPENed by T4 at 15:22 ET on Brad WhatsApp draft
 - T4-CODEX: 3 phases verified; T3 redraft pending re-audit
@@ -55,7 +55,7 @@ node -p "require('/usr/local/lib/node_modules/@jhizzard/termdeck/package.json').
 
 # Confirm pin drift is still real (Codex's 15:22 ET reading)
 SUPABASE_ACCESS_TOKEN=$(grep '^SUPABASE_ACCESS_TOKEN=' ~/.termdeck/secrets.env | cut -d= -f2- | tr -d '"') \
-  supabase functions download rumen-tick --project-ref luvvbrpaopnblvxdxwzb --use-api -o /tmp/sprint-52-deployed-rumen-tick
+  supabase functions download rumen-tick --project-ref <project-ref> --use-api -o /tmp/sprint-52-deployed-rumen-tick
 grep -E "npm:@jhizzard/rumen@" /tmp/sprint-52-deployed-rumen-tick/index.ts
 # expect: 0.4.0 (will move to 0.4.5 only after Joshua runs init --rumen post-v1.0.7)
 
@@ -79,7 +79,7 @@ psql "$DATABASE_URL" -c "select count(*), max(created_at) from rumen_insights"
 ### v1.0.x onion is structurally CLOSED
 - All 5 onion classes (51.5/51.6/51.7/51.8/52.1/51.9) ship in v1.0.6.
 - The remaining 233/321 rumen_insights flatline is NOT a v1.0.x onion bug — it's deployed-state Edge Function pin drift (this sprint's scope).
-- After v1.0.7 + Joshua's `init --rumen --yes` against petvetbid, the Edge Function refreshes to 0.4.5 and insights should restart (caveat: rumen 0.4.5's picker may have its own shape mismatch with the new bundled hook's 1-row-per-session memory_items writes — see "Out of scope" section of PLANNING.md for the deeper Rumen-package work deferred to next week).
+- After v1.0.7 + Joshua's `init --rumen --yes` against the daily-driver project, the Edge Function refreshes to 0.4.5 and insights should restart (caveat: rumen 0.4.5's picker may have its own shape mismatch with the new bundled hook's 1-row-per-session memory_items writes — see "Out of scope" section of PLANNING.md for the deeper Rumen-package work deferred to next week).
 
 ### Codex auditor has limited auto-accept
 Joshua chose "Auto-review" mode for Codex (a happy medium between full-auto and prompt-on-everything). For future 3+1+1 sprints, the lane brief for the Codex auditor should explicitly specify the approval mode expectation. Sprint 51.5b T4-CODEX brief did NOT specify this; lesson canonized in cross-project memory `3+1+1 hardening rule candidate (Sprint 51.5b learning 2026-05-04)`.
@@ -88,7 +88,7 @@ Joshua chose "Auto-review" mode for Codex (a happy medium between full-auto and 
 Three single-lane direct sprints today (51.8, 52.1, 51.9) all shipped clean. The 3+1+1 ceremony is for sprints where adversarial review surfaces share-blind gaps; for narrow scope (single migration patch, single file, single SQL change), the orchestrator codes directly without panels. Sprint 52 is exactly that shape.
 
 ### TermDeck cadence flips after Sprint 52
-- **Today/tonight (Sprint 52):** v1.0.7 ships with Edge Function pin drift detection + auto-redeploy. Brad's WhatsApp goes out (post-T3 redraft + T4-VERIFIED). Joshua re-runs `init --rumen` against petvetbid; insights restart.
+- **Today/tonight (Sprint 52):** v1.0.7 ships with Edge Function pin drift detection + auto-redeploy. Brad's WhatsApp goes out (post-T3 redraft + T4-VERIFIED). Joshua re-runs `init --rumen` against the daily-driver project; insights restart.
 - **Next week+:** weekly bumps for security/critical-only. Memory-quality innovation is the focus — Rumen picker rewrite (memory_sessions-direct), doctor blindness fix (Mnestra), better insight surfacing in dashboard, cost-monitoring panel (original Sprint 51 vision), etc. Sprint 24 (Maestro / chopin-scheduler) starts after Joshua's mail merge completes.
 
 ## Sprint queue ahead (post-Sprint-52)
@@ -110,7 +110,7 @@ Most recent session-end email draft is in `admin@nashvillechopin.org` Gmail draf
 | ~13:30 | Brad's settings.json bug report → Sprint 51.8 plan |
 | ~14:00 | Sprint 51.8 (v1.0.4) ships |
 | ~14:00-14:20 | Sprint 52.1 (v1.0.5) plan + ship — match_memories drift |
-| ~14:30 | Joshua's `init --mnestra` against petvetbid succeeds first time post-onion-close |
+| ~14:30 | Joshua's `init --mnestra` against the daily-driver project succeeds first time post-onion-close |
 | ~14:35 | Sprint 51.5b dogfood inject (3+1+1 — T1/T2/T3 Claude + T4 Codex) |
 | ~14:42 | Codex T4 catches `memory_hybrid_search` drift cousin |
 | ~14:55 | T3 catches mig 016 fresh-install RED |
