@@ -357,7 +357,13 @@ async function probeEdgeFunctionPin(target, ctx = {}) {
     if (!target.bundledPath || !target.importPattern) {
       return { present: false, probeError: `edgeFunctionPin probe ${target.name} missing bundledPath or importPattern` };
     }
-    const repoRoot = ctx.repoRoot || path.resolve(__dirname, '..', '..', '..', '..', '..');
+    // __dirname = .../packages/server/src/setup/. Four `..` lands at repo
+    // root: setup → src → server → packages → <repoRoot>. Sprint 52 shipped
+    // five `..` (off-by-one), which on a globally-installed @jhizzard/termdeck
+    // resolved to the parent of the package dir and the bundled-source read
+    // fail-softed into skipped[] with an ENOENT reason instead of comparing
+    // pins. v1.0.8 fold-in.
+    const repoRoot = ctx.repoRoot || path.resolve(__dirname, '..', '..', '..', '..');
     const bundledAbs = path.isAbsolute(target.bundledPath)
       ? target.bundledPath
       : path.join(repoRoot, target.bundledPath);

@@ -412,11 +412,19 @@ function deployFunctions(rumenVersion, projectRef, dryRun) {
   for (const name of fnNames) {
     // Sprint 51.6 T3 — `--project-ref <ref>` explicit, dodging supabase
     // link-state subprocess isolation (Bug C, Brad's 2026-05-03 install).
-    step(`Running: supabase functions deploy ${name} --project-ref ${projectRef} --no-verify-jwt...`);
+    // Sprint 52 dogfood (2026-05-04): `--use-api` added because the default
+    // Docker-bundler path fails on macOS when the staging dir is under
+    // os.tmpdir() (= /var/folders/... on macOS, which is NOT in Docker
+    // Desktop's default file-sharing allowlist). Symptom on stale supabase
+    // CLI 2.75.0: `entrypoint path does not exist (supabase/functions/<name>/
+    // index.ts)` even though the file IS present. `--use-api` uploads via
+    // the Management API and bypasses Docker entirely. v1.0.8 fold-in.
+    step(`Running: supabase functions deploy ${name} --project-ref ${projectRef} --no-verify-jwt --use-api...`);
     const r = runShell('supabase', [
       'functions', 'deploy', name,
       '--project-ref', projectRef,
       '--no-verify-jwt',
+      '--use-api',
     ], { cwd: stage });
     if (!r.ok) {
       fail(`deploy of ${name} failed (exit ${r.code})`);

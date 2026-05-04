@@ -56,3 +56,26 @@ test('init-rumen.js source: every functions-deploy argv contains --project-ref',
   assert.match(src, /deployFunctions: projectRef is required/,
     "deployFunctions must validate projectRef and surface a clear error message");
 });
+
+// Sprint 52 dogfood (v1.0.8) — `--use-api` regression guard. The default
+// supabase CLI bundler uses Docker, which on macOS can't bind-mount paths
+// under /var/folders/ (the macOS default os.tmpdir()). Symptom: deploy
+// errors with `entrypoint path does not exist (supabase/functions/<name>/
+// index.ts)` even though the file IS present in the staging dir. Pinning
+// `--use-api` ensures the deploy uploads via the Management API path,
+// bypassing Docker entirely.
+test('init-rumen.js source: every functions-deploy argv contains --use-api (v1.0.8 macOS Docker workaround)', () => {
+  const src = fs.readFileSync(INIT_RUMEN_SRC, 'utf8');
+
+  // The deploy argv must include `'--use-api'` somewhere within the
+  // deploy-command argv block.
+  assert.match(src,
+    /'functions',\s*'deploy',\s*name,[\s\S]{0,400}'--use-api'/,
+    "init-rumen.js: `supabase functions deploy <name>` must pass `--use-api` to bypass Docker bundler (v1.0.8 — fixes macOS+/var/folders+stale-supabase-CLI deploy failure)");
+
+  // Step banner should mention --use-api so the user-visible output is
+  // consistent with what the wizard actually runs.
+  assert.match(src,
+    /Running:\s*supabase\s*functions\s*deploy[^\n`]*--use-api/,
+    "init-rumen.js: the user-facing 'Running:' step banner must reflect --use-api");
+});
