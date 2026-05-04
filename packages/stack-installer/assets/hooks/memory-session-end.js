@@ -51,7 +51,17 @@
  *   a new transcript parser, a default PROJECT_MAP change. Comment-only
  *   tweaks do not need a bump.
  *
- * @termdeck/stack-installer-hook v1
+ *   v2 (Sprint 51.7 T2 — metadata completeness + wire-up insurance):
+ *     - parseTranscriptMetadata() now populates memory_sessions.started_at /
+ *       duration_minutes / facts_extracted from per-message timestamps and
+ *       memory_remember tool_use counts, closing the v1 "minimum viable row"
+ *       gap Codex flagged at Sprint 51.6 Phase B.
+ *     - Stamp bump load-bearing as INSURANCE for the Sprint 51.6 wire-up bug
+ *       (T1 fix landing in same v1.0.3 wave): an installed-v1 user upgrading
+ *       to bundled-v2 always passes the `installed >= bundled` short-circuit
+ *       at init-mnestra.js:550 and reaches the refresh path.
+ *
+ * @termdeck/stack-installer-hook v2
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
@@ -440,11 +450,117 @@ function selectTranscriptParser(sessionType) {
   return { parser: parseAutoDetect, sessionType: 'auto' };
 }
 
-// Sprint 51.6 T3: returns `{ summary, messagesCount }` instead of just the
-// summary string. messagesCount feeds the new memory_sessions write path
-// (postMemorySession), which needs the parser-derived count without
-// reparsing the transcript. Returns null when the transcript is unreadable
-// or has fewer than 5 messages — same skip semantics as before.
+// ──────────────────────────────────────────────────────────────────────────
+// Sprint 51.7 T2 — transcript metadata extractor for memory_sessions.
+//
+// The v1 bundled hook (Sprint 51.6 T3) intentionally shipped the "minimum
+// viable row" — postMemorySession set started_at, duration_minutes, and
+// facts_extracted to NULL/0 because v1 omitted transcript parsing for
+// per-message timestamps. The legacy rag-system writer
+// (~/Documents/Graciella/rag-system/src/scripts/process-session.ts) populated
+// those fields by parsing the transcript JSONL passed to it on stdin, and
+// petvetbid's 289 baseline rows carried the rich shape from that writer.
+// v2 closes the gap in pure Node so the bundled hook reaches parity without
+// the rag-system dependency (Class E hidden-dependency rule).
+//
+// Heuristic for facts_extracted: count distinct `tool_use` blocks whose
+// `name` matches a memory_remember MCP tool. Conservative by design — a
+// regex like /Remember:/ inside summary text would over-match quoted user
+// content (e.g., "the user typed 'Remember:' in their prompt"). Counting
+// tool_use blocks instead measures what was actually written into the store
+// during the session, which is the semantic the rag-system writer used.
+//
+// Tool name variants observed in real transcripts (T4-CODEX 11:09 ET pre-
+// audit confirmed both prefixes are live in `~/.claude/projects/`):
+//   - `memory_remember`               (bare; CC native + future-proofing)
+//   - `mcp__mnestra__memory_remember` (current Mnestra MCP, post-rename)
+//   - `mcp__memory__memory_remember`  (legacy MCP server name from when
+//                                       the project was called "memory")
+// Counting all three avoids undercounting on existing user transcripts.
+// ──────────────────────────────────────────────────────────────────────────
+
+const FACT_TOOL_NAMES = new Set([
+  'memory_remember',
+  'mcp__mnestra__memory_remember',
+  'mcp__memory__memory_remember',
+]);
+
+// Sprint 51.7 T2 / T4-CODEX 11:13 ET catch: each adapter shipped by this
+// hook stores message content under a different key shape, and we have to
+// match all of them or facts_extracted under-counts whenever a non-Claude
+// session writes to memory_sessions. Mirror the shapes already documented
+// at the top of TRANSCRIPT_PARSERS:
+//
+//   - Claude Code (current):  msg.message.content[]
+//   - Grok (Sprint 50 T1):    msg.content[] (flat, AI SDK provider shape)
+//   - Codex (response_item):  msg.payload.content[] when msg.type === 'response_item'
+//
+// Gemini's single-JSON envelope doesn't apply per-line — its content lives
+// inside a top-level messages array, and each entry's content is a flat
+// array OR a string. extractContentBlocks() handles flat arrays; strings
+// are skipped (no tool_use can hide inside a string).
+function extractContentBlocks(msg) {
+  if (!msg || typeof msg !== 'object') return null;
+  if (msg.message && Array.isArray(msg.message.content)) return msg.message.content;
+  if (Array.isArray(msg.content)) return msg.content;
+  if (msg.type === 'response_item' && msg.payload && Array.isArray(msg.payload.content)) {
+    return msg.payload.content;
+  }
+  return null;
+}
+
+function parseTranscriptMetadata(rawJsonl) {
+  if (typeof rawJsonl !== 'string' || rawJsonl.length === 0) {
+    return { startedAt: null, endedAt: null, durationMinutes: null, factsExtracted: 0 };
+  }
+  const lines = rawJsonl.split('\n').filter(Boolean);
+  let earliestTs = null;
+  let latestTs = null;
+  let factsExtracted = 0;
+
+  for (const line of lines) {
+    let msg;
+    try { msg = JSON.parse(line); } catch (_) { continue; }
+    if (!msg || typeof msg !== 'object') continue;
+
+    // Timestamp: top-level `timestamp` is the canonical Claude Code shape.
+    // Fall back to `msg.message.timestamp` for any future / alt-shape that
+    // nests it (Codex/Gemini/Grok adapters preserve the top-level form, so
+    // this is mostly forward-compat).
+    const ts = msg.timestamp || (msg.message && msg.message.timestamp);
+    if (typeof ts === 'string' || typeof ts === 'number') {
+      const t = Date.parse(ts);
+      if (!Number.isNaN(t)) {
+        if (earliestTs === null || t < earliestTs) earliestTs = t;
+        if (latestTs === null || t > latestTs) latestTs = t;
+      }
+    }
+
+    // facts_extracted: count tool_use blocks matching a memory_remember
+    // MCP tool name. See FACT_TOOL_NAMES + extractContentBlocks above.
+    const blocks = extractContentBlocks(msg);
+    if (blocks) {
+      for (const b of blocks) {
+        if (b && b.type === 'tool_use' && typeof b.name === 'string' && FACT_TOOL_NAMES.has(b.name)) {
+          factsExtracted += 1;
+        }
+      }
+    }
+  }
+
+  const startedAt = earliestTs !== null ? new Date(earliestTs).toISOString() : null;
+  const endedAt = latestTs !== null ? new Date(latestTs).toISOString() : null;
+  const durationMinutes = (earliestTs !== null && latestTs !== null)
+    ? Math.max(0, Math.round((latestTs - earliestTs) / 60000))
+    : null;
+  return { startedAt, endedAt, durationMinutes, factsExtracted };
+}
+
+// Sprint 51.6 T3 → 51.7 T2: `buildSummary` now also returns parser-derived
+// metadata (startedAt, endedAt, durationMinutes, factsExtracted) merged into
+// the result object. parseTranscriptMetadata reuses the same raw string —
+// no second readFileSync. Returns null when the transcript is unreadable or
+// has fewer than 5 messages (skip semantics unchanged from v1).
 function buildSummary(transcriptPath, sessionType) {
   let raw;
   try { raw = readFileSync(transcriptPath, 'utf8'); }
@@ -468,7 +584,18 @@ function buildSummary(transcriptPath, sessionType) {
     tail.map((m) => `[${m.role}] ${m.content}`).join('\n');
   // OpenAI text-embedding-3-small accepts up to 8192 tokens (~32K chars).
   // 7000 chars is a safe headroom that survives multibyte expansion.
-  return { summary: summary.slice(0, 7000), messagesCount: messages.length };
+
+  // Sprint 51.7 T2: merge transcript-derived metadata so the caller (
+  // processStdinPayload → postMemorySession) can populate the
+  // memory_sessions.started_at/duration_minutes/facts_extracted fields the
+  // v1 hook left NULL/0.
+  const metadata = parseTranscriptMetadata(raw);
+
+  return {
+    summary: summary.slice(0, 7000),
+    messagesCount: messages.length,
+    ...metadata,
+  };
 }
 
 async function embedText(text, openaiKey) {
@@ -569,7 +696,15 @@ async function postMemorySession({
   summary, summaryEmbedding,
   project, sessionId,
   transcriptPath, messagesCount,
-  endedAt
+  endedAt,
+  // Sprint 51.7 T2 — transcript-derived metadata (closes Sprint 51.6's
+  // started_at/duration_minutes/facts_extracted=NULL gap). All optional;
+  // null/null/0 fallback preserves the v1 minimum-viable-row shape when the
+  // transcript carries no timestamps (e.g. legacy fixtures, pre-CC-2.x
+  // payloads, or hand-fed test inputs).
+  startedAt = null,
+  durationMinutes = null,
+  factsExtracted = 0,
 }) {
   if (!sessionId) {
     log('memory-sessions-skip: sessionId missing — cannot satisfy session_id NOT NULL/UNIQUE.');
@@ -595,14 +730,16 @@ async function postMemorySession({
           ? `[${summaryEmbedding.join(',')}]`
           : null,
         project,
+        // Sprint 51.7 T2: started_at + duration_minutes + facts_extracted now
+        // populated from parseTranscriptMetadata when transcript timestamps
+        // are present. files_changed and topics remain unpopulated (would
+        // require diff parsing the bundled hook doesn't have; deferred).
+        started_at: typeof startedAt === 'string' ? startedAt : null,
         ended_at: (endedAt instanceof Date ? endedAt : new Date()).toISOString(),
+        duration_minutes: typeof durationMinutes === 'number' ? durationMinutes : null,
         messages_count: typeof messagesCount === 'number' ? messagesCount : 0,
+        facts_extracted: typeof factsExtracted === 'number' ? factsExtracted : 0,
         transcript_path: transcriptPath || null,
-        // started_at, duration_minutes, facts_extracted, files_changed, topics
-        // intentionally omitted — column defaults apply on petvetbid; nullable
-        // on canonical (post-mig-017). Future sprint may parse per-message
-        // timestamps to derive started_at + duration; v1.0.2 ships the
-        // minimum viable row.
       }),
     });
     if (!res.ok) {
@@ -668,7 +805,14 @@ async function processStdinPayload(input) {
 
   const built = buildSummary(transcriptPath, sessionType);
   if (!built) return;
-  const { summary, messagesCount } = built;
+  const {
+    summary,
+    messagesCount,
+    startedAt: parsedStartedAt,
+    endedAt: parsedEndedAt,
+    durationMinutes,
+    factsExtracted,
+  } = built;
 
   const embedding = await embedText(summary, env.openaiKey);
   if (!embedding) return;
@@ -686,6 +830,13 @@ async function processStdinPayload(input) {
   // Sprint 51.6 T3: companion memory_sessions write. Independent of the
   // memory_items write — a memory_items failure shouldn't suppress the
   // memory_sessions row, and vice versa. Both errors fail-soft.
+  //
+  // Sprint 51.7 T2: prefer parser-derived `endedAt` (last-message
+  // timestamp) over hook-fire-time when the transcript carried timestamps.
+  // Matches the rag-system writer's semantics — `ended_at` is "when the
+  // conversation last had activity," not "when the SessionEnd hook
+  // happened to fire." Falls back to `new Date()` when the parser found
+  // no timestamps, preserving v1 behavior.
   const sessionOk = await postMemorySession({
     supabaseUrl: env.supabaseUrl,
     supabaseKey: env.supabaseKey,
@@ -695,11 +846,14 @@ async function processStdinPayload(input) {
     sessionId,
     transcriptPath,
     messagesCount,
-    endedAt: new Date(),
+    endedAt: parsedEndedAt ? new Date(parsedEndedAt) : new Date(),
+    startedAt: parsedStartedAt,
+    durationMinutes,
+    factsExtracted,
   });
 
   if (itemOk || sessionOk) {
-    log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} messages=${messagesCount} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)} memory_items=${itemOk ? 'ok' : 'fail'} memory_sessions=${sessionOk ? 'ok' : 'fail'}`);
+    log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} messages=${messagesCount} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)} startedAt=${parsedStartedAt || 'null'} durationMin=${durationMinutes === null ? 'null' : durationMinutes} factsExtracted=${factsExtracted} memory_items=${itemOk ? 'ok' : 'fail'} memory_sessions=${sessionOk ? 'ok' : 'fail'}`);
   }
 }
 
@@ -736,5 +890,9 @@ if (require.main === module) {
     // Sprint 50 T2 — source_agent provenance plumbing.
     normalizeSourceAgent,
     ALLOWED_SOURCE_AGENTS,
+    // Sprint 51.7 T2 — transcript-metadata extractor for memory_sessions.
+    parseTranscriptMetadata,
+    FACT_TOOL_NAMES,
+    extractContentBlocks,
   };
 }

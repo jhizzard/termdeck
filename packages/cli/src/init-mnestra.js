@@ -570,6 +570,70 @@ function refreshBundledHookIfNewer(opts = {}) {
   return { status: 'refreshed', from: installed, to: bundled, backup };
 }
 
+// Sprint 51.7 T1 — wizard wire-up bug fix.
+//
+// Moved upstream of `pgRunner.connect` and the migration-replay loop so
+// DB-side failures (Class A schema drift, network blips, partial state)
+// cannot strand the hook upgrade. Joshua's 2026-05-03 Phase B run threw at
+// `applyMigrations()` on `001_mnestra_tables.sql` (the `match_memories`
+// CREATE OR REPLACE return-type drift on petvetbid — existing function had
+// columns in a different order, Postgres rejected with "cannot change return
+// type of existing function"). Outer catch at the old call site fired and
+// returned exit 5; the refresh at the old wire-up never ran. Brad's
+// jizzard-brain reproduced the same symptom under v1.0.2.
+//
+// Hook refresh is a LOCAL filesystem operation. It has no dependency on DB
+// success, so it should run as part of the initial local-setup phase next
+// to `writeSecretsFile`, not buried after a 17-migration replay. This also
+// means the wizard ALWAYS lands the bundled hook on disk after a successful
+// `npm install -g @jhizzard/termdeck@latest && termdeck init --mnestra`,
+// even when the DB phase fails — a meaningful upgrade-path improvement
+// because the hook fix is independently valuable.
+//
+// `--dry-run` exercises this path with `dryRun: true` so the wizard
+// truthfully reports what WOULD happen on a live run (Sprint 51.6 Phase B
+// dry-run probe couldn't catch the wire-up bug because dry-run early-
+// returned BEFORE the old refresh location at line 677).
+//
+// Stderr instrumentation is gated behind `TERMDECK_DEBUG_WIREUP=1` so
+// production users never see noise; the gate is broadly useful for future
+// wire-up bisects (any developer can re-run the wizard with the env var
+// set and get a deterministic trace).
+function runHookRefresh({ dryRun = false } = {}) {
+  const debug = !!process.env.TERMDECK_DEBUG_WIREUP;
+  step('Refreshing ~/.claude/hooks/memory-session-end.js (if bundled is newer)...');
+  if (debug) {
+    const HOME = require('os').homedir();
+    const HOOK_DEST = path.join(HOME, '.claude', 'hooks', 'memory-session-end.js');
+    const HOOK_SOURCE = path.join(__dirname, '..', '..', 'stack-installer', 'assets', 'hooks', 'memory-session-end.js');
+    process.stderr.write(`[wire-up-debug] runHookRefresh entry: dryRun=${dryRun} HOOK_DEST=${HOOK_DEST} HOOK_SOURCE=${HOOK_SOURCE} HOOK_SOURCE_exists=${fs.existsSync(HOOK_SOURCE)} HOOK_DEST_exists=${fs.existsSync(HOOK_DEST)}\n`);
+  }
+  try {
+    const r = refreshBundledHookIfNewer({ dryRun });
+    if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh return: ${JSON.stringify(r)}\n`);
+    if (r.status === 'refreshed') {
+      ok(`refreshed v${r.from ?? 0} → v${r.to} (backup: ${path.basename(r.backup)})`);
+    } else if (r.status === 'would-refresh') {
+      ok(`would-refresh v${r.from ?? 0} → v${r.to} (dry-run)`);
+    } else if (r.status === 'installed') {
+      ok(`installed v${r.bundled} (no prior copy)`);
+    } else if (r.status === 'would-install') {
+      ok(`would-install v${r.bundled} (dry-run, no prior copy)`);
+    } else if (r.status === 'up-to-date') {
+      ok(`up-to-date (v${r.installed})`);
+    } else {
+      ok(`(${r.status}${r.message ? ': ' + r.message : ''})`);
+    }
+  } catch (err) {
+    // Don't abort init for a hook-refresh failure — log + continue. The
+    // user's wizard goal (DB setup) is independent of hook refresh; even
+    // if refresh fails (e.g. permission denied, FS error), the wizard
+    // should continue to do the DB work.
+    process.stdout.write(`    ! hook refresh failed: ${err.message} (continuing)\n`);
+    if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh threw: ${err && err.stack || err}\n`);
+  }
+}
+
 function printNextSteps() {
   process.stdout.write(`
 Mnestra is configured.
@@ -640,6 +704,17 @@ async function main(argv) {
     return 6;
   }
 
+  // Sprint 51.7 T1 — refresh ~/.claude/hooks/memory-session-end.js BEFORE the
+  // DB phase. Hook refresh is local FS work; coupling it downstream of pg
+  // connect + 17-migration replay (the old wire-up at line 677 in v1.0.2)
+  // meant ANY DB-side error (Joshua's mig-001 `match_memories` return-type
+  // drift, Brad's same on jizzard-brain) silently skipped the upgrade. With
+  // refresh here, the user always lands the bundled hook even when the DB
+  // phase later fails — decoupled concerns, idempotent re-runs, and the
+  // helper handles its own try/catch internally so a refresh failure never
+  // strands the wizard.
+  runHookRefresh({ dryRun: flags.dryRun });
+
   step('Connecting to Supabase...');
   if (flags.dryRun) {
     ok('(dry-run, skipped)');
@@ -667,27 +742,12 @@ async function main(argv) {
     await applyMigrations(client, false);
     await runMnestraAudit(client, inputs.projectUrl.projectRef, false);
     writeYamlConfig(false);
-    // Sprint 51.6 T3: refresh ~/.claude/hooks/memory-session-end.js when the
-    // bundled hook's version stamp is newer than the installed copy. Closes
-    // the upgrade gap where bundled fixes never reached users' machines via
-    // the standard `npm install -g @jhizzard/termdeck@latest && termdeck
-    // init --mnestra` path. Best-effort, timestamped backup, fail-soft.
-    step('Refreshing ~/.claude/hooks/memory-session-end.js (if bundled is newer)...');
-    try {
-      const r = refreshBundledHookIfNewer({ dryRun: false });
-      if (r.status === 'refreshed') {
-        ok(`refreshed v${r.from ?? 0} → v${r.to} (backup: ${path.basename(r.backup)})`);
-      } else if (r.status === 'installed') {
-        ok(`installed v${r.bundled} (no prior copy)`);
-      } else if (r.status === 'up-to-date') {
-        ok(`up-to-date (v${r.installed})`);
-      } else {
-        ok(`(${r.status}${r.message ? ': ' + r.message : ''})`);
-      }
-    } catch (err) {
-      // Don't abort init for a hook-refresh failure — log + continue.
-      process.stdout.write(`    ! hook refresh failed: ${err.message} (continuing)\n`);
-    }
+    // Sprint 51.7 T1: hook refresh moved upstream — see runHookRefresh()
+    // call site near writeSecretsFile. The old wire-up here was reachable
+    // only when every DB step succeeded, which Sprint 51.6 Phase B proved
+    // was the bug (mig-001 `match_memories` return-type drift threw and
+    // stranded the upgrade for both Joshua and Brad).
+
     // v0.6.9: post-write outcome verification. Confirms each migration's
     // expected schema bits actually landed — including memory_items.
     // source_session_id (the v0.6.5 column whose absence cascaded into

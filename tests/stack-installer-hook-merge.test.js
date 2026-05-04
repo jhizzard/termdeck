@@ -1055,16 +1055,35 @@ test('processStdinPayload skips on small transcript', async () => {
 });
 
 test('processStdinPayload end-to-end: env present + good transcript → embed + memory_items + memory_sessions fire', async () => {
-  // Sprint 51.6 T3: bundled hook now writes BOTH memory_items AND
-  // memory_sessions in a successful fire. Test asserts the three calls
-  // (1 OpenAI embeddings + 1 Supabase memory_items + 1 Supabase memory_sessions)
-  // and validates the memory_sessions row shape.
+  // Sprint 51.6 T3: bundled hook writes BOTH memory_items AND memory_sessions.
+  // Sprint 51.7 T2: memory_sessions row also carries parser-derived
+  // started_at / duration_minutes / facts_extracted (closes Sprint 51.6
+  // Phase B's "minimum viable row" gap). T4-CODEX 11:18 ET catch: this
+  // integration test must assert those new fields actually reach the POST
+  // body so a future regression dropping parser metadata between
+  // buildSummary() and postMemorySession() fails loud instead of silent.
+  //
+  // Fixture shape (post-T2):
+  //   - 25 text messages with timestamps spaced 1-min apart from
+  //     2026-05-03T20:00:00.000Z to 2026-05-03T20:24:00.000Z (span 24 min)
+  //   - 1 extra `tool_use` line at 20:10:00 with name=`memory_remember`
+  //     (parsed messages count stays at 25 because the Claude parser
+  //     filters tool_use-only messages with no text — see parseClaudeJsonl)
+  //   - factsExtracted = 1 (just the one memory_remember tool_use)
   const lines = [];
   for (let i = 0; i < 25; i++) {
+    const ts = new Date(Date.UTC(2026, 4, 3, 20, i, 0)).toISOString();
     lines.push(JSON.stringify({
+      timestamp: ts,
       message: { role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(300) },
     }));
   }
+  // Memory_remember tool_use injected at 20:10:00 — within the timestamp
+  // window so it doesn't shift started_at/ended_at.
+  lines.push(JSON.stringify({
+    timestamp: '2026-05-03T20:10:00.000Z',
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'memory_remember', id: 'tu-1' }] },
+  }));
   const transcriptPath = freshTmpFile(lines.join('\n'));
 
   const calls = [];
@@ -1112,8 +1131,20 @@ test('processStdinPayload end-to-end: env present + good transcript → embed + 
     assert.match(sessionCall.body.summary_embedding, /^\[0(?:,0)*\]$/, 'embedding serialized as PG array literal');
     assert.equal(sessionCall.body.messages_count, 25);
     assert.equal(sessionCall.body.transcript_path, transcriptPath);
-    assert.match(sessionCall.body.ended_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     assert.equal(sessionCall.headers['Prefer'], 'resolution=merge-duplicates,return=minimal');
+
+    // Sprint 51.7 T2 — parser-derived metadata reaches the POST body.
+    // T4-CODEX 11:18 ET acceptance gate: these assertions guarantee that
+    // a regression dropping parser metadata between buildSummary() and
+    // postMemorySession() fails loud, not silent.
+    assert.equal(sessionCall.body.started_at, '2026-05-03T20:00:00.000Z',
+      'started_at should match earliest message timestamp');
+    assert.equal(sessionCall.body.ended_at, '2026-05-03T20:24:00.000Z',
+      'ended_at should match latest message timestamp (parser-derived, not new Date())');
+    assert.equal(sessionCall.body.duration_minutes, 24,
+      'duration_minutes computed from started_at→ended_at span');
+    assert.equal(sessionCall.body.facts_extracted, 1,
+      'facts_extracted counts memory_remember tool_use blocks');
   } finally { fs.unlinkSync(transcriptPath); }
 });
 
@@ -1136,6 +1167,13 @@ test('postMemorySession POSTs the right shape to /rest/v1/memory_sessions with o
     assert.equal(body.messages_count, 12);
     assert.equal(body.transcript_path, '/tmp/t.jsonl');
     assert.match(body.ended_at, /^2026-/);
+    // Sprint 51.7 T2 — parser-derived metadata serialized into the body.
+    // T4-CODEX 11:18 ET acceptance gate: assert all three new fields land
+    // in the JSON body so regressions fail at the unit-level, not just at
+    // the integration level.
+    assert.equal(body.started_at, '2026-05-03T19:30:00.000Z');
+    assert.equal(body.duration_minutes, 30);
+    assert.equal(body.facts_extracted, 5);
     return { ok: true };
   },
   async () => {
@@ -1149,6 +1187,39 @@ test('postMemorySession POSTs the right shape to /rest/v1/memory_sessions with o
       transcriptPath: '/tmp/t.jsonl',
       messagesCount: 12,
       endedAt: new Date('2026-05-03T20:00:00Z'),
+      // Sprint 51.7 T2 — parser-derived metadata.
+      startedAt: '2026-05-03T19:30:00.000Z',
+      durationMinutes: 30,
+      factsExtracted: 5,
+    });
+    assert.equal(ok, true);
+  }
+));
+
+// Sprint 51.7 T2 — separate test for the v1-compat default path: when the
+// caller omits parser metadata (e.g., a fixture-derived test without
+// timestamps), postMemorySession must still serialize the new fields with
+// their null/null/0 defaults rather than omitting them. Pins the contract
+// that v2 always writes the columns even when the data is unavailable.
+test('postMemorySession defaults parser metadata to null/null/0 when caller omits it', withMockedFetch(
+  async (_url, opts) => {
+    const body = JSON.parse(opts.body);
+    assert.equal(body.started_at, null, 'startedAt absent → started_at: null');
+    assert.equal(body.duration_minutes, null, 'durationMinutes absent → duration_minutes: null');
+    assert.equal(body.facts_extracted, 0, 'factsExtracted absent → facts_extracted: 0');
+    // Existing v1 fields still serialize correctly.
+    assert.equal(body.session_id, 'sess-default-test');
+    assert.match(body.ended_at, /^\d{4}/);
+    return { ok: true };
+  },
+  async () => {
+    const ok = await postMemorySession({
+      supabaseUrl: 'u', supabaseKey: 'k',
+      summary: 's', summaryEmbedding: [1],
+      project: 'p', sessionId: 'sess-default-test',
+      transcriptPath: 't', messagesCount: 5,
+      endedAt: new Date(),
+      // startedAt, durationMinutes, factsExtracted intentionally absent.
     });
     assert.equal(ok, true);
   }
