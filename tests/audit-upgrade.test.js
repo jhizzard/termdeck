@@ -82,7 +82,8 @@ function defaultMockMigrations() {
       '/mock/013_reclassify_uncertain.sql',
       '/mock/014_explicit_grants.sql',
       '/mock/015_source_agent.sql',
-      '/mock/017_memory_sessions_session_metadata.sql'
+      '/mock/017_memory_sessions_session_metadata.sql',
+      '/mock/018_rumen_processed_at.sql'
     ],
     rumenFiles: [
       '/mock/002_pg_cron_schedule.sql',
@@ -101,6 +102,8 @@ function defaultMockMigrations() {
         'alter table memory_items add column if not exists source_agent text;',
       '017_memory_sessions_session_metadata.sql':
         'alter table memory_sessions add column if not exists session_id text;',
+      '018_rumen_processed_at.sql':
+        'alter table memory_sessions add column if not exists rumen_processed_at timestamptz;',
       '002_pg_cron_schedule.sql':
         "select cron.schedule('rumen-tick', '*/15 * * * *', $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/rumen-tick'); $$);",
       '003_graph_inference_schedule.sql':
@@ -139,11 +142,13 @@ function makeFetchMock(spec) {
 // deployed source drift detection).
 // Sprint 52 (Class O): probe set grows from 10 to 12 — adds two edgeFunctionPin
 // probes (rumen-tick + graph-inference) for deployed-state pin drift.
-test('PROBES has 12 entries covering 6 mnestra + 6 rumen targets', () => {
-  assert.equal(PROBES.length, 12);
+// Sprint 53 T2: probe set grows from 12 to 13 — adds memory_sessions.rumen_processed_at
+// (mig 018) so `init --rumen --yes` cannot deploy rumen 0.5.0 picker without the column.
+test('PROBES has 13 entries covering 7 mnestra + 6 rumen targets', () => {
+  assert.equal(PROBES.length, 13);
   const mnestra = PROBES.filter((p) => p.kind === 'mnestra');
   const rumen = PROBES.filter((p) => p.kind === 'rumen');
-  assert.equal(mnestra.length, 6);
+  assert.equal(mnestra.length, 7);
   assert.equal(rumen.length, 6);
   // Migration-backed probes still need a bundled file + probeSql.
   const migrationProbes = PROBES.filter((q) =>
@@ -178,12 +183,14 @@ test('PROBES has 12 entries covering 6 mnestra + 6 rumen targets', () => {
     'both rumen schedule probes must be templated');
 });
 
-test('PROBES order matches dependency requirement: M-009 before M-013, M-013 before M-015, M-015 before M-017', () => {
+test('PROBES order matches dependency requirement: M-009 before M-013, M-013 before M-015, M-015 before M-017, M-017 before M-018', () => {
   const idx = (name) => PROBES.findIndex((p) => p.name === name);
   assert.ok(idx('memory_relationships.weight') < idx('memory_items.reclassified_by'));
   assert.ok(idx('memory_items.reclassified_by') < idx('memory_items.source_agent'));
   // Sprint 51.6: mig 017 (memory_sessions.session_id) lands AFTER mig 015.
   assert.ok(idx('memory_items.source_agent') < idx('memory_sessions.session_id'));
+  // Sprint 53: mig 018 (memory_sessions.rumen_processed_at) lands AFTER mig 017.
+  assert.ok(idx('memory_sessions.session_id') < idx('memory_sessions.rumen_processed_at'));
 });
 
 // ── Behavior on a fresh / up-to-date install ────────────────────────────────
@@ -193,6 +200,7 @@ test('PROBES order matches dependency requirement: M-009 before M-013, M-013 bef
 // cron). functionSource probes have their own dedicated tests below.
 // Sprint 52: also filter edgeFunctionPin probes — they have their own
 // dedicated tests in tests/audit-upgrade-edge-function-pin.test.js.
+// Sprint 53 T2: SQL probe set grew from 8 to 9 (added memory_sessions.rumen_processed_at).
 const SQL_PROBES = PROBES.filter(
   (p) => p.probeKind !== 'functionSource' && p.probeKind !== 'edgeFunctionPin'
 );
@@ -212,14 +220,14 @@ test('all SQL probes present → applied=[] (idempotent up-to-date case)', async
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.probed.length, 8);
-  assert.equal(result.present.length, 8);
+  assert.equal(result.probed.length, 9);
+  assert.equal(result.present.length, 9);
   assert.equal(result.missing.length, 0);
   assert.equal(result.applied.length, 0);
   assert.equal(result.errors.length, 0);
 });
 
-test('all SQL probes absent → all 8 migrations apply in PROBES order', async () => {
+test('all SQL probes absent → all 9 migrations apply in PROBES order', async () => {
   // Default makePgClient returns [] for any non-matched SQL → all probes absent.
   // Apply queries also succeed (return []).
   const client = makePgClient([]);
@@ -230,8 +238,8 @@ test('all SQL probes absent → all 8 migrations apply in PROBES order', async (
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.missing.length, 8);
-  assert.equal(result.applied.length, 8);
+  assert.equal(result.missing.length, 9);
+  assert.equal(result.applied.length, 9);
   assert.equal(result.errors.length, 0);
   // Apply order matches PROBES order (filtered).
   assert.deepEqual(result.applied, SQL_PROBES.map((p) => p.name));
@@ -280,10 +288,19 @@ test('partial drift: weight present, source_agent absent → only 015 applies', 
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  // mig 017's probe SQL also asks for 'session_id' — it's not in the canned
-  // answers above, so it ALSO comes back absent; both 015 and 017 apply.
-  assert.deepEqual(result.missing, ['memory_items.source_agent', 'memory_sessions.session_id']);
-  assert.deepEqual(result.applied, ['memory_items.source_agent', 'memory_sessions.session_id']);
+  // mig 017's probe asks for 'session_id' and mig 018's probe asks for
+  // 'rumen_processed_at' — neither is in the canned answers above, so
+  // BOTH come back absent. 015, 017, and 018 all apply.
+  assert.deepEqual(result.missing, [
+    'memory_items.source_agent',
+    'memory_sessions.session_id',
+    'memory_sessions.rumen_processed_at'
+  ]);
+  assert.deepEqual(result.applied, [
+    'memory_items.source_agent',
+    'memory_sessions.session_id',
+    'memory_sessions.rumen_processed_at'
+  ]);
   assert.equal(result.errors.length, 0);
 });
 
@@ -299,12 +316,12 @@ test('dryRun=true surfaces missing without applying', async () => {
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.missing.length, 8);
+  assert.equal(result.missing.length, 9);
   assert.equal(result.applied.length, 0,
     'dryRun must not apply anything');
   assert.equal(result.errors.length, 0);
-  // Calls should be exactly 8 probes (one per SQL target), no apply queries.
-  assert.equal(client.calls.length, 8);
+  // Calls should be exactly 9 probes (one per SQL target), no apply queries.
+  assert.equal(client.calls.length, 9);
 });
 
 // ── Templating regression guard (Brad 2026-05-03 takeaway #5) ───────────────
@@ -470,7 +487,8 @@ test('packages/server/src/setup index re-exports auditUpgrade', () => {
   assert.ok(Array.isArray(setup.auditUpgrade.PROBES) ||
     Object.isFrozen(setup.auditUpgrade.PROBES));
   // Sprint 52: 10 → 12 (added rumen-tick-pin + graph-inference-pin).
-  assert.equal(setup.auditUpgrade.PROBES.length, 12);
+  // Sprint 53 T2: 12 → 13 (added memory_sessions.rumen_processed_at for mig 018).
+  assert.equal(setup.auditUpgrade.PROBES.length, 13);
 });
 
 // ── Sprint 51.6 T3: functionSource probe (Bug D — Edge Function drift) ──

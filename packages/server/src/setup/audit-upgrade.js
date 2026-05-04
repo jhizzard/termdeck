@@ -137,6 +137,29 @@ const PROBES = Object.freeze([
     presentWhen: 'rowReturned'
   },
   {
+    // Sprint 53 T2 — Rumen picker rewrite. memory_sessions.rumen_processed_at
+    // (added by mig 018) is the picker's idempotency stamp.
+    // rumen 0.5.0+ filters `WHERE rumen_processed_at IS NULL` in extract.ts
+    // and stamps `UPDATE … SET rumen_processed_at = NOW()` between
+    // synthesize and surface (rumen/src/index.ts). Without this column,
+    // rumen-tick errors on the WHERE clause and produces 0 sessions/tick.
+    // Mig 018's ADD COLUMN IF NOT EXISTS + partial index are idempotent
+    // on already-stamped installs; safe to apply repeatedly.
+    //
+    // T4-CODEX 2026-05-04 17:32 ET pre-FIX audit catch — without this probe,
+    // a user upgrading TermDeck and only running `init --rumen --yes`
+    // could deploy the new picker without the column.
+    name: 'memory_sessions.rumen_processed_at',
+    kind: 'mnestra',
+    migrationFile: '018_rumen_processed_at.sql',
+    probeSql:
+      "select 1 as present from information_schema.columns " +
+      "where table_schema = 'public' " +
+      "  and table_name = 'memory_sessions' " +
+      "  and column_name = 'rumen_processed_at' limit 1",
+    presentWhen: 'rowReturned'
+  },
+  {
     name: 'rumen-tick cron schedule',
     kind: 'rumen',
     migrationFile: '002_pg_cron_schedule.sql',
