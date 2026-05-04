@@ -599,6 +599,201 @@ function refreshBundledHookIfNewer(opts = {}) {
 // production users never see noise; the gate is broadly useful for future
 // wire-up bisects (any developer can re-run the wizard with the env var
 // set and get a deterministic trace).
+// Sprint 51.8 — settings.json wiring migration (Brad's v1.0.3 follow-up).
+//
+// Sprint 51.7 fixed the Class M wire-up bug — `runHookRefresh()` runs
+// upstream of the DB phase so the v2 hook FILE always lands. But the
+// settings.json wiring half of `installSessionEndHook` (in
+// `packages/stack-installer/src/index.js`) was never lifted into the
+// wizard. Result: anyone whose `~/.claude/settings.json` was wired by a
+// pre-Sprint-48 stack-installer (= `@jhizzard/termdeck-stack@<=0.5.0`,
+// matching anyone who first ran `termdeck init --mnestra` on
+// v1.0.0/v1.0.1) gets the v2 hook FILE post-1.0.3, but the file is still
+// wired under `Stop`. The v2 hook does not gate on event type, so it
+// fires every assistant turn and writes N `session_summary` rows in
+// `memory_items` per session (Brad's 2026-05-04 jizzard-brain repro).
+//
+// `_mergeSessionEndHookEntry` is a 1:1 hoist of the same-named function
+// in `packages/stack-installer/src/index.js:451`. We can't `require()`
+// across to it because the published `@jhizzard/termdeck` tarball ships
+// only `packages/stack-installer/assets/hooks/**`, not `.../src/**` —
+// the settings.json migration logic is unreachable at runtime from the
+// wizard's own tarball. Hoisting is correct here; the function is pure
+// (~50 LOC, no I/O), the upstream is exhaustively covered by
+// `tests/stack-installer-hook-merge.test.js`, and a duplicate copy
+// avoids cross-package version-coupling.
+//
+// Why we run this on every wizard pass, not just first install: the
+// whole point is to self-heal old Stop wirings on upgrade. Idempotent —
+// if SessionEnd is already correct, this no-ops and prints
+// `already wired`. Brad's framing: "settings.json invariants the wizard
+// must enforce" (INSTALLER-PITFALLS.md ledger #16). The wizard is the
+// canonical place to enforce them because it's the only path users
+// actually run after upgrading the package.
+
+const SETTINGS_JSON_PATH = path.join(require('os').homedir(), '.claude', 'settings.json');
+const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
+const HOOK_TIMEOUT_SECONDS = 30;
+
+function _isSessionEndHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && entry.command.includes('memory-session-end.js');
+}
+
+// Pure: merges our SessionEnd entry into the given settings object.
+// Idempotent. Returns { settings, status } where status is one of
+// 'already-installed', 'installed', or 'migrated-from-stop'. Mutates
+// the input. Mirrors `_mergeSessionEndHookEntry` in
+// `packages/stack-installer/src/index.js:451` byte-for-byte (modulo
+// constants pulled from this file's scope).
+function _mergeSessionEndHookEntry(settings, opts = {}) {
+  const command = opts.command || HOOK_COMMAND;
+  const timeout = opts.timeout != null ? opts.timeout : HOOK_TIMEOUT_SECONDS;
+  const entry = { type: 'command', command, timeout };
+
+  if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
+
+  // Migrate any pre-Sprint-48 Stop registration of OUR hook to SessionEnd.
+  // Only entries matching `_isSessionEndHookEntry` are touched — any
+  // unrelated Stop hooks the user has are preserved verbatim.
+  let migrated = false;
+  if (Array.isArray(settings.hooks.Stop)) {
+    for (const group of settings.hooks.Stop) {
+      if (!group || !Array.isArray(group.hooks)) continue;
+      const before = group.hooks.length;
+      group.hooks = group.hooks.filter((e) => !_isSessionEndHookEntry(e));
+      if (group.hooks.length !== before) migrated = true;
+    }
+    settings.hooks.Stop = settings.hooks.Stop.filter(
+      (g) => g && Array.isArray(g.hooks) && g.hooks.length > 0
+    );
+    if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+  }
+
+  if (!Array.isArray(settings.hooks.SessionEnd)) settings.hooks.SessionEnd = [];
+
+  for (const group of settings.hooks.SessionEnd) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    if (group.hooks.some(_isSessionEndHookEntry)) {
+      return { settings, status: migrated ? 'migrated-from-stop' : 'already-installed' };
+    }
+  }
+
+  const emptyMatcher = settings.hooks.SessionEnd.find(
+    (g) => g && g.matcher === '' && Array.isArray(g.hooks)
+  );
+  if (emptyMatcher) {
+    emptyMatcher.hooks.push(entry);
+  } else {
+    settings.hooks.SessionEnd.push({ matcher: '', hooks: [entry] });
+  }
+  return { settings, status: migrated ? 'migrated-from-stop' : 'installed' };
+}
+
+function _readSettingsJson(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { settings: {}, status: 'no-file' };
+  }
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (raw.trim() === '') return { settings: {}, status: 'empty' };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { settings: {}, status: 'malformed', error: 'top-level must be an object' };
+    }
+    return { settings: parsed, status: 'ok' };
+  } catch (e) {
+    return { settings: {}, status: 'malformed', error: e.message };
+  }
+}
+
+function _writeSettingsJson(filePath, settings) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, filePath);
+}
+
+// Apply the Stop→SessionEnd migration to ~/.claude/settings.json (or the
+// path passed via opts.settingsPath, used by tests). Idempotent on
+// already-migrated installs. Best-effort backup before write —
+// timestamped `.bak.<YYYYMMDDhhmmss>` matching the convention used by
+// `refreshBundledHookIfNewer`. Returns a structured status the caller
+// can pretty-print.
+function migrateSettingsJsonHookEntry(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const settingsPath = opts.settingsPath || SETTINGS_JSON_PATH;
+
+  const read = _readSettingsJson(settingsPath);
+  if (read.status === 'malformed') {
+    return { status: 'malformed', error: read.error, settingsPath };
+  }
+
+  // Snapshot pre-merge JSON so we can detect "no actual change" even
+  // when status == 'installed' (e.g. a fresh user with no hook keys at
+  // all — we'd add one, which IS a change).
+  const before = JSON.stringify(read.settings);
+  const merge = _mergeSessionEndHookEntry(read.settings);
+  const after = JSON.stringify(merge.settings);
+  const noChange = before === after;
+
+  if (merge.status === 'already-installed' || noChange) {
+    return { status: 'already-installed', settingsPath };
+  }
+
+  if (dryRun) {
+    return { status: 'would-' + merge.status, settingsPath };
+  }
+
+  // Best-effort backup before write — only when a settings.json
+  // existed; brand-new install (no-file → write) doesn't need a backup.
+  let backup = null;
+  if (read.status === 'ok' || read.status === 'empty') {
+    const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+    backup = `${settingsPath}.bak.${stamp}`;
+    try { fs.copyFileSync(settingsPath, backup); }
+    catch (_) { backup = null; /* best-effort */ }
+  }
+
+  _writeSettingsJson(settingsPath, merge.settings);
+  return { status: merge.status, settingsPath, backup };
+}
+
+function runSettingsJsonMigration({ dryRun = false } = {}) {
+  const debug = !!process.env.TERMDECK_DEBUG_WIREUP;
+  step('Reconciling ~/.claude/settings.json hook event mapping (Stop → SessionEnd)...');
+  if (debug) {
+    process.stderr.write(`[wire-up-debug] runSettingsJsonMigration entry: dryRun=${dryRun} SETTINGS_JSON_PATH=${SETTINGS_JSON_PATH} exists=${fs.existsSync(SETTINGS_JSON_PATH)}\n`);
+  }
+  try {
+    const r = migrateSettingsJsonHookEntry({ dryRun });
+    if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration return: ${JSON.stringify(r)}\n`);
+    if (r.status === 'already-installed') {
+      ok('already wired (SessionEnd)');
+    } else if (r.status === 'installed') {
+      ok(r.backup ? `installed (SessionEnd; backup: ${path.basename(r.backup)})` : 'installed (SessionEnd)');
+    } else if (r.status === 'migrated-from-stop') {
+      ok(r.backup ? `migrated Stop → SessionEnd (was firing on every turn; backup: ${path.basename(r.backup)})` : 'migrated Stop → SessionEnd (was firing on every turn)');
+    } else if (r.status === 'would-installed') {
+      ok('would install (SessionEnd) (dry-run)');
+    } else if (r.status === 'would-migrated-from-stop') {
+      ok('would migrate Stop → SessionEnd (dry-run)');
+    } else if (r.status === 'malformed') {
+      ok(`(skipped: settings.json malformed: ${r.error})`);
+    } else {
+      ok(`(${r.status})`);
+    }
+  } catch (err) {
+    // Don't abort init for a settings-migration failure — log + continue.
+    // Same fail-soft posture as runHookRefresh: the user's wizard goal
+    // (DB setup) is independent of settings.json wiring; if we can't
+    // write to settings.json (e.g. permission denied), the wizard
+    // should still finish the DB work.
+    process.stdout.write(`    ! settings.json migration failed: ${err.message} (continuing)\n`);
+    if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration threw: ${err && err.stack || err}\n`);
+  }
+}
+
 function runHookRefresh({ dryRun = false } = {}) {
   const debug = !!process.env.TERMDECK_DEBUG_WIREUP;
   step('Refreshing ~/.claude/hooks/memory-session-end.js (if bundled is newer)...');
@@ -715,6 +910,18 @@ async function main(argv) {
   // strands the wizard.
   runHookRefresh({ dryRun: flags.dryRun });
 
+  // Sprint 51.8 — reconcile ~/.claude/settings.json wiring. Sprint 51.7
+  // landed the v2 hook FILE on disk but never moved the event mapping
+  // from `Stop` to `SessionEnd` for users whose settings.json was
+  // written by `@jhizzard/termdeck-stack@<=0.5.0`. The v2 hook does not
+  // gate on event type, so a Stop wiring fires on every assistant turn
+  // and writes N session_summary rows in memory_items per session. This
+  // migration is idempotent and runs alongside the file refresh so the
+  // wire-up + wiring stay in lockstep on every wizard pass. Brad's
+  // 2026-05-04 jizzard-brain repro is the canonical fixture for this
+  // class of bug (INSTALLER-PITFALLS.md ledger #16).
+  runSettingsJsonMigration({ dryRun: flags.dryRun });
+
   step('Connecting to Supabase...');
   if (flags.dryRun) {
     ok('(dry-run, skipped)');
@@ -795,3 +1002,10 @@ if (require.main === module) {
 module.exports = main;
 // Sprint 51.6 T3 — exported for tests/init-mnestra-hook-refresh.test.js.
 module.exports.refreshBundledHookIfNewer = refreshBundledHookIfNewer;
+// Sprint 51.8 — exported for tests/init-mnestra-settings-migration.test.js.
+module.exports.migrateSettingsJsonHookEntry = migrateSettingsJsonHookEntry;
+module.exports._mergeSessionEndHookEntry = _mergeSessionEndHookEntry;
+module.exports._isSessionEndHookEntry = _isSessionEndHookEntry;
+module.exports.SETTINGS_JSON_PATH = SETTINGS_JSON_PATH;
+module.exports.HOOK_COMMAND = HOOK_COMMAND;
+module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;
