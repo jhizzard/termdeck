@@ -160,6 +160,32 @@ function _compareSemver(a, b) {
   return 0;
 }
 
+// Sprint 58 T2 (Brad #4) — Mnestra-version probe used to gate the hybrid-
+// search RPC name in `_runSchemaCheck`. Mnestra ≤ 0.3.x exposes
+// `search_memories(...)`; Mnestra ≥ 0.4.0 renamed it to
+// `memory_hybrid_search(...)`. Pre-fix doctor hard-coded `search_memories`,
+// false-flagging RED on every install at Mnestra 0.4.0+. Reuses
+// `_detectInstalled` (the same `npm ls -g` probe the version-check section
+// already runs). Returns the installed version string or null if not
+// detectable. Exposed as its own module export so unit tests can monkey-
+// patch it independently of the rest of the doctor pipeline.
+async function _detectMnestraVersion() {
+  return module.exports._detectInstalled('@jhizzard/mnestra');
+}
+
+// Sprint 58 T2 (Brad #4) — RPC names to probe for the Mnestra hybrid-search
+// function, gated on the installed Mnestra version.
+//   ≥ 0.4.0       → ['memory_hybrid_search']
+//   ≤ 0.3.x       → ['search_memories']
+//   null/unknown  → ['memory_hybrid_search', 'search_memories'] (probe both;
+//                    GREEN if either exists — graceful on offline / non-
+//                    globally-installed cases).
+function _selectHybridSearchRpcNames(mnestraVersion) {
+  if (!mnestraVersion) return ['memory_hybrid_search', 'search_memories'];
+  if (_compareSemver(mnestraVersion, '0.4.0') >= 0) return ['memory_hybrid_search'];
+  return ['search_memories'];
+}
+
 function classifyRow(installed, latest) {
   if (latest === null) return STATUS.NETWORK_ERROR;
   if (installed === null) return STATUS.NOT_INSTALLED;
@@ -354,13 +380,45 @@ async function _runSchemaCheck(opts = {}) {
       status: (await probeSchema(client, SCHEMA_QUERIES.column('memory_items', 'source_session_id'))) ? 'pass' : 'fail',
       hint: `migration 007 adds it — run: npm cache clean --force && npm i -g @jhizzard/termdeck@latest && termdeck init --mnestra --yes`,
     });
-    for (const fn of ['match_memories', 'search_memories', 'memory_status_aggregation']) {
-      modern.push({
-        label: `${fn}() RPC`,
-        status: (await probeSchema(client, SCHEMA_QUERIES.rpc(fn))) ? 'pass' : 'fail',
-        hint: `migration 005/006 creates it — re-run: termdeck init --mnestra --yes`,
-      });
+    modern.push({
+      label: `match_memories() RPC`,
+      status: (await probeSchema(client, SCHEMA_QUERIES.rpc('match_memories'))) ? 'pass' : 'fail',
+      hint: `migration 005/006 creates it — re-run: termdeck init --mnestra --yes`,
+    });
+
+    // Sprint 58 T2 (Brad #4): version-gate the hybrid-search RPC name. The
+    // function was renamed `search_memories` → `memory_hybrid_search` at
+    // Mnestra 0.4.0. Pre-fix doctor probed only the legacy name, so every
+    // install at Mnestra ≥ 0.4.0 reported false-RED here. The version is
+    // passed in by `doctor()` (which already detected it for the version-
+    // check table); when called standalone, we self-detect.
+    const mnestraVersion = optsObj.mnestraVersion !== undefined
+      ? optsObj.mnestraVersion
+      : await module.exports._detectMnestraVersion();
+    const hybridProbeNames = _selectHybridSearchRpcNames(mnestraVersion);
+    const hybridProbeLabel = hybridProbeNames.length === 1
+      ? `${hybridProbeNames[0]}() RPC`
+      : `${hybridProbeNames.join(' or ')}() RPC`;
+    let hybridOk = false;
+    for (const name of hybridProbeNames) {
+      if (await probeSchema(client, SCHEMA_QUERIES.rpc(name))) {
+        hybridOk = true;
+        break;
+      }
     }
+    modern.push({
+      label: hybridProbeLabel,
+      status: hybridOk ? 'pass' : 'fail',
+      hint: mnestraVersion
+        ? `Mnestra ${mnestraVersion} expects ${hybridProbeNames[0]}() — re-run: termdeck init --mnestra --yes`
+        : `migration 005 (legacy) or 015+ (modern) creates it — re-run: termdeck init --mnestra --yes`,
+    });
+
+    modern.push({
+      label: `memory_status_aggregation() RPC`,
+      status: (await probeSchema(client, SCHEMA_QUERIES.rpc('memory_status_aggregation'))) ? 'pass' : 'fail',
+      hint: `migration 005/006 creates it — re-run: termdeck init --mnestra --yes`,
+    });
 
     // Mnestra legacy (Sprint 35 T2 ships these via 008_legacy_rag_tables.sql)
     const legacy = sections[1].checks;
@@ -510,10 +568,15 @@ async function doctor(argv) {
   );
 
   // Sprint 35 T3: schema check (skippable for tests / offline runs).
+  // Sprint 58 T2 (Brad #4): pass the already-detected Mnestra version
+  // through so `_runSchemaCheck` doesn't re-shell-out to `npm ls -g`. The
+  // version-check section detected it a few lines up; reuse it.
   let schema = null;
   if (!opts.noSchema) {
+    const mnestraRow = rows.find((r) => r.package === '@jhizzard/mnestra');
+    const mnestraVersion = mnestraRow ? mnestraRow.installed : null;
     try {
-      schema = await module.exports._runSchemaCheck();
+      schema = await module.exports._runSchemaCheck({ mnestraVersion });
     } catch (err) {
       schema = {
         skipped: false,
@@ -559,6 +622,8 @@ module.exports = doctor;
 module.exports._detectInstalled = _detectInstalled;
 module.exports._fetchLatest = _fetchLatest;
 module.exports._compareSemver = _compareSemver;
+module.exports._detectMnestraVersion = _detectMnestraVersion;
+module.exports._selectHybridSearchRpcNames = _selectHybridSearchRpcNames;
 module.exports._runSchemaCheck = _runSchemaCheck;
 module.exports.STACK_PACKAGES = STACK_PACKAGES;
 module.exports.STATUS = STATUS;

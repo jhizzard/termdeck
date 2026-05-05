@@ -1,0 +1,152 @@
+name: Systemd nightly smoke (Hetzner CX22)
+
+# Sprint 58 T2 — environment-coverage catch-net for Brad findings #7+#8.
+#
+# Spins a Hetzner Cloud CX22 VM nightly at 04:00 UTC, installs the TermDeck
+# stack, writes a fixture systemd unit that DELIBERATELY reproduces:
+#   #7  launcher exits 0 immediately under `systemd Type=simple` (TTY
+#       check fails in non-interactive parent — fatal install bug Brad
+#       reported on Ubuntu 24).
+#   #8  systemd doesn't inherit user PATH / ~/.bashrc, so spawned `claude`
+#       panels can't find the binary.
+#
+# Pre-Sprint-59 the workflow is EXPECTED to fail — that proves the
+# catch-net catches the right thing. Sprint 59 ships `--service` flag +
+# PATH= docs that turn the workflow GREEN. The workflow's job from then
+# on is regression-guard duty: any future change that re-breaks Brad #7
+# or #8 will surface as a failed nightly within 24 h.
+#
+# Cost: per-run with full teardown ≈ €0.03 × 30 nights = €0.90/month. The
+# smoke script's trap deletes the VM on every exit path; this workflow
+# adds a belt-and-suspenders teardown that scans for orphans matching the
+# run-ID and force-deletes them.
+
+on:
+  schedule:
+    # 04:00 UTC = 23:00/00:00 ET (depending on DST). Picked for low
+    # contention with daytime work and to match Brad's "first morning
+    # check" cadence.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you firing this manually? (logged in run summary)'
+        required: false
+        default: 'manual verification'
+
+permissions:
+  contents: read
+
+env:
+  # Pinned for reproducibility. Bump in lockstep with hcloud release notes.
+  # https://github.com/hetznercloud/cli/releases
+  HCLOUD_VERSION: '1.51.0'
+
+jobs:
+  systemd-smoke:
+    name: systemd Type=simple + PATH= fixture (Brad #7+#8)
+    runs-on: ubuntu-latest
+    # Enough headroom for: provision (~2 min) + apt + npm install (~5 min)
+    # + init wizards (~3 min) + 30s settle + probes + teardown. Real-world
+    # observed wall-clock in dev: ~12 min. 25 caps the worst case.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install hcloud CLI v${{ env.HCLOUD_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/hetznercloud/cli/releases/download/v${HCLOUD_VERSION}/hcloud-linux-amd64.tar.gz" \
+            -o /tmp/hcloud.tar.gz
+          tar -xzf /tmp/hcloud.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/hcloud /usr/local/bin/hcloud
+          hcloud version
+
+      - name: Run Hetzner systemd smoke
+        id: smoke
+        env:
+          # All ten secrets canonicalized by T3 in Sprint 58 STATUS.md
+          # BOOT post. The smoke script reads them via require_env so a
+          # missing one fails fast with exit 2.
+          HETZNER_API_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
+          HETZNER_SSH_KEY_NAME: ${{ secrets.HETZNER_SSH_KEY_NAME }}
+          HETZNER_SSH_PRIVATE_KEY: ${{ secrets.HETZNER_SSH_PRIVATE_KEY }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          REPORT_PATH: ${{ github.workspace }}/hetzner-systemd-smoke-report.json
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          bash scripts/hetzner-systemd-smoke.sh
+
+      - name: Upload smoke report (always, even on RED)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hetzner-systemd-smoke-report-${{ github.run_id }}
+          path: |
+            hetzner-systemd-smoke-report.json
+            hetzner-systemd-smoke-report.json.journal.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Summarize report in run summary
+        if: always()
+        run: |
+          set -uo pipefail
+          if [[ ! -f hetzner-systemd-smoke-report.json ]]; then
+            {
+              echo '## ⚠ Smoke report missing'
+              echo
+              echo 'The `hetzner-systemd-smoke.sh` did not produce a JSON report — likely'
+              echo 'an infrastructure failure (provisioning, SSH, secrets). Check job logs.'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          {
+            echo '## Hetzner systemd smoke report'
+            echo
+            echo '```json'
+            cat hetzner-systemd-smoke-report.json
+            echo '```'
+            echo
+            echo '> Pre-Sprint-59 this fixture is EXPECTED to be RED. Failure here means'
+            echo '> the catch-net is working as designed. Post-Sprint-59 fix, this must turn GREEN.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Belt-and-suspenders teardown (orphan-VM safety net)
+        if: always()
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          # The smoke script's `trap cleanup EXIT` should have already
+          # deleted the VM on every exit path. This step is the safety
+          # net in case the runner was cancelled mid-teardown OR the
+          # trap itself failed. We list every VM matching this run's ID
+          # and force-delete any survivors.
+          if ! command -v hcloud >/dev/null 2>&1; then
+            echo '::warning ::hcloud CLI not on PATH — skipping orphan sweep'
+            exit 0
+          fi
+          PATTERN="termdeck-systemd-smoke-${{ github.run_id }}"
+          # `hcloud server list -o json` returns an array. Pipe to jq for
+          # name-prefix filter. jq is pre-installed on ubuntu-latest.
+          ORPHANS=$(hcloud server list -o json 2>/dev/null \
+            | jq -r --arg p "${PATTERN}" '.[] | select(.name | startswith($p)) | .name' \
+            || true)
+          if [[ -z "${ORPHANS:-}" ]]; then
+            echo "no orphan VMs matching ${PATTERN}"
+            exit 0
+          fi
+          while IFS= read -r vm; do
+            [[ -z "${vm}" ]] && continue
+            echo "::warning ::orphan VM ${vm} found post-smoke (trap should have deleted it); force-deleting"
+            if ! hcloud server delete "${vm}"; then
+              echo "::error ::could not delete orphan VM ${vm} — manual cleanup needed"
+            fi
+          done <<< "${ORPHANS}"

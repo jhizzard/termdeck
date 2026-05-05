@@ -1,0 +1,49 @@
+# docker/Dockerfile.fedora
+#
+# Sprint 58 — Fedora 41 BASELINE (gating GREEN).
+#
+# Coverage role: prove the install path doesn't hard-code apt-vs-dnf
+# assumptions. Fedora uses dnf as its package manager and rpm as its package
+# format. If any bundled script or postinstall hook assumes apt-get, this
+# fixture catches it.
+#
+# zsh + bash are both installed so the fixture isn't simultaneously
+# reproducing Brad #5 (no-zsh) — that's Dockerfile.ubuntu's job. This image
+# is a clean baseline for the dnf-vs-apt axis only.
+#
+# Build:  docker build -f docker/Dockerfile.fedora -t termdeck-fixture-fedora .
+# Run:    docker run --rm --env-file <secrets-file> termdeck-fixture-fedora
+
+FROM fedora:41
+
+# Node 20 from Fedora's official repo (Fedora 41 ships Node 20+). Plus
+# zsh + bash so the baseline scenario doesn't accidentally trigger Brad #5.
+# build-essential's Fedora analogue is `@development-tools` (a group); we
+# pull `gcc-c++ make python3` directly which is the minimal subset
+# better-sqlite3 + node-pty need for any source-build fallback.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      ca-certificates curl gnupg2 git \
+      gcc-c++ make python3 \
+      nodejs npm \
+      bash zsh \
+ && dnf clean all
+
+# Sanity: baseline invariant is zsh INSTALLED.
+RUN if ! command -v zsh > /dev/null 2>&1; then \
+      echo "FIXTURE-INVARIANT-BROKEN: zsh missing on Fedora baseline; brad-5 would false-RED here" >&2 \
+      && exit 1; \
+    fi
+
+WORKDIR /app
+
+COPY . /app
+RUN rm -rf /app/node_modules /app/packages/*/node_modules
+
+RUN npm install --no-audit --no-fund \
+ && npm install -g . \
+ && cd packages/stack-installer && npm install --no-audit --no-fund && npm install -g .
+
+RUN chmod +x /app/docker/run-fixture.sh
+
+ENV FIXTURE_INTENT=baseline
+ENTRYPOINT ["/app/docker/run-fixture.sh"]

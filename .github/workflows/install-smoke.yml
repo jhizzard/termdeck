@@ -1,0 +1,731 @@
+name: install-smoke
+
+# Sprint 58 — Environment Coverage Catch-Net (T1 GHACTIONS+DOCKER lane).
+#
+# This workflow is the catch-net for Brad-class environment-shape regressions —
+# bugs that only manifest on environments we don't run locally. Brad's 9-finding
+# field report against @jhizzard/termdeck@1.0.9 on Ubuntu 24 / Dell R730 /
+# Node 20 / nohup launch path is the calibration set; full text in CHANGELOG.md
+# § [1.0.12] Notes.
+#
+# Two-mode fixture taxonomy (per ORCH 2026-05-05 16:21 ET CLARIFICATION):
+#
+#   MODE A — GATING.   Standard CI semantics: any RED fails the build. Used for
+#                      happy-path probes that must always be GREEN on a healthy
+#                      install of TermDeck. Acceptance criterion 1 in the
+#                      Sprint 58 PLANNING.md.
+#
+#   MODE B — REPRODUCER. continue-on-error: true. Each emits a JSON artifact
+#                        following the schema termdeck-install-smoke/v1.
+#                        Sprint 58 expected-state for each REPRODUCER is "red";
+#                        Sprint 59 will flip per-bug `expected` values to "green"
+#                        as fixes land. The meta-job (fixture-status-meta) is
+#                        GATING and asserts each REPRODUCER's actual outcome
+#                        matches its declared expected-state.
+#
+# Per-Brad-finding fixture mapping (cross-references docs/INSTALL-FIXTURES.md):
+#
+#   #1 nohup secrets propagation     -> reproduce-brad-1-nohup-secrets         (REPRODUCER)
+#   #2 DATABASE_URL quote-strip      -> reproduce-brad-2-quoted-database-url   (REPRODUCER)
+#   #4 search_memories drift         -> closed within Sprint 58 by T2 Task 2.3 (GATING — covered
+#                                       by clean-install-ubuntu's `termdeck doctor` step)
+#   #5 hardcoded /bin/zsh fallback   -> reproduce-brad-5-no-zsh-ubuntu         (REPRODUCER)
+#                                    -> reproduce-brad-5-alpine-bashism        (REPRODUCER, distinct catch surface)
+#   #6 claude-code optional dep      -> reproduce-brad-6-claude-code-optional  (REPRODUCER)
+#   #7 systemd Type=simple TTY exit  -> T2's systemd-nightly.yml (out of scope here)
+#   #8 systemd PATH inheritance      -> T2's systemd-nightly.yml (out of scope here)
+#
+# Cross-references:
+#   - Brad's 9 findings:               CHANGELOG.md § [1.0.12] Notes
+#   - Sprint 58 PLANNING:              docs/sprint-58-environment-coverage/PLANNING.md
+#   - ORCH two-mode CLARIFICATION:     docs/sprint-58-environment-coverage/STATUS.md (16:21 ET)
+#   - Sprint 59 fix plan:              docs/sprint-59-brad-bug-fixes-against-catch-net/PLANNING.md
+#   - T3 INSTALL-FIXTURES coverage:    docs/INSTALL-FIXTURES.md (when T3 ships it)
+#   - T3 canonical secret names:       docs/sprint-58-environment-coverage/STATUS.md T3 BOOT 16:15 ET
+#   - Parallel JSON schema:            scripts/hetzner-systemd-smoke.sh (termdeck-systemd-smoke/v1)
+#   - T2 Brad #4 fix (Sprint 58 GATING): packages/cli/src/doctor.js (FIX-LANDED 16:32 ET)
+#   - T1 lane discipline:              docs/sprint-58-environment-coverage/T1-ghactions-docker.md
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  ARTIFACT_SCHEMA: termdeck-install-smoke/v1
+
+jobs:
+  # ============================================================================
+  # GATING JOBS — must always be GREEN. Acceptance criterion 1 in PLANNING.md.
+  # ============================================================================
+
+  clean-install-ubuntu:
+    name: 'GATING — clean install on Ubuntu 24'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Confirm GATING fixture invariants on the runner
+        # GitHub-hosted ubuntu-24.04 ships zsh by default. If a future runner
+        # image regresses and removes zsh, we want this gating job to fail
+        # with a clear message rather than silently turning into the Brad #5
+        # reproducer (which is Dockerfile.ubuntu's job, not this one).
+        run: |
+          set -e
+          if ! command -v zsh > /dev/null 2>&1; then
+            echo "FIXTURE-INVARIANT-BROKEN: zsh missing on ubuntu-24.04 runner;"
+            echo "  Brad #5 would falsely trigger here. Either install zsh in"
+            echo "  this step or move the gating-vs-reproducer distinction to"
+            echo "  a separate runner image."
+            exit 1
+          fi
+          echo "OK — zsh present on runner ($(zsh --version))"
+
+      - name: Install stack from working tree (NOT from npm)
+        run: |
+          # We test THIS commit, not the previously-published version.
+          npm install --no-audit --no-fund
+          npm install -g .
+          cd packages/stack-installer && npm install --no-audit --no-fund && npm install -g .
+
+      - name: Verify CLI launchers parse
+        run: |
+          termdeck --help > /dev/null
+          termdeck-stack --help > /dev/null
+
+      - name: Write ~/.termdeck/secrets.env (baseline — no Brad-bug shapes)
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.termdeck
+          # NO surrounding quotes — Brad #2 not triggered in the GATING path.
+          cat > ~/.termdeck/secrets.env <<EOF
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          SUPABASE_ANON_KEY=${TEST_SUPABASE_ANON_KEY}
+          DATABASE_URL=${TEST_DATABASE_URL}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          EOF
+          chmod 600 ~/.termdeck/secrets.env
+
+      - name: Reset test Supabase schema (T3 owns; no-op if not yet shipped)
+        run: |
+          # Per T4-CODEX FINDING 16:21 ET: T3's reset script uses bash + here-string;
+          # invoke ONLY from the runner host (Ubuntu, has bash), NEVER from inside
+          # the Alpine container.
+          if [ -x scripts/test-supabase-reset.sh ]; then
+            bash scripts/test-supabase-reset.sh
+          else
+            echo "[note] scripts/test-supabase-reset.sh not yet shipped — skipping pre-init reset."
+          fi
+
+      - name: termdeck init --mnestra --yes
+        run: termdeck init --mnestra --yes
+
+      - name: termdeck init --rumen --yes
+        run: termdeck init --rumen --yes
+
+      - name: termdeck doctor (must report all probes GREEN)
+        # T2 FIX-LANDED 16:32 ET makes Brad #4 (search_memories vs
+        # memory_hybrid_search) GREEN within Sprint 58. This step gates on
+        # ALL probes GREEN — any future regression on the doctor schema
+        # check trips the catch-net.
+        run: termdeck doctor
+
+      - name: Cleanup test Supabase schema (always-runs)
+        if: always()
+        run: |
+          if [ -x scripts/test-supabase-reset.sh ]; then
+            bash scripts/test-supabase-reset.sh
+          else
+            echo "[note] scripts/test-supabase-reset.sh not yet shipped — skipping post-init cleanup."
+          fi
+
+  docker-fedora-baseline:
+    name: 'GATING — Docker baseline: Fedora 41'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Fedora 41 baseline image
+        run: |
+          docker build \
+            -f docker/Dockerfile.fedora \
+            -t termdeck-fixture-fedora:${{ github.sha }} \
+            .
+
+      - name: Run Fedora baseline fixture (GATING — all probes GREEN expected)
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+        run: |
+          set -e
+          cat > /tmp/fedora-secrets.env <<EOF
+          DATABASE_URL=${TEST_DATABASE_URL}
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          FIXTURE_INTENT=baseline
+          EOF
+          docker run --rm \
+            --env-file /tmp/fedora-secrets.env \
+            termdeck-fixture-fedora:${{ github.sha }}
+
+  docker-debian-baseline:
+    name: 'GATING — Docker baseline: Debian 12'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Debian 12 baseline image
+        run: |
+          docker build \
+            -f docker/Dockerfile.debian \
+            -t termdeck-fixture-debian:${{ github.sha }} \
+            .
+
+      - name: Run Debian baseline fixture (GATING — all probes GREEN expected)
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+        run: |
+          set -e
+          cat > /tmp/debian-secrets.env <<EOF
+          DATABASE_URL=${TEST_DATABASE_URL}
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          FIXTURE_INTENT=baseline
+          EOF
+          docker run --rm \
+            --env-file /tmp/debian-secrets.env \
+            termdeck-fixture-debian:${{ github.sha }}
+
+  # ============================================================================
+  # REPRODUCER JOBS — non-gating. Each emits a JSON artifact following
+  # schema=termdeck-install-smoke/v1. Sprint 58 expected-state for each = "red".
+  # Sprint 59 flips per-bug `expected` values to "green" as fixes land.
+  #
+  # Each REPRODUCER job has continue-on-error: true at the job level — its
+  # failure does NOT block the merge. The fixture-status-meta job (GATING) is
+  # what gates: it asserts each REPRODUCER's actual outcome matches expected.
+  # ============================================================================
+
+  reproduce-brad-5-no-zsh-ubuntu:
+    name: 'REPRODUCER — Brad #5: Ubuntu without zsh'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Dockerfile.ubuntu image (deliberately no zsh)
+        id: build
+        run: |
+          docker build \
+            -f docker/Dockerfile.ubuntu \
+            -t termdeck-fixture-ubuntu:${{ github.sha }} \
+            .
+
+      - name: Run Brad #5 reproducer fixture (expected RED until Sprint 59)
+        id: reproduce
+        continue-on-error: true
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+        run: |
+          set -e
+          cat > /tmp/ubuntu-no-zsh-secrets.env <<EOF
+          DATABASE_URL=${TEST_DATABASE_URL}
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          FIXTURE_INTENT=brad-5-no-zsh
+          EOF
+          docker run --rm \
+            --env-file /tmp/ubuntu-no-zsh-secrets.env \
+            termdeck-fixture-ubuntu:${{ github.sha }}
+
+      - name: Emit fixture-status JSON artifact
+        if: always()
+        env:
+          REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
+        run: |
+          set -e
+          # Sprint 58: every REPRODUCER `expected` = "red".
+          # Sprint 59 will flip per-bug as fixes land.
+          EXPECTED="red"
+          case "$REPRODUCE_OUTCOME" in
+            success) ACTUAL="green" ;;
+            failure) ACTUAL="red"   ;;
+            *)       ACTUAL="skipped" ;;
+          esac
+          if [ "$ACTUAL" = "$EXPECTED" ]; then
+            STATUS="match"
+          else
+            STATUS="mismatch"
+          fi
+          mkdir -p /tmp/fixture-status
+          cat > /tmp/fixture-status/brad-5-no-zsh-ubuntu.json <<EOF
+          {
+            "schema": "${{ env.ARTIFACT_SCHEMA }}",
+            "id": "brad-5-no-zsh-ubuntu",
+            "brad_finding": 5,
+            "fixture_intent": "Hardcoded /bin/zsh PTY shell fallback fatal on minimal Linux without zsh installed (packages/server/src/index.js)",
+            "expected": "$EXPECTED",
+            "actual": "$ACTUAL",
+            "status": "$STATUS",
+            "fix_sprint": 59,
+            "evidence_command": "docker build -f docker/Dockerfile.ubuntu . && docker run --rm --env-file <secrets> termdeck-fixture-ubuntu"
+          }
+          EOF
+          cat /tmp/fixture-status/brad-5-no-zsh-ubuntu.json
+
+      - name: Upload fixture-status artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-status-brad-5-no-zsh-ubuntu
+          path: /tmp/fixture-status/brad-5-no-zsh-ubuntu.json
+
+  reproduce-brad-5-alpine-bashism:
+    name: 'REPRODUCER — Brad #5 / bashism: Alpine 3.20'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Dockerfile.alpine image (busybox ash, no bash)
+        id: build
+        run: |
+          docker build \
+            -f docker/Dockerfile.alpine \
+            -t termdeck-fixture-alpine:${{ github.sha }} \
+            .
+
+      - name: Run Alpine bashism reproducer fixture (expected RED until Sprint 59)
+        id: reproduce
+        continue-on-error: true
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+        run: |
+          set -e
+          cat > /tmp/alpine-secrets.env <<EOF
+          DATABASE_URL=${TEST_DATABASE_URL}
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          FIXTURE_INTENT=brad-5-alpine-bashism
+          EOF
+          docker run --rm \
+            --env-file /tmp/alpine-secrets.env \
+            termdeck-fixture-alpine:${{ github.sha }}
+
+      - name: Emit fixture-status JSON artifact
+        if: always()
+        env:
+          REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
+        run: |
+          set -e
+          EXPECTED="red"
+          case "$REPRODUCE_OUTCOME" in
+            success) ACTUAL="green" ;;
+            failure) ACTUAL="red"   ;;
+            *)       ACTUAL="skipped" ;;
+          esac
+          if [ "$ACTUAL" = "$EXPECTED" ]; then STATUS="match"; else STATUS="mismatch"; fi
+          mkdir -p /tmp/fixture-status
+          cat > /tmp/fixture-status/brad-5-alpine-bashism.json <<EOF
+          {
+            "schema": "${{ env.ARTIFACT_SCHEMA }}",
+            "id": "brad-5-alpine-bashism",
+            "brad_finding": 5,
+            "fixture_intent": "Bashism catcher — Alpine busybox ash exposes any /bin/bash invocation in bundled scripts or runtime code",
+            "expected": "$EXPECTED",
+            "actual": "$ACTUAL",
+            "status": "$STATUS",
+            "fix_sprint": 59,
+            "evidence_command": "docker build -f docker/Dockerfile.alpine . && docker run --rm --env-file <secrets> termdeck-fixture-alpine"
+          }
+          EOF
+          cat /tmp/fixture-status/brad-5-alpine-bashism.json
+
+      - name: Upload fixture-status artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-status-brad-5-alpine-bashism
+          path: /tmp/fixture-status/brad-5-alpine-bashism.json
+
+  reproduce-brad-2-quoted-database-url:
+    name: 'REPRODUCER — Brad #2: DATABASE_URL with surrounding quotes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install termdeck from working tree
+        run: |
+          npm install --no-audit --no-fund
+          npm install -g .
+
+      - name: Run Brad #2 reproducer (literal-quoted DATABASE_URL)
+        id: reproduce
+        continue-on-error: true
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.termdeck
+          # CRITICAL — literal double-quote chars wrapping the value reproduces
+          # Brad #2: pg-loaders strip surrounding quotes; Node URL constructor
+          # doesn't and throws "Invalid URL" on the leading ". Once Sprint 59
+          # ships the wizard write-out + audit-upgrade quote-strip, this step
+          # turns from RED to GREEN.
+          cat > ~/.termdeck/secrets.env <<EOF
+          SUPABASE_URL="${TEST_SUPABASE_URL}"
+          SUPABASE_SERVICE_ROLE_KEY="${TEST_SUPABASE_SERVICE_ROLE_KEY}"
+          DATABASE_URL="${TEST_DATABASE_URL}"
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          EOF
+          chmod 600 ~/.termdeck/secrets.env
+          # init --mnestra --yes is expected to FAIL on Invalid URL until
+          # Sprint 59 ships the quote-strip.
+          termdeck init --mnestra --yes
+
+      - name: Emit fixture-status JSON artifact
+        if: always()
+        env:
+          REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
+        run: |
+          set -e
+          EXPECTED="red"
+          case "$REPRODUCE_OUTCOME" in
+            success) ACTUAL="green" ;;
+            failure) ACTUAL="red"   ;;
+            *)       ACTUAL="skipped" ;;
+          esac
+          if [ "$ACTUAL" = "$EXPECTED" ]; then STATUS="match"; else STATUS="mismatch"; fi
+          mkdir -p /tmp/fixture-status
+          cat > /tmp/fixture-status/brad-2-quoted-database-url.json <<EOF
+          {
+            "schema": "${{ env.ARTIFACT_SCHEMA }}",
+            "id": "brad-2-quoted-database-url",
+            "brad_finding": 2,
+            "fixture_intent": "DATABASE_URL with surrounding double-quotes breaks Node URL parser (Invalid URL); pg-loaders strip but Node URL constructor doesn't",
+            "expected": "$EXPECTED",
+            "actual": "$ACTUAL",
+            "status": "$STATUS",
+            "fix_sprint": 59,
+            "evidence_command": "DATABASE_URL=\"<value>\" termdeck init --mnestra --yes"
+          }
+          EOF
+          cat /tmp/fixture-status/brad-2-quoted-database-url.json
+
+      - name: Upload fixture-status artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-status-brad-2-quoted-database-url
+          path: /tmp/fixture-status/brad-2-quoted-database-url.json
+
+  reproduce-brad-1-nohup-secrets:
+    name: 'REPRODUCER — Brad #1: nohup launch without env-export'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install termdeck
+        run: |
+          npm install --no-audit --no-fund
+          npm install -g .
+
+      - name: Run Brad #1 reproducer (nohup launch, secrets.env NOT shell-sourced)
+        id: reproduce
+        continue-on-error: true
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.termdeck
+          cat > ~/.termdeck/secrets.env <<EOF
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          DATABASE_URL=${TEST_DATABASE_URL}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          EOF
+          chmod 600 ~/.termdeck/secrets.env
+          # CRITICAL: do NOT shell-source secrets.env first. Brad's environment
+          # is exactly this — `nohup termdeck` from a shell whose process.env
+          # has no DATABASE_URL. Pre-Sprint-59, the launcher's preflight reads
+          # process.env.DATABASE_URL (empty) and throws Invalid URL.
+          # Use env -i to scrub PATH-inherited env, then re-add minimal PATH.
+          # This guarantees Brad's no-shell-export reproduction shape.
+          unset SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY DATABASE_URL OPENAI_API_KEY ANTHROPIC_API_KEY
+          nohup termdeck > /tmp/td.out 2>&1 &
+          TD_PID=$!
+          # Give the launcher a few seconds to either bind or fail.
+          sleep 8
+          # Probe healthz. Any non-200 or curl-fail is RED (Brad #1).
+          if ! curl -fsS --max-time 8 http://127.0.0.1:3000/healthz; then
+            echo "[brad-1] /healthz did NOT respond — likely Invalid URL cascade"
+            kill "$TD_PID" 2>/dev/null || true
+            tail -n 200 /tmp/td.out
+            exit 1
+          fi
+          # Even if /healthz binds, doctor exercises the secrets-loaded path.
+          if ! termdeck doctor; then
+            echo "[brad-1] doctor RED — secrets not propagated into launcher process.env"
+            kill "$TD_PID" 2>/dev/null || true
+            tail -n 200 /tmp/td.out
+            exit 1
+          fi
+          kill "$TD_PID" 2>/dev/null || true
+
+      - name: Emit fixture-status JSON artifact
+        if: always()
+        env:
+          REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
+        run: |
+          set -e
+          EXPECTED="red"
+          case "$REPRODUCE_OUTCOME" in
+            success) ACTUAL="green" ;;
+            failure) ACTUAL="red"   ;;
+            *)       ACTUAL="skipped" ;;
+          esac
+          if [ "$ACTUAL" = "$EXPECTED" ]; then STATUS="match"; else STATUS="mismatch"; fi
+          mkdir -p /tmp/fixture-status
+          cat > /tmp/fixture-status/brad-1-nohup-secrets.json <<EOF
+          {
+            "schema": "${{ env.ARTIFACT_SCHEMA }}",
+            "id": "brad-1-nohup-secrets",
+            "brad_finding": 1,
+            "fixture_intent": "nohup termdeck launch without prior shell-sourcing of ~/.termdeck/secrets.env — launcher's process.env probes (DATABASE_URL etc) read empty values and throw Invalid URL",
+            "expected": "$EXPECTED",
+            "actual": "$ACTUAL",
+            "status": "$STATUS",
+            "fix_sprint": 59,
+            "evidence_command": "echo 'DATABASE_URL=...' > ~/.termdeck/secrets.env && unset DATABASE_URL && nohup termdeck && curl http://127.0.0.1:3000/healthz"
+          }
+          EOF
+          cat /tmp/fixture-status/brad-1-nohup-secrets.json
+
+      - name: Upload fixture-status artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-status-brad-1-nohup-secrets
+          path: /tmp/fixture-status/brad-1-nohup-secrets.json
+
+  reproduce-brad-6-claude-code-optional:
+    name: 'REPRODUCER — Brad #6: claude-code without --include=optional'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run Brad #6 reproducer (omit optional dep on Linux x64)
+        id: reproduce
+        continue-on-error: true
+        run: |
+          set -e
+          # `--omit=optional` forces the failure mode regardless of npm
+          # version's default optional-dep behavior. On Linux x64, the
+          # `@anthropic-ai/claude-code` package depends on a
+          # platform-specific optional native binary; without it, the
+          # `claude` launcher stub fails at runtime.
+          npm install -g @anthropic-ai/claude-code --omit=optional
+          # Verify the launcher works post-install. Pre-Sprint-59 docs
+          # update, this is expected to fail because the native binary
+          # wasn't installed.
+          claude --version
+
+      - name: Emit fixture-status JSON artifact
+        if: always()
+        env:
+          REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
+        run: |
+          set -e
+          EXPECTED="red"
+          case "$REPRODUCE_OUTCOME" in
+            success) ACTUAL="green" ;;
+            failure) ACTUAL="red"   ;;
+            *)       ACTUAL="skipped" ;;
+          esac
+          if [ "$ACTUAL" = "$EXPECTED" ]; then STATUS="match"; else STATUS="mismatch"; fi
+          mkdir -p /tmp/fixture-status
+          cat > /tmp/fixture-status/brad-6-claude-code-optional.json <<EOF
+          {
+            "schema": "${{ env.ARTIFACT_SCHEMA }}",
+            "id": "brad-6-claude-code-optional",
+            "brad_finding": 6,
+            "fixture_intent": "On Linux x64, @anthropic-ai/claude-code requires --include=optional to install the platform-specific native binary; without it, claude --version fails at runtime",
+            "expected": "$EXPECTED",
+            "actual": "$ACTUAL",
+            "status": "$STATUS",
+            "fix_sprint": 59,
+            "evidence_command": "npm install -g @anthropic-ai/claude-code --omit=optional && claude --version"
+          }
+          EOF
+          cat /tmp/fixture-status/brad-6-claude-code-optional.json
+
+      - name: Upload fixture-status artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-status-brad-6-claude-code-optional
+          path: /tmp/fixture-status/brad-6-claude-code-optional.json
+
+  # ============================================================================
+  # META-JOB — assert each REPRODUCER's actual outcome matches its declared
+  # expected-state. This is the GATING gate for the REPRODUCER mode (per ORCH
+  # CLARIFICATION 2026-05-05 16:21 ET § Implementation order #3).
+  #
+  # Sprint 58 baseline: every REPRODUCER `expected` = "red". A reproducer that
+  # unexpectedly turns GREEN means the bug got fixed in Sprint 59 — at which
+  # point the workflow's `expected` value should be flipped to "green" to keep
+  # the catch-net guarding against regression.
+  #
+  # A reproducer that stays RED when expected GREEN means a Sprint 59 fix
+  # regressed AND the catch-net caught it. That's the catch-net working as
+  # designed.
+  # ============================================================================
+
+  fixture-status-meta:
+    name: 'GATING — fixture-status meta-check'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    needs:
+      - reproduce-brad-5-no-zsh-ubuntu
+      - reproduce-brad-5-alpine-bashism
+      - reproduce-brad-2-quoted-database-url
+      - reproduce-brad-1-nohup-secrets
+      - reproduce-brad-6-claude-code-optional
+    steps:
+      - name: Download all fixture-status artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: 'fixture-status-*'
+          merge-multiple: false
+
+      - name: Verify each REPRODUCER's actual outcome matches expected
+        run: |
+          set -e
+          OVERALL_PASS=true
+          MATRIX=""
+          # jq is preinstalled on ubuntu-24.04 runners; cleaner than spawning
+          # a Node child process per field and avoids any sandbox-scope
+          # ambiguity in the workflow validator.
+          for f in $(find artifacts -type f -name '*.json' | sort); do
+            ID=$(jq -r '.id' "$f")
+            EXPECTED=$(jq -r '.expected' "$f")
+            ACTUAL=$(jq -r '.actual' "$f")
+            STATUS=$(jq -r '.status' "$f")
+            BRAD=$(jq -r '.brad_finding' "$f")
+            if [ "$STATUS" = "match" ]; then
+              MARK="PASS"
+            else
+              MARK="FAIL"
+              OVERALL_PASS=false
+            fi
+            MATRIX="${MATRIX}${MARK} | brad #${BRAD} | ${ID} | actual=${ACTUAL} expected=${EXPECTED}"$'\n'
+          done
+          echo "============================================================"
+          echo "Sprint 58 fixture-status meta-check — actual vs expected"
+          echo "============================================================"
+          printf '%s' "$MATRIX"
+          echo "============================================================"
+          if [ "$OVERALL_PASS" = "false" ]; then
+            echo ""
+            echo "META-JOB FAILED — at least one REPRODUCER's actual outcome"
+            echo "does not match its declared expected-state. Diagnose:"
+            echo ""
+            echo "  unexpected GREEN: bug got fixed in Sprint 59 — flip"
+            echo "    'expected' to 'green' for that bug's reproducer in"
+            echo "    .github/workflows/install-smoke.yml. The fixture's"
+            echo "    new role becomes regression-guarding (RED if the fix"
+            echo "    regresses)."
+            echo ""
+            echo "  unexpected RED: a Sprint 59 fix landed and turned the"
+            echo "    fixture GREEN earlier, but a subsequent commit"
+            echo "    regressed it. Investigate immediately."
+            echo ""
+            echo "  unexpected SKIPPED: infrastructure failure in the"
+            echo "    reproducer job (couldn't even run the bug). Inspect"
+            echo "    the failed reproducer's logs above."
+            exit 1
+          fi
+          echo ""
+          echo "ALL FIXTURES MATCH EXPECTED OUTCOMES."

@@ -1,0 +1,70 @@
+# docker/Dockerfile.alpine
+#
+# Sprint 58 — Alpine 3.20 BASHISM CATCHER (REPRODUCER role).
+#
+# Coverage role: catch any unintentional bashism in TermDeck's bundled scripts.
+# Alpine's `/bin/sh` is busybox ash, NOT bash. If any install-time / runtime
+# script uses `[[ ]]`, `<()` process substitution, `array=()`, or other
+# bash-only constructs, this fixture turns RED at the offending line.
+#
+# This is distinct from Brad #5 (no zsh): Alpine has zsh installed via apk
+# so that the PTY-spawn path isn't simultaneously broken; the Alpine catch
+# is purely about bashisms, NOT zsh availability. run-fixture.sh skips the
+# PTY-spawn probe under FIXTURE_INTENT=brad-5-alpine-bashism for the same
+# reason.
+#
+# Per T4-CODEX FINDING 2026-05-05 16:21 ET, T3's `scripts/test-supabase-reset.sh`
+# uses `#!/usr/bin/env bash` and `<<<` here-strings — therefore it is INVOKED
+# ONLY from the GitHub Actions runner host (Ubuntu, has bash), NEVER from
+# inside this Alpine container.
+#
+# Build:  docker build -f docker/Dockerfile.alpine -t termdeck-fixture-alpine .
+# Run:    docker run --rm --env-file <secrets-file> termdeck-fixture-alpine
+
+FROM alpine:3.20
+
+# Alpine ships busybox `/bin/sh` (ash). DELIBERATELY DO NOT install bash —
+# the absence of /bin/bash is what makes this fixture catch unintentional
+# bash-only invocations.
+#
+# Install zsh so that any session-spawn code path doesn't simultaneously hit
+# Brad #5 (no-zsh) — the Alpine fixture's catch surface is bashisms only.
+#
+# Node 20 + npm via apk. gcc + libc-dev + make + python3 are the toolchain
+# fallback for any native module that doesn't have a musl prebuilt
+# (better-sqlite3 ≥ 12.x ships musl prebuilts; node-pty-prebuilt-multiarch
+# also covers musl — but the toolchain is cheap insurance).
+#
+# `curl` is needed by run-fixture.sh. `git` for any postinstall hook.
+RUN apk add --no-cache \
+      ca-certificates curl gnupg git \
+      nodejs npm \
+      gcc g++ libc-dev make python3 \
+      zsh
+
+# Sanity: bashism catcher invariant is bash NOT installed.
+RUN if command -v bash > /dev/null 2>&1; then \
+      echo "FIXTURE-INVARIANT-BROKEN: bash IS installed in this image; alpine-bashism cannot reproduce" >&2 \
+      && exit 1; \
+    fi
+
+# Sanity: zsh IS installed (so PTY spawn doesn't false-RED on no-zsh — that's
+# Dockerfile.ubuntu's role, not this fixture's).
+RUN if ! command -v zsh > /dev/null 2>&1; then \
+      echo "FIXTURE-INVARIANT-BROKEN: zsh missing on Alpine fixture; brad-5 would falsely trigger here" >&2 \
+      && exit 1; \
+    fi
+
+WORKDIR /app
+
+COPY . /app
+RUN rm -rf /app/node_modules /app/packages/*/node_modules
+
+RUN npm install --no-audit --no-fund \
+ && npm install -g . \
+ && cd packages/stack-installer && npm install --no-audit --no-fund && npm install -g .
+
+RUN chmod +x /app/docker/run-fixture.sh
+
+ENV FIXTURE_INTENT=brad-5-alpine-bashism
+ENTRYPOINT ["/app/docker/run-fixture.sh"]

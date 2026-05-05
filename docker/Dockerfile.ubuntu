@@ -1,0 +1,59 @@
+# docker/Dockerfile.ubuntu
+#
+# Sprint 58 — Brad #5 REPRODUCER (no zsh installed).
+#
+# Expected RED until Sprint 59 ships the PTY shell fallback chain hardening at
+# packages/server/src/index.js (Sprint 57's line 938; line number may shift in
+# Sprint 59). Sprint 59 fix shape per Brad:
+#   const spawnShell = isPlainShell ? cmdTrim
+#     : (cmdTrim || config.shell || process.env.SHELL || '/bin/sh');
+# Once that lands, this Dockerfile turns from RED to GREEN, and the meta-job's
+# `expected` value flips from "red" to "green" in install-smoke.yml.
+#
+# Build:  docker build -f docker/Dockerfile.ubuntu -t termdeck-fixture-ubuntu .
+# Run:    docker run --rm --env-file <secrets-file> termdeck-fixture-ubuntu
+#
+# Default FIXTURE_INTENT is "brad-5-no-zsh" — overridable via -e for
+# integration testing on a developer's machine.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Node 20 via NodeSource. Plus the minimal toolchain that better-sqlite3 and
+# node-pty need on a fresh Ubuntu base (their prebuilt binaries cover most
+# hosts but a build-from-source fallback requires gcc + python3).
+# DELIBERATELY OMITTING `zsh` — that is the Brad #5 fixture invariant.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg git build-essential python3 \
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Sanity: confirm zsh is NOT installed in the image. If a future Ubuntu base
+# bundles zsh by default (or if the apt step regresses), this RUN fails the
+# build with a clear message rather than producing a false-GREEN fixture.
+RUN if command -v zsh > /dev/null 2>&1; then \
+      echo "FIXTURE-INVARIANT-BROKEN: zsh IS installed in this image; Brad #5 cannot reproduce" >&2 \
+      && exit 1; \
+    fi
+
+WORKDIR /app
+
+# Copy the working tree. Defensive `rm -rf` of any host-side node_modules that
+# may have leaked in (host-platform binaries would crash inside the container).
+COPY . /app
+RUN rm -rf /app/node_modules /app/packages/*/node_modules
+
+# Install the stack from the working tree (NOT from npm — we test this commit,
+# not the previously-published version).
+RUN npm install --no-audit --no-fund \
+ && npm install -g . \
+ && cd packages/stack-installer && npm install --no-audit --no-fund && npm install -g .
+
+# Make the shared fixture entrypoint executable.
+RUN chmod +x /app/docker/run-fixture.sh
+
+ENV FIXTURE_INTENT=brad-5-no-zsh
+ENTRYPOINT ["/app/docker/run-fixture.sh"]

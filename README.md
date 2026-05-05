@@ -1,5 +1,7 @@
 # TermDeck
 
+[![Install Smoke](https://github.com/jhizzard/termdeck/workflows/install-smoke/badge.svg)](https://github.com/jhizzard/termdeck/actions/workflows/install-smoke.yml)
+
 > **The terminal that remembers what you fixed last month.**
 
 A browser-based terminal multiplexer with an onboarding tour, rich per-panel metadata, and **Flashback** — automatic recall of similar past errors, surfaced the moment a panel hits a problem. No asking, no querying, no manual search. TermDeck notices you're stuck and offers the memory.

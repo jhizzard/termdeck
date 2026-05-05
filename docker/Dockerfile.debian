@@ -1,0 +1,50 @@
+# docker/Dockerfile.debian
+#
+# Sprint 58 — Debian 12 (Bookworm) BASELINE (gating GREEN).
+#
+# Coverage role: the conservative "what runs in stable enterprise" target.
+# Debian releases trail Ubuntu's by ~1-2 years; many self-hosted ops teams
+# run Debian for the longer LTS-style stability guarantees. If a regression
+# only manifests on the Debian package set (older glibc, older python, etc.),
+# this fixture catches it.
+#
+# zsh + bash are both installed so this baseline doesn't accidentally
+# reproduce Brad #5.
+#
+# Build:  docker build -f docker/Dockerfile.debian -t termdeck-fixture-debian .
+# Run:    docker run --rm --env-file <secrets-file> termdeck-fixture-debian
+
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Node 20 via NodeSource (Debian 12 ships Node 18 in its own repo, which is
+# below TermDeck's `engines.node >= 18.0.0` minimum but below Brad's actual
+# Node 20 environment). NodeSource gets us to 20.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg git build-essential python3 \
+      bash zsh \
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Sanity: baseline invariant is zsh INSTALLED.
+RUN if ! command -v zsh > /dev/null 2>&1; then \
+      echo "FIXTURE-INVARIANT-BROKEN: zsh missing on Debian baseline; brad-5 would false-RED here" >&2 \
+      && exit 1; \
+    fi
+
+WORKDIR /app
+
+COPY . /app
+RUN rm -rf /app/node_modules /app/packages/*/node_modules
+
+RUN npm install --no-audit --no-fund \
+ && npm install -g . \
+ && cd packages/stack-installer && npm install --no-audit --no-fund && npm install -g .
+
+RUN chmod +x /app/docker/run-fixture.sh
+
+ENV FIXTURE_INTENT=baseline
+ENTRYPOINT ["/app/docker/run-fixture.sh"]
