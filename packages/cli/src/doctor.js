@@ -203,6 +203,24 @@ function renderFooter(rows, exitCode) {
       `  Or upgrade individually: npm install -g @jhizzard/termdeck@latest`
     );
   }
+  // Sprint 56 (T1 Cross-Cutting #2 Part A) — logical inversion fix. Pre-
+  // Sprint-56 the footer always read "All packages up to date" on exit 0,
+  // even when every row was NOT_INSTALLED. That's logically wrong: saying
+  // "all up to date" when "all not installed" misleads the user into
+  // thinking the stack is healthy. Distinguish the two states explicitly.
+  const notInstalled = rows.filter((r) => r.status === STATUS.NOT_INSTALLED).length;
+  if (notInstalled === rows.length && rows.length > 0) {
+    return (
+      `\n  No stack packages detected (${rows.length} of ${rows.length} not installed).\n` +
+      `  To bootstrap the full stack: npx @jhizzard/termdeck-stack`
+    );
+  }
+  if (notInstalled > 0) {
+    return (
+      `\n  ${notInstalled} of ${rows.length} stack packages not installed; the rest up to date.\n` +
+      `  To install missing pieces: npx @jhizzard/termdeck-stack`
+    );
+  }
   return `\n  All packages up to date.`;
 }
 

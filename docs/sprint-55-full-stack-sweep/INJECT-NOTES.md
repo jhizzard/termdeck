@@ -39,7 +39,7 @@ Joshua opens 4 panels in TermDeck. The order matters — the inject script maps 
 
 Committed at `docs/sprint-55-full-stack-sweep/inject-script.js` (also pre-staged at `/tmp/inject-sprint-55-prompts.js`). The script:
 1. GETs `/api/sessions`, sorts by createdAt ascending, takes the 4 most recent
-2. Reads the 4 lane briefs from `docs/sprint-55-multi-lane-stack sweep/T{1,2,3,4}-*.md`
+2. Reads the 4 lane briefs from `docs/sprint-55-full-stack-sweep/T{1,2,3,4}-*.md`
 3. Stage 1: paste each brief into the corresponding panel's input box (bracketed-paste markers, no \r yet)
 4. Settle 400ms
 5. Stage 2: submit `\r` to each panel — the canonical two-stage pattern from `~/.claude/CLAUDE.md`
@@ -62,9 +62,9 @@ Boot sequence:
 3. memory_recall(project="termdeck", query="petvetbid externally facing scrub feedback codename")
 4. memory_recall(query="3+1+1 hardening rules checkpoint post shape idle-poll regex")
 5. Read ~/.claude/CLAUDE.md and ./CLAUDE.md
-6. Read docs/sprint-55-multi-lane-stack sweep/PLANNING.md
-7. Read docs/sprint-55-multi-lane-stack sweep/STATUS.md
-8. Read docs/sprint-55-multi-lane-stack sweep/T<n>-<lane>.md (your full brief)
+6. Read docs/sprint-55-full-stack-sweep/PLANNING.md
+7. Read docs/sprint-55-full-stack-sweep/STATUS.md
+8. Read docs/sprint-55-full-stack-sweep/T<n>-<lane>.md (your full brief)
 
 Pre-sprint intel: 9 sprints shipped 2026-05-04 (v1.0.4 → v1.0.9). Sprint
 53 picker rewrite working (sessions_processed > 0). Sprint 54 closed
@@ -73,7 +73,7 @@ remains open — Sprint 55 Lane T3 Cell #1 diagnoses. Don't ship; don't
 publish; READ-ONLY OVERNIGHT.
 
 Then begin. Stay in your lane. Post FINDING / FIX-PROPOSED / DONE in
-docs/sprint-55-multi-lane-stack sweep/STATUS.md using the canonical
+docs/sprint-55-full-stack-sweep/STATUS.md using the canonical
 ### [T<n>] (or [T4-CODEX]) shape. Move fast.
 ```
 

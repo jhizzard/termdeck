@@ -20,3 +20,6 @@ supabase/.temp/
 
 # Sprint worktrees (Sprint 47+ pattern — per-lane git worktree add paths)
 .worktrees/
+
+# Playwright MCP cache (per-session page snapshots)
+.playwright-mcp/

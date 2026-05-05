@@ -104,6 +104,18 @@ function checkTranscriptTableHint(databaseUrl) {
 // Parse CLI args
 const args = process.argv.slice(2);
 
+// Sprint 56 (T1 Cell 18) — `--version` / `-v` handler. Pre-Sprint-56 the
+// flag was silently ignored: the CLI fell through to the launcher's stack
+// boot path and never printed a version. Now mirror the convention every
+// CLI in the world honors: print the package version and exit 0. Done
+// BEFORE the `init` dispatch so `termdeck --version init --mnestra`
+// (nonsensical but unambiguous) still terminates with the version.
+if (args.includes('--version') || args.includes('-v')) {
+  const pkg = require(path.join(__dirname, '..', '..', '..', 'package.json'));
+  process.stdout.write(`@jhizzard/termdeck v${pkg.version}\n`);
+  process.exit(0);
+}
+
 // Subcommand dispatch — handle `termdeck init --mnestra|--rumen` before
 // falling through to the default launcher's flag parsing. The `require` of
 // init-*.js is lazy so users running the normal `termdeck` command never pay

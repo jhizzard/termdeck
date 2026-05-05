@@ -23,8 +23,8 @@ Mandate canonized in cross-project memory `3+1+1 hardening rule candidate (Sprin
 5. memory recall: query "petvetbid externally facing scrub feedback codename" — confirm codename rule applies
 6. Read `~/.claude/CLAUDE.md` (global rules — same as Claude lanes follow)
 7. Read `~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/CLAUDE.md` (project router)
-8. Read `docs/sprint-55-multi-lane-stack sweep/PLANNING.md` (sprint scope, Lane T4 section)
-9. Read `docs/sprint-55-multi-lane-stack sweep/STATUS.md`
+8. Read `docs/sprint-55-full-stack-sweep/PLANNING.md` (sprint scope, Lane T4 section)
+9. Read `docs/sprint-55-full-stack-sweep/STATUS.md`
 10. Read all 3 worker briefs: `T1-install-sweep.md`, `T2-api-ui-sweep.md`, `T3-backend-sweep.md` — know what each lane is supposed to deliver so you can audit against contract.
 11. Read `docs/INSTALLER-PITFALLS.md` ledger entries #16-#21 — context for what failure classes to expect.
 
@@ -50,7 +50,7 @@ Per PLANNING.md Lane T4 section. Cells:
 7. Cross-agent STATUS.md merger (Sprint 47 T4) — does it parse all 4 lane shapes uniformly?
 8. Agent costBand declarations — ready for Sprint 56 cost-monitoring panel work
 
-Output to `docs/sprint-55-multi-lane-stack sweep/T4-SWEEP-CELLS.md` (NEW).
+Output to `docs/sprint-55-full-stack-sweep/T4-SWEEP-CELLS.md` (NEW).
 
 ## Phase plan
 

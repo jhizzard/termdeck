@@ -13,8 +13,8 @@ You are T3 in Sprint 55. Lane focus: **diagnose Sprint 54's still-open synthesis
 5. `memory_recall(query="3+1+1 hardening rules checkpoint post shape")`
 6. Read `~/.claude/CLAUDE.md`
 7. Read `./CLAUDE.md`
-8. Read `docs/sprint-55-multi-lane-stack sweep/PLANNING.md` — Lane T3 section (Cell #1 = synthesis bug)
-9. Read `docs/sprint-55-multi-lane-stack sweep/STATUS.md`
+8. Read `docs/sprint-55-full-stack-sweep/PLANNING.md` — Lane T3 section (Cell #1 = synthesis bug)
+9. Read `docs/sprint-55-full-stack-sweep/STATUS.md`
 10. Read `~/Documents/Graciella/rumen/src/relate.ts`, `synthesize.ts`, `extract.ts`, `index.ts` (the post-Sprint-54 source)
 
 ## Cell #1 — Sprint 54 synthesis bug diagnosis (PRIORITY)
@@ -88,7 +88,7 @@ After Cell #1 either lands a fix-proposed OR is documented as deferred, proceed 
 - cron.job table audit
 - Mig presence verification (017, 018, etc.)
 
-Output to `docs/sprint-55-multi-lane-stack sweep/T3-SWEEP-CELLS.md`.
+Output to `docs/sprint-55-full-stack-sweep/T3-SWEEP-CELLS.md`.
 
 ## Lane discipline
 

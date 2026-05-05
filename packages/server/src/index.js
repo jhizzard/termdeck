@@ -272,6 +272,20 @@ function createServer(config) {
 
   app.use(express.json());
 
+  // Sprint 56 (T2 F-T2-1) — malformed-JSON body returns JSON 400, not
+  // express's default HTML error page. Pre-Sprint-56 every POST/PATCH
+  // endpoint that consumed a JSON body returned `text/html` on parse
+  // failure, breaking programmatic clients (the inject script, MCP, CI
+  // smoke tests). The status code (400) was correct; only the body
+  // shape regressed. Mounted IMMEDIATELY after express.json() so it
+  // catches body-parse errors before any route handler runs.
+  app.use((err, req, res, next) => {
+    if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+      return res.status(400).json({ error: 'Malformed JSON body', detail: err.message });
+    }
+    return next(err);
+  });
+
   // First-run detection (Sprint 19 T3): true when ~/.termdeck/config.yaml
   // does not exist. Surfaced on /api/config so the client can offer the
   // setup wizard on first visit. T1's /api/setup endpoint may reuse this.

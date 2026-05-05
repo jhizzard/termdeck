@@ -14,8 +14,8 @@ This flag puts Claude Code into permissive mode — no approval prompts. Require
 4. `memory_recall(query="3+1+1 hardening rules checkpoint post shape idle-poll regex")`
 5. Read `~/.claude/CLAUDE.md` (global)
 6. Read `./CLAUDE.md` (project router)
-7. Read `docs/sprint-55-multi-lane-stack sweep/PLANNING.md` — full sprint scope (Lane T1 cells listed there)
-8. Read `docs/sprint-55-multi-lane-stack sweep/STATUS.md` — substrate
+7. Read `docs/sprint-55-full-stack-sweep/PLANNING.md` — full sprint scope (Lane T1 cells listed there)
+8. Read `docs/sprint-55-full-stack-sweep/STATUS.md` — substrate
 9. Read `docs/INSTALLER-PITFALLS.md` ledger entries #16-#21 (today's discoveries — recognize when a cell reproduces a previously-ledgered class)
 
 ## Cells (target ~20)
@@ -31,11 +31,11 @@ Status:     PASS | FAIL | SKIP | UNKNOWN
 Ledger:     <Class letter + reference if novel; or "existing class X #Y" if repro>
 ```
 
-Output to `docs/sprint-55-multi-lane-stack sweep/T1-SWEEP-CELLS.md` (NEW file; you create it). Capture full stdout to `/tmp/sprint-55-t1-cell-<N>.log` for any cell that needs debugging.
+Output to `docs/sprint-55-full-stack-sweep/T1-SWEEP-CELLS.md` (NEW file; you create it). Capture full stdout to `/tmp/sprint-55-t1-cell-<N>.log` for any cell that needs debugging.
 
 ## Lane discipline
 
-- **Post shape:** `### [T1] STATUS-VERB 2026-05-04 HH:MM ET — <gist>` in `docs/sprint-55-multi-lane-stack sweep/STATUS.md`.
+- **Post shape:** `### [T1] STATUS-VERB 2026-05-04 HH:MM ET — <gist>` in `docs/sprint-55-full-stack-sweep/STATUS.md`.
 - **CHECKPOINT every 30 min** (or phase boundary) so post-compact you can resume.
 - **READ-ONLY-ONLY:** no npm publish, no git push, no destructive prod-DB writes. If a cell finds a fix-required bug, write a FIX-PROPOSED post with a unified diff snippet and MOVE TO THE NEXT CELL. Orchestrator ships at sprint close.
 - **Codename scrub:** never use the internal Supabase project codename in posts. Use "the daily-driver project" or elide.

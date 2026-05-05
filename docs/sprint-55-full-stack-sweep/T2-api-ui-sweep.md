@@ -14,8 +14,8 @@ Same permissive mode mandate as T1.
 4. `memory_recall(query="3+1+1 hardening rules checkpoint post shape")`
 5. Read `~/.claude/CLAUDE.md`
 6. Read `./CLAUDE.md`
-7. Read `docs/sprint-55-multi-lane-stack sweep/PLANNING.md` — Lane T2 section
-8. Read `docs/sprint-55-multi-lane-stack sweep/STATUS.md`
+7. Read `docs/sprint-55-full-stack-sweep/PLANNING.md` — Lane T2 section
+8. Read `docs/sprint-55-full-stack-sweep/STATUS.md`
 9. **Verify TermDeck server is running:** `curl -s http://127.0.0.1:3000/api/health 2>&1 | head -3`. If not running, attempt `cd ~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck && npm start` in a /tmp scratch shell. If still not running, post a FINDING and SKIP UI cells.
 10. Map the API surface: `find ~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/packages/server/src -name "*.js" -exec grep -l "app\\.\\(get\\|post\\|patch\\|delete\\|put\\)" {} \\;` to enumerate handlers.
 
@@ -41,7 +41,7 @@ If playwright access fails or times out, fall back to manual inspection commands
 - `curl -s http://127.0.0.1:3000/static/dashboard.js | head -10` — verify static assets
 - Document which UI cells couldn't be exercised + why.
 
-Output to `docs/sprint-55-multi-lane-stack sweep/T2-SWEEP-CELLS.md`.
+Output to `docs/sprint-55-full-stack-sweep/T2-SWEEP-CELLS.md`.
 
 ## Lane discipline
 

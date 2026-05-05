@@ -172,9 +172,28 @@ function preflight() {
   const missing = required.filter((k) => !secrets[k]);
   if (missing.length > 0) {
     fail(`missing keys: ${missing.join(', ')}`);
-    process.stderr.write(
-      '\nRun `termdeck init --mnestra` first — it writes the keys this wizard needs.\n'
-    );
+    // Sprint 56 (T1 Cell 10) — distinguish "no secrets file" (current
+    // message is correct: run init --mnestra to bootstrap) from "secrets
+    // file exists but missing one or more keys" (current message is
+    // misleading: user already ran init --mnestra; the actual cause is
+    // that ANTHROPIC_API_KEY is OPTIONAL for Mnestra but REQUIRED for
+    // Rumen, so a user who skipped it during init --mnestra ends up here).
+    const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
+    const fileExists = fs.existsSync(secretsPath);
+    if (fileExists) {
+      process.stderr.write(
+        `\n~/.termdeck/secrets.env exists but is missing the keys above.\n` +
+        `${missing.includes('ANTHROPIC_API_KEY')
+          ? 'Note: ANTHROPIC_API_KEY is optional for Mnestra but REQUIRED for Rumen.\n'
+          : ''}` +
+        `Re-run \`termdeck init --mnestra\` to add the missing keys, or edit\n` +
+        `${secretsPath} directly and re-run \`termdeck init --rumen\`.\n`
+      );
+    } else {
+      process.stderr.write(
+        '\nRun `termdeck init --mnestra` first — it writes the keys this wizard needs.\n'
+      );
+    }
     return null;
   }
   ok();
@@ -896,7 +915,7 @@ function wireAccessTokenInMcpJson({ token, mcpJsonPath, _testFs } = {}) {
   return { status: 'updated', path: targetPath };
 }
 
-function printNextSteps(projectRef, vaultResult, llmResult) {
+function printNextSteps(projectRef, vaultResult, llmResult, skipSchedule) {
   const rumenTickUrl = `https://${projectRef}.supabase.co/functions/v1/rumen-tick`;
   const graphInferenceUrl = `https://${projectRef}.supabase.co/functions/v1/graph-inference`;
   const now = new Date();
@@ -912,13 +931,24 @@ function printNextSteps(projectRef, vaultResult, llmResult) {
     ? '  Graph edges: classified by Claude Haiku 4.5 (GRAPH_LLM_CLASSIFY=1).'
     : '  Graph edges: untyped (relates_to). To enable: supabase secrets set GRAPH_LLM_CLASSIFY=1';
 
+  // Sprint 56 (T1 Cell 12) — when --skip-schedule was passed, the cron
+  // schedule wasn't applied. Don't print "first run" or the cron-cadence
+  // claim — there is no scheduled first run. Show the function URL so
+  // the user knows what to manually invoke instead.
+  const rumenLine = skipSchedule
+    ? `  rumen-tick        cron NOT scheduled (--skip-schedule). Manual fire only.`
+    : `  rumen-tick        every 15 min — first run: ${next.toISOString().replace(/\.\d+Z$/, 'Z')}`;
+  const graphLine = skipSchedule
+    ? `  graph-inference   cron NOT scheduled (--skip-schedule). Manual fire only.`
+    : `  graph-inference   daily at 03:00 UTC (Sprint 42 cron)`;
+
   process.stdout.write(`
 Rumen is deployed.
 
 Edge Functions:
-  rumen-tick        every 15 min — first run: ${next.toISOString().replace(/\.\d+Z$/, 'Z')}
+${rumenLine}
                     ${rumenTickUrl}
-  graph-inference   daily at 03:00 UTC (Sprint 42 cron)
+${graphLine}
                     ${graphInferenceUrl}
 
 Next steps:
@@ -954,10 +984,20 @@ async function main(argv) {
   }
 
   if (!flags.yes) {
-    const go = await prompts.confirm(`? Proceed with deploy to project ${projectRef}?`);
-    if (!go) {
-      process.stdout.write('Cancelled.\n');
-      return 0;
+    // Sprint 56 (T1 Cell 13b) — dry-run-aware annotation parity. The
+    // graph-classify confirm at line 696-698 already prints "(dry-run,
+    // defaulting Y)" when flags.dryRun is set; this prompt didn't, leaving
+    // users unsure whether they were authorizing a real deploy or a no-op
+    // simulation. Match the same shape: print the prompt with the dry-run
+    // annotation, auto-progress without blocking on user input in dry-run.
+    if (flags.dryRun) {
+      process.stdout.write(`? Proceed with deploy to project ${projectRef}? [Y/n] (dry-run, defaulting Y)\n`);
+    } else {
+      const go = await prompts.confirm(`? Proceed with deploy to project ${projectRef}?`);
+      if (!go) {
+        process.stdout.write('Cancelled.\n');
+        return 0;
+      }
     }
   }
 
@@ -1053,7 +1093,7 @@ async function main(argv) {
     process.stdout.write('→ Skipping pg_cron schedule (per --skip-schedule) ✓\n');
   }
 
-  printNextSteps(projectRef, vaultResult, llmResult);
+  printNextSteps(projectRef, vaultResult, llmResult, flags.skipSchedule);
   return 0;
 }
 
