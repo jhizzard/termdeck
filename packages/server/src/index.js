@@ -81,6 +81,7 @@ const { createProjectsRoutes } = require('./projects-routes');
 const orchestrationPreview = require('./orchestration-preview');
 const { createPtyReaper } = require('./pty-reaper');
 const { AGENT_ADAPTERS } = require('./agent-adapters');
+const { deriveRagMode } = require('./rag-mode');
 
 // Sprint 48 T4 deliverable 2: PTY env-var propagation.
 // Reads ~/.termdeck/secrets.env once per server lifetime so each PTY spawn
@@ -1082,17 +1083,32 @@ function createServer(config) {
             const memories = (result && result.memories) || [];
             const count = memories.length;
             console.log(`[flashback] query returned ${count} matches for session ${sess.id}`);
-            const hit = memories[0];
+            // Sprint 57 T1 (#4): negative-feedback persistence. Skip any
+            // memory the user previously dismissed (across all sessions);
+            // iterate candidates in score order, first non-dismissed wins.
+            // Without this, a low-confidence match the user marked
+            // "Not relevant" would resurface on the next error fire —
+            // exactly the resurfacing-after-dismiss bug Sprint 55 T2 + T4
+            // diagnosed (T4 audit addendum: index.js:1058-1100 emits
+            // memories[0] without consulting dismissed history). Selection
+            // logic lives in `flashbackDiag.pickNextNonDismissed` so the
+            // integration shape stays testable without a live PTY.
+            const { hit, dismissedCount } =
+              flashbackDiag.pickNextNonDismissed(db, memories);
             const wsReadyState = sess.ws ? sess.ws.readyState : null;
             if (!hit) {
-              console.log(`[flashback] no matches — skipping proactive_memory send for session ${sess.id}`);
+              const allDismissed = count > 0 && dismissedCount === count;
+              const outcome = allDismissed ? 'dropped_dismissed' : 'dropped_empty';
+              console.log(`[flashback] ${allDismissed
+                ? `all ${count} candidate(s) previously dismissed`
+                : 'no matches'} — skipping proactive_memory send for session ${sess.id}`);
               flashbackDiag.log({
                 sessionId: sess.id,
                 event: 'proactive_memory_emit',
                 ws_ready_state: wsReadyState,
                 frame_size_bytes: 0,
-                result_count_in_frame: 0,
-                outcome: 'dropped_empty',
+                result_count_in_frame: allDismissed ? dismissedCount : 0,
+                outcome,
               });
               return;
             }
@@ -1492,6 +1508,11 @@ function createServer(config) {
       ragConfigEnabled: !!(config.rag && config.rag.enabled),
       ragSupabaseConfigured: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey),
       aiQueryAvailable: !!(config.rag?.supabaseUrl && config.rag?.supabaseKey && config.rag?.openaiApiKey),
+      // Sprint 57 T2 (F-T2-2 + F-T2-6) — derived 3-state enum: 'off' |
+      // 'pending' | 'active'. Single source of truth across /api/config,
+      // /api/rag/status, /api/status. Replaces per-client derivation of
+      // the "RAG · on / pending / mcp-only" label.
+      ragMode: deriveRagMode(rag, config),
       statusColors,
       firstRun
     };
@@ -1644,7 +1665,9 @@ function createServer(config) {
       byType,
       uptime: process.uptime(),
       memory: process.memoryUsage(),
-      ragEnabled: rag.enabled
+      ragEnabled: rag.enabled,
+      // Sprint 57 T2 — single-source-of-truth ragMode enum (see rag-mode.js).
+      ragMode: deriveRagMode(rag, config)
     });
   });
 
@@ -1660,11 +1683,16 @@ function createServer(config) {
 
   // GET /api/rag/status - RAG system status
   app.get('/api/rag/status', (req, res) => {
-    if (!db) return res.json({ enabled: false, localEvents: 0, unsynced: 0 });
+    if (!db) return res.json({ enabled: false, ragMode: deriveRagMode(rag, config), localEvents: 0, unsynced: 0 });
     const total = db.prepare('SELECT COUNT(*) as n FROM rag_events').get().n;
     const unsynced = db.prepare('SELECT COUNT(*) as n FROM rag_events WHERE synced = 0').get().n;
     res.json({
       enabled: rag.enabled,
+      // Sprint 57 T2 — single-source-of-truth ragMode enum. Programmatic
+      // clients (CLI, MCP, CI) consume this directly instead of re-deriving
+      // from the flat `enabled` boolean which can't distinguish "MCP-only by
+      // intent" from "intent on but Supabase missing."
+      ragMode: deriveRagMode(rag, config),
       supabaseConfigured: !!(rag.supabaseUrl),
       localEvents: total,
       unsynced,

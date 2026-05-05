@@ -314,6 +314,275 @@ test('markClickedThrough is idempotent', () => {
   }
 });
 
+// ---- isMemoryDismissed (Sprint 57 T1 #4 — flashback negative feedback) --
+
+test('isMemoryDismissed returns false on empty table', () => {
+  const db = freshDb();
+  try {
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('isMemoryDismissed returns true after a recorded fire is dismissed', () => {
+  const db = freshDb();
+  try {
+    const id = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-uuid-abc',
+    });
+    flashbackDiag.markDismissed(db, id);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('isMemoryDismissed returns true after click-through (implicit dismiss)', () => {
+  const db = freshDb();
+  try {
+    const id = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-uuid-abc',
+    });
+    flashbackDiag.markClickedThrough(db, id);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('isMemoryDismissed returns false when fire exists but was never dismissed', () => {
+  const db = freshDb();
+  try {
+    flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-uuid-abc',
+    });
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('isMemoryDismissed scopes by memory_id (top_hit_id), not session', () => {
+  // User dismissed mem-abc in session-A; checking from a different session
+  // (or no session at all) must still see the suppression — user intent is
+  // "this memory isn't useful," not "this memory isn't useful in THIS session."
+  const db = freshDb();
+  try {
+    const id = flashbackDiag.recordFlashback(db, {
+      sessionId: 'session-A', error_text: 'x', top_hit_id: 'mem-uuid-abc',
+    });
+    flashbackDiag.markDismissed(db, id);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), true);
+    // Different memory id → false (suppression is per-memory, not blanket)
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-xyz'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('isMemoryDismissed: dismissing one fire suppresses across multiple fires of same memory', () => {
+  // Multiple flashback_events rows can share a top_hit_id (the same memory
+  // fires multiple times across error events). The user only needs to
+  // dismiss ONE of them for suppression to take effect on future fires.
+  const db = freshDb();
+  try {
+    const a = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-shared',
+    });
+    flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'y', top_hit_id: 'mem-shared',
+    });
+    flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'z', top_hit_id: 'mem-shared',
+    });
+    // Three undismissed rows for the same memory → not yet suppressed
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-shared'), false);
+    // Dismiss just one of the three — suppression now applies
+    flashbackDiag.markDismissed(db, a);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-shared'), true);
+  } finally {
+    db.close();
+  }
+});
+
+test('isMemoryDismissed is a no-op (returns false) when db is null', () => {
+  assert.equal(flashbackDiag.isMemoryDismissed(null, 'mem-uuid-abc'), false);
+});
+
+test('isMemoryDismissed returns false for empty / non-string memoryId', () => {
+  const db = freshDb();
+  try {
+    assert.equal(flashbackDiag.isMemoryDismissed(db, ''), false);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, null), false);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, undefined), false);
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 123), false);
+  } finally {
+    db.close();
+  }
+});
+
+// ---- pickNextNonDismissed (Sprint 57 T1 — emit-path selection) ---------
+//
+// These tests pin the integration shape used by `packages/server/src/index.js`
+// `session.onErrorDetected` (the `proactive_memory` emit path). Per
+// Sprint 57 T4-CODEX 14:24 ET audit: helper-only `isMemoryDismissed` tests
+// don't prove the selection logic is correct — extracting the loop into a
+// pure helper here lets the integration test exist without a live PTY.
+
+test('pickNextNonDismissed: empty list returns null hit, zero counts', () => {
+  const db = freshDb();
+  try {
+    const out = flashbackDiag.pickNextNonDismissed(db, []);
+    assert.deepEqual(out, { hit: null, dismissedCount: 0, scannedCount: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test('pickNextNonDismissed: non-array (null / undefined) returns the empty shape', () => {
+  const db = freshDb();
+  try {
+    assert.deepEqual(flashbackDiag.pickNextNonDismissed(db, null),
+      { hit: null, dismissedCount: 0, scannedCount: 0 });
+    assert.deepEqual(flashbackDiag.pickNextNonDismissed(db, undefined),
+      { hit: null, dismissedCount: 0, scannedCount: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test('pickNextNonDismissed: no dismissals → returns first candidate', () => {
+  const db = freshDb();
+  try {
+    const memories = [
+      { id: 'mem-1', content: 'first' },
+      { id: 'mem-2', content: 'second' },
+    ];
+    const out = flashbackDiag.pickNextNonDismissed(db, memories);
+    assert.equal(out.hit, memories[0]);
+    assert.equal(out.dismissedCount, 0);
+    assert.equal(out.scannedCount, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('pickNextNonDismissed: first candidate dismissed → returns second; counts reflect skip', () => {
+  // Direct exercise of the regression scenario from Sprint 55 T4 audit:
+  // user dismissed mem-1 previously; Mnestra returns [mem-1, mem-2] in
+  // score order; emit path must skip mem-1 and pick mem-2.
+  const db = freshDb();
+  try {
+    const id1 = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-1',
+    });
+    flashbackDiag.markDismissed(db, id1);
+    const memories = [
+      { id: 'mem-1', content: 'previously dismissed' },
+      { id: 'mem-2', content: 'fresh candidate' },
+    ];
+    const out = flashbackDiag.pickNextNonDismissed(db, memories);
+    assert.equal(out.hit, memories[1], 'second candidate is selected');
+    assert.equal(out.dismissedCount, 1);
+    assert.equal(out.scannedCount, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('pickNextNonDismissed: all candidates dismissed → null hit, dismissedCount = list length', () => {
+  // The "user dismissed every match" path. Caller (index.js) uses this to
+  // log `dropped_dismissed` instead of `dropped_empty` so operators can
+  // distinguish "Mnestra returned nothing" from "Mnestra returned matches
+  // but the user said they're all useless."
+  const db = freshDb();
+  try {
+    const id1 = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-A',
+    });
+    const id2 = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'y', top_hit_id: 'mem-B',
+    });
+    const id3 = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'z', top_hit_id: 'mem-C',
+    });
+    flashbackDiag.markDismissed(db, id1);
+    flashbackDiag.markDismissed(db, id2);
+    flashbackDiag.markDismissed(db, id3);
+    const memories = [
+      { id: 'mem-A' }, { id: 'mem-B' }, { id: 'mem-C' },
+    ];
+    const out = flashbackDiag.pickNextNonDismissed(db, memories);
+    assert.equal(out.hit, null);
+    assert.equal(out.dismissedCount, 3, 'all 3 candidates skipped');
+    assert.equal(out.scannedCount, 3, 'walked the whole list');
+  } finally {
+    db.close();
+  }
+});
+
+test('pickNextNonDismissed: candidate without an id is treated as non-dismissed (cannot lookup)', () => {
+  // Defensive: if Mnestra returns a result row missing an `id` field, we
+  // can't query flashback_events for dismissal — fall through and pick it.
+  // Better to surface a possibly-stale result than to silently drop a
+  // candidate that may or may not be the same memory the user disliked.
+  const db = freshDb();
+  try {
+    const id1 = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-1',
+    });
+    flashbackDiag.markDismissed(db, id1);
+    const memories = [
+      { id: 'mem-1', content: 'dismissed' },
+      { content: 'no-id candidate' },
+    ];
+    const out = flashbackDiag.pickNextNonDismissed(db, memories);
+    assert.equal(out.hit, memories[1]);
+    assert.equal(out.dismissedCount, 1);
+    assert.equal(out.scannedCount, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('pickNextNonDismissed: null db falls back to legacy first-candidate semantics', () => {
+  // When SQLite is unavailable (e.g. test fixtures, future db-less mode),
+  // skip filtering entirely and return memories[0] — same behavior as the
+  // pre-Sprint-57 path. Critical to never break the live emit path on a
+  // missing DB.
+  const memories = [
+    { id: 'mem-1', content: 'first' },
+    { id: 'mem-2', content: 'second' },
+  ];
+  const out = flashbackDiag.pickNextNonDismissed(null, memories);
+  assert.equal(out.hit, memories[0]);
+  assert.equal(out.dismissedCount, 0);
+  assert.equal(out.scannedCount, 1);
+});
+
+test('pickNextNonDismissed: null db with empty memories returns the empty shape', () => {
+  const out = flashbackDiag.pickNextNonDismissed(null, []);
+  assert.deepEqual(out, { hit: null, dismissedCount: 0, scannedCount: 0 });
+});
+
+test('pickNextNonDismissed: stops scanning at first non-dismissed (no extra DB queries)', () => {
+  // Performance correctness: the loop returns on first hit, doesn't walk
+  // the rest of the list. scannedCount = 1 confirms only the first
+  // candidate was inspected.
+  const db = freshDb();
+  try {
+    const memories = [
+      { id: 'mem-1' }, { id: 'mem-2' }, { id: 'mem-3' }, { id: 'mem-4' },
+    ];
+    const out = flashbackDiag.pickNextNonDismissed(db, memories);
+    assert.equal(out.hit, memories[0]);
+    assert.equal(out.scannedCount, 1, 'short-circuits after first non-dismissed');
+  } finally {
+    db.close();
+  }
+});
+
 // ---- getRecentFlashbacks ------------------------------------------------
 
 test('getRecentFlashbacks returns rows in DESC order by fired_at', () => {

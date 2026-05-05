@@ -114,6 +114,36 @@ function disabledPayload(extra = {}) {
   return Object.assign({ enabled: false, reason: 'DATABASE_URL not configured' }, extra);
 }
 
+// Sprint 57 T2 — opaque cursor for /api/graph/all pagination (F-T2-4).
+// The Sprint 55 sweep measured 1.2 MB / 862 ms for the single-shot all-projects
+// graph response. Cursor pagination lets callers fetch progressive pages while
+// preserving backward-compat: a no-cursor / no-limit request still returns the
+// historical single-shot ceiling (MAX_NODES_GLOBAL nodes).
+//
+// Cursor encodes the (created_at, id) row-key of the last item returned so the
+// next page resumes after it. Composite key disambiguates rows that share a
+// created_at timestamp.
+function encodeCursor(createdAt, id) {
+  if (!createdAt || !id) return null;
+  const iso = createdAt instanceof Date ? createdAt.toISOString() : String(createdAt);
+  return Buffer.from(JSON.stringify({ createdAt: iso, id })).toString('base64');
+}
+
+function decodeCursor(raw) {
+  if (raw == null || raw === '') return null;
+  try {
+    const json = Buffer.from(String(raw), 'base64').toString('utf8');
+    const obj = JSON.parse(json);
+    if (!obj || typeof obj.createdAt !== 'string' || typeof obj.id !== 'string') return null;
+    if (!UUID_RE.test(obj.id)) return null;
+    const t = new Date(obj.createdAt);
+    if (Number.isNaN(t.getTime())) return null;
+    return { createdAt: obj.createdAt, id: obj.id };
+  } catch (_e) {
+    return null;
+  }
+}
+
 async function fetchProjectGraph(pool, projectName) {
   // One round-trip:
   //   1. nodes for the project (with degree computed via subquery so we don't
@@ -162,12 +192,30 @@ async function fetchProjectGraph(pool, projectName) {
   return { nodes, edges };
 }
 
-async function fetchAllGraph(pool) {
+async function fetchAllGraph(pool, opts = {}) {
   // Sprint 41 T3 — backs the "All projects" picker option in /graph.html.
-  // Returns the most-recent MAX_NODES_GLOBAL active+non-archived memories plus
-  // every edge whose endpoints both land in the result set. `totalAvailable`
+  // Returns active+non-archived memories ordered by `(created_at DESC, id DESC)`
+  // plus every edge whose endpoints both land in the result set. `totalAvailable`
   // and `truncated` let the client surface a toast when the corpus overflows
   // the cap.
+  //
+  // Sprint 57 T2 (F-T2-4) — cursor pagination is now the DEFAULT path, not
+  // opt-in. Default page is 200 rows (matches the Sprint 55 measurement that
+  // 1.2 MB / 862 ms single-shot was the user-visible bug). Callers may pass
+  // `opts.limit` to override (capped at MAX_NODES_GLOBAL=2000). When
+  // `opts.cursor` is present, returns rows strictly past that (created_at,
+  // id) row-key. The returned `nextCursor` is non-null when more rows exist;
+  // clients loop until `nextCursor === null`. ORCH CLARIFICATION 14:21 ET:
+  // the default-payload bug doesn't close until pagination applies by
+  // default, so opt-in-only is not enough.
+  const DEFAULT_PAGE = 200;
+  const cursor = opts.cursor || null;
+  let limit = opts.limit;
+  if (limit == null || !Number.isFinite(Number(limit))) {
+    limit = DEFAULT_PAGE;
+  }
+  limit = Math.max(1, Math.min(MAX_NODES_GLOBAL, Math.floor(Number(limit))));
+
   const totalSql = `
     SELECT COUNT(*)::int AS c
       FROM memory_items
@@ -176,27 +224,62 @@ async function fetchAllGraph(pool) {
   const totalRes = await pool.query(totalSql);
   const totalAvailable = Number(totalRes.rows[0]?.c || 0);
 
-  const nodesSql = `
-    WITH all_nodes AS (
-      SELECT ${NODE_COLUMNS_SQL}
-        FROM memory_items
-       WHERE is_active = TRUE AND archived = FALSE
-       ORDER BY created_at DESC
-       LIMIT ${MAX_NODES_GLOBAL}
-    )
-    SELECT
-      n.*,
-      COALESCE((
-        SELECT COUNT(*)::int
-          FROM memory_relationships r
-         WHERE r.source_id = n.id OR r.target_id = n.id
-      ), 0) AS degree
-      FROM all_nodes n
-  `;
-  const nodesRes = await pool.query(nodesSql);
-  const nodes = nodesRes.rows.map(rowToNode);
+  // Fetch limit+1 rows so we know whether a next page exists without an extra
+  // count query. The +1 row is dropped before mapping.
+  let nodesSql;
+  let nodesParams;
+  if (cursor) {
+    nodesSql = `
+      WITH all_nodes AS (
+        SELECT ${NODE_COLUMNS_SQL}
+          FROM memory_items
+         WHERE is_active = TRUE AND archived = FALSE
+           AND (created_at, id) < ($1::timestamptz, $2::uuid)
+         ORDER BY created_at DESC, id DESC
+         LIMIT ${limit + 1}
+      )
+      SELECT
+        n.*,
+        COALESCE((
+          SELECT COUNT(*)::int
+            FROM memory_relationships r
+           WHERE r.source_id = n.id OR r.target_id = n.id
+        ), 0) AS degree
+        FROM all_nodes n
+    `;
+    nodesParams = [cursor.createdAt, cursor.id];
+  } else {
+    nodesSql = `
+      WITH all_nodes AS (
+        SELECT ${NODE_COLUMNS_SQL}
+          FROM memory_items
+         WHERE is_active = TRUE AND archived = FALSE
+         ORDER BY created_at DESC, id DESC
+         LIMIT ${limit + 1}
+      )
+      SELECT
+        n.*,
+        COALESCE((
+          SELECT COUNT(*)::int
+            FROM memory_relationships r
+           WHERE r.source_id = n.id OR r.target_id = n.id
+        ), 0) AS degree
+        FROM all_nodes n
+    `;
+    nodesParams = [];
+  }
+  const nodesRes = await pool.query(nodesSql, nodesParams);
+  let rows = nodesRes.rows;
+  const hasMore = rows.length > limit;
+  if (hasMore) rows = rows.slice(0, limit);
+  const nodes = rows.map(rowToNode);
+  let nextCursor = null;
+  if (hasMore && rows.length > 0) {
+    const last = rows[rows.length - 1];
+    nextCursor = encodeCursor(last.created_at, last.id);
+  }
   if (nodes.length === 0) {
-    return { nodes: [], edges: [], totalAvailable, truncated: false };
+    return { nodes: [], edges: [], totalAvailable, truncated: false, nextCursor: null };
   }
   const ids = nodes.map((n) => n.id);
 
@@ -208,11 +291,18 @@ async function fetchAllGraph(pool) {
   `;
   const edgesRes = await pool.query(edgesSql, [ids]);
   const edges = edgesRes.rows.map(rowToEdge);
+  // `truncated` preserves the pre-Sprint-57 semantic for the no-cursor case
+  // ("the corpus has more rows than this single-shot response can carry").
+  // For paginated callers, `nextCursor !== null` is the more-pages signal;
+  // `truncated` always returns false on cursor pages so a single-shot client
+  // doesn't mistakenly read intermediate page boundaries as global truncation.
+  const truncated = !cursor && totalAvailable > MAX_NODES_GLOBAL;
   return {
     nodes,
     edges,
     totalAvailable,
-    truncated: totalAvailable > MAX_NODES_GLOBAL,
+    truncated,
+    nextCursor,
   };
 }
 
@@ -537,10 +627,34 @@ function createGraphRoutes({ app, getPool }) {
         edges: [],
         totalAvailable: 0,
         truncated: false,
+        nextCursor: null,
       }));
     }
+    // Sprint 57 T2 — cursor pagination IS the default path (F-T2-4).
+    // No-cursor / no-limit requests get the first 200-row page; clients
+    // loop via `nextCursor` to fetch additional pages. ORCH CLARIFICATION
+    // 14:21 ET: pagination must apply by default, not opt-in, so the
+    // 1.2 MB / 862 ms single-shot payload measured in Sprint 55 is the
+    // bug we're closing. A malformed `cursor` returns 400 rather than
+    // silently restarting from page 1, so pagination loops can't
+    // accidentally infinite-loop on garbled tokens.
+    let cursor = null;
+    if (req.query.cursor != null && req.query.cursor !== '') {
+      cursor = decodeCursor(req.query.cursor);
+      if (!cursor) {
+        return res.status(400).json({ error: 'invalid cursor' });
+      }
+    }
+    let limit = null;
+    if (req.query.limit != null && req.query.limit !== '') {
+      const n = Number(req.query.limit);
+      if (!Number.isFinite(n) || n < 1) {
+        return res.status(400).json({ error: 'invalid limit' });
+      }
+      limit = n;
+    }
     try {
-      const { nodes, edges, totalAvailable, truncated } = await fetchAllGraph(pool);
+      const { nodes, edges, totalAvailable, truncated, nextCursor } = await fetchAllGraph(pool, { cursor, limit });
       const byType = {};
       for (const e of edges) {
         byType[e.kind] = (byType[e.kind] || 0) + 1;
@@ -558,6 +672,7 @@ function createGraphRoutes({ app, getPool }) {
         edges,
         totalAvailable,
         truncated,
+        nextCursor,
       });
     } catch (err) {
       console.warn('[graph] /api/graph/all failed:', err.message);
@@ -646,6 +761,8 @@ module.exports = {
   rowToEdge,
   rowToFullMemory,
   snippet,
+  encodeCursor,
+  decodeCursor,
   UUID_RE,
   PROJECT_RE,
   MAX_NODES_PER_PROJECT,

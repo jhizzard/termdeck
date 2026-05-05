@@ -274,11 +274,29 @@
     try {
       let data;
       if (state.mode === 'project' && state.project === '__all__') {
+        // Sprint 57 T2 (F-T2-4) — /api/graph/all is now paginated by default
+        // (200 rows/page). Per ORCH GREEN-LIGHT 2026-05-05 14:21 ET, the
+        // dashboard renders the first 200-node page intentionally rather
+        // than accumulating across pages. Trade-offs:
+        //   - Avoids the 1.2 MB / 862 ms single-shot payload (Sprint 55
+        //     measurement that motivated F-T2-4).
+        //   - Keeps edge fidelity simple: the server's both-endpoints-in-page
+        //     edge query still gives a coherent intra-page subgraph; no
+        //     cross-page-edges concern, no accumulator de-dup.
+        //   - User narrows by project to see specific clusters (same UX
+        //     guidance as the pre-Sprint-57 truncation toast).
+        // If a future sprint wants "load more" pagination, the client can
+        // loop via `data.nextCursor` and the server's edge query will need
+        // to widen to source_id OR target_id IN page (touch-page) so cross-
+        // page edges are recoverable.
         data = await api('/api/graph/all');
         if (data.enabled === false) return showDisabled(data);
         state.rawNodes = data.nodes || [];
         state.rawEdges = data.edges || [];
-        if (data.truncated) {
+        // Truncation message: trigger when totalAvailable > what we
+        // rendered (i.e., this page is partial), regardless of whether
+        // the corpus is also above the historical 2000-node cap.
+        if (data.totalAvailable && data.totalAvailable > state.rawNodes.length) {
           showToast(
             `Showing ${state.rawNodes.length} most-recent of ${data.totalAvailable} memories — narrow by project to see specific clusters.`,
           );

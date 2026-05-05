@@ -89,7 +89,7 @@ Wall-clock: 2026-05-05 12:17 → 12:20 ET. Server `:3000` healthy throughout.
 | A.12 | GET /api/flashback/history | 200 | 6 ms | 48 KB | PASS | count:100 events; recent matches triggered by panel output containing literal "Error" |
 | A.13 | GET /api/config | 200 | 3 ms | 1958 b | PASS | Public config payload; ~ paths NOT expanded (intended; client side resolves) |
 | A.16 | GET /api/themes | 200 | 3 ms | 4850 b | PASS | 8 themes (tokyo-night first) |
-| A.17 | GET /api/agent-adapters | 200 | 2 ms | 446 b | PASS | claude/codex/gemini/grok all present, costBand="pay-per-token" on all |
+| A.17 | GET /api/agent-adapters | 200 | 2 ms | 446 b | PASS | claude/codex/gemini/grok all present; costBand `pay-per-token` on claude/codex/gemini, **`subscription` on grok** (per `packages/server/src/agent-adapters/grok.js:468`) — corrected from initial Sprint 55 matrix that misstated all four as pay-per-token; Codex T4-SWEEP-CELLS.md Cell 8 caught the inaccuracy |
 | A.18 | GET /api/rumen/insights | 200 | 52 ms | 11 KB | PASS | Returns insights list (top 10) |
 | A.19 | GET /api/rumen/status | 200 | 43 ms | 299 b | PASS-RED | **total_insights:321, latest_insight_at:2026-05-01T20:45 (5 days stale)**, last_job sessions_processed:1 insights_generated:0 |
 | A.20 | GET /api/pty-reaper/status | 200 | 2 ms | 1015 b | PASS | tickCount:15, lastError:null, registry shows current 4 sessions |
@@ -270,7 +270,7 @@ Tooling: `mcp__playwright__browser_*` against `http://127.0.0.1:3000/` while T1/
 | B.4 | Layout buttons present | 8 buttons | PASS | `1x1`, `2x1`, `2x2`, `3x2`, `2x4`, `4x2`, `orch`, `control` — all present and clickable. |
 | B.5 | Theme picker per panel | 8 themes × 4 panels | PASS | Tokyo Night, Rosé Pine Dawn, Catppuccin Mocha, GitHub Light, Dracula, Solarized Dark, Nord, Gruvbox Dark. `↺ default` reset link present. |
 | B.6 | Project tag rendering per panel | all show `termdeck` | PASS | All 4 panel headers show `termdeck` correctly; no chopin-nashville drift visible. |
-| B.7 | **Cost-monitoring panel absence** | absent | PASS-FLAGGED | Confirms Sprint 56 candidate. No cost-band display in UI yet despite `/api/agent-adapters` and `/api/agents` exposing `costBand:"pay-per-token"` for all 4 agents. |
+| B.7 | **Cost-monitoring panel absence** | absent | PASS-FLAGGED | Confirms Sprint 56 candidate. No cost-band display in UI yet despite `/api/agent-adapters` and `/api/agents` exposing per-agent `costBand` (claude/codex/gemini = `pay-per-token`, grok = `subscription`). Future Sprint 58 cost panel can read the field directly. |
 | B.8 | Graph view (`/graph.html?project=termdeck`) | 200 / 1447 nodes / 799 edges | PASS | Project picker (16 projects), search box, re-heat / fit buttons, edge-type filters (`supersedes 453`, `contradicts 7`, `relates to 232`, `elaborates 103`, `caused by 4`), min-degree selector (all / ≥1 / ≥2 / ≥3 / ≥5), window selector (all time / last 7 days / last 30 days / …), layout selector (force-directed / hierarchical / radial). Detail drawer with focus + copy id. **0 console errors.** |
 | B.9 | Flashback history (`/flashback-history.html`) | 200 / 196 fires | PASS-YELLOW | Window selector (last 24h / 7d / 30d / all), pagination (← Prev / Next →). Click-through funnel: **196 fires, 22 dismissed (11%), 6 clicked through (3%)**. Recent rows show **F-T2-3 confirmed in user-facing UI**: the lane brief text "Live demo for Brad: speed + visible cross-agent collaboration matter. Move fast. ◼ Phase A — API cells …" is captured as `claude-code error` rows and presented to the user. |
 

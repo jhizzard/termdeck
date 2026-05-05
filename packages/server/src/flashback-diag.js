@@ -156,6 +156,83 @@ function markClickedThrough(db, eventId) {
   }
 }
 
+// Sprint 57 T1 (#4): negative-feedback persistence read-side. Returns true
+// when ANY prior flashback_events row for this memory_id (`top_hit_id`)
+// has `dismissed_at` set — meaning the user previously dismissed (or
+// click-through-then-implicitly-dismissed) a flashback featuring this
+// same memory. The proactive emit path uses this to skip already-dismissed
+// memories before sending the next `proactive_memory` frame, so a
+// low-confidence hit the user marked "Not relevant" stops resurfacing.
+//
+// Scope is global (no `session_id` filter) — user intent is "this memory
+// isn't useful," not "this memory isn't useful in THIS session." Matches
+// the Sprint 55 T4-Codex audit-addendum brief shape
+// (`WHERE NOT EXISTS (... memory_id = X AND dismissed_at IS NOT NULL)`),
+// adapted to the actual schema column name `top_hit_id`.
+//
+// SAFE when db is null (returns false → caller falls back to default emit
+// path, identical to pre-Sprint-57 behavior) and when memoryId is empty
+// or non-string (returns false). Errors are caught and logged — must
+// never break the live emit path.
+function isMemoryDismissed(db, memoryId) {
+  if (!db || !memoryId || typeof memoryId !== 'string') return false;
+  try {
+    const row = db.prepare(`
+      SELECT 1 AS hit FROM flashback_events
+       WHERE top_hit_id = ? AND dismissed_at IS NOT NULL
+       LIMIT 1
+    `).get(memoryId);
+    return Boolean(row);
+  } catch (err) {
+    console.warn('[flashback-diag] isMemoryDismissed SELECT failed:', err.message);
+    return false;
+  }
+}
+
+// Sprint 57 T1 (#4): pure selection helper used by the proactive-emit path
+// in `packages/server/src/index.js`. Walks the score-ordered Mnestra
+// candidate list and returns:
+//   { hit, dismissedCount, scannedCount }
+// where:
+//   • hit          — the first candidate whose `candidate.id` is not in
+//                    the dismissed set (or null when every candidate was
+//                    dismissed / the list is empty)
+//   • dismissedCount — how many candidates were skipped because their
+//                    memory id is in the dismissed set
+//   • scannedCount — how many candidates were inspected before stopping
+//                    (= dismissedCount + 1 when a hit was returned;
+//                    = list length when nothing matched)
+//
+// Extracting this from `index.js` lets the integration path (see Sprint 57
+// T4-CODEX 14:24 ET audit) be tested directly without spawning a real PTY
+// + WS + Mnestra bridge. The pre-extraction inline version was unreachable
+// from a unit test.
+//
+// SAFE on null db (returns the first candidate without filtering — same
+// semantics as pre-Sprint-57 `memories[0]`) so non-DB installs still get
+// the legacy default-pick behavior. Empty / non-array memories returns
+// the empty-skip shape `{ hit: null, dismissedCount: 0, scannedCount: 0 }`.
+function pickNextNonDismissed(db, memories) {
+  const list = Array.isArray(memories) ? memories : [];
+  if (list.length === 0) {
+    return { hit: null, dismissedCount: 0, scannedCount: 0 };
+  }
+  if (!db) {
+    return { hit: list[0] || null, dismissedCount: 0, scannedCount: 1 };
+  }
+  let dismissedCount = 0;
+  let scannedCount = 0;
+  for (const candidate of list) {
+    scannedCount += 1;
+    if (candidate && candidate.id && isMemoryDismissed(db, candidate.id)) {
+      dismissedCount += 1;
+      continue;
+    }
+    return { hit: candidate || null, dismissedCount, scannedCount };
+  }
+  return { hit: null, dismissedCount, scannedCount };
+}
+
 // Reads the most-recent N flashback fires, optionally filtered to events
 // fired at-or-after the `since` ISO timestamp. Hard cap of 500 rows so
 // pathological queries can't OOM the dashboard.
@@ -220,6 +297,8 @@ module.exports = {
   recordFlashback,
   markDismissed,
   markClickedThrough,
+  isMemoryDismissed,
+  pickNextNonDismissed,
   getRecentFlashbacks,
   getFunnelStats,
 };

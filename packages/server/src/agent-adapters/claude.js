@@ -47,7 +47,34 @@ const IDLE = /^>\s*$/m;
 // sessions whose tool output (grep results, test logs, file dumps) routinely
 // mentions "Error" mid-line without representing an actual failure.
 // Sprint 40 T2 added mixed-case `Fatal` + the special-cased `npm ERR!` shape.
-const ERROR = /^\s*(?:(?:error|Error|ERROR|exception|Exception|Traceback|fatal|Fatal|FATAL|segmentation fault|panic|EACCES|ECONNREFUSED|ENOENT|command not found|undefined reference|cannot find module|failed with exit code|No such file or directory|Permission denied)\b|npm ERR!)/m;
+//
+// Sprint 57 T1 (F-T2-3): tightened from `\b`-after-keyword to require a
+// trailing colon + content for prose-shape keywords. The pre-Sprint-57
+// pattern matched line-start prose like "Error handling docs" and
+// "Error handling pattern" (`Error` + space, `\b` satisfied) — Sprint 55
+// T2 + T4 logged 196 fires / 22 dismissed (11%) on the daily-driver
+// project, mostly from boot-prompt content + markdown headings tripping
+// the pattern. The new shape mirrors the proven `PATTERNS.error` rule in
+// session.js (already locked by `tests/analyzer-error-fixtures.test.js`):
+// real errors say `Error: <msg>`, not bare `Error`.
+//
+// Kept as structural shapes (no colon required — the structure itself
+// disambiguates):
+//   • `Traceback (most recent call last):`
+//   • `npm ERR!`
+//   • `error[Ennn]:` (Rust borrow-checker / clippy errors)
+//   • `failed with exit code <digit>` (CI failure marker; trailing
+//     digit eliminates the "the build failed with exit code N last
+//     time" prose false positive)
+//
+// Removed entirely (caught by `PATTERNS.shellError` as the secondary
+// fallback in `_detectErrors` when they appear in real
+// `<cmd>: <path>: <phrase>` shape):
+//   • `command not found`, `undefined reference`, `cannot find module`
+//   • `No such file or directory`, `Permission denied`
+//   • `segmentation fault` (also covered by `\s*Segmentation fault\b`
+//     in shellError)
+const ERROR = /^\s*(?:(?:error|Error|ERROR|exception|Exception|fatal|Fatal|FATAL|EACCES|ECONNREFUSED|ENOENT|panic):\s+\S|Traceback \(most recent call last\):|npm ERR!|error\[E\d+\]:|failed with exit code\s+\d+\b)/m;
 
 // ──────────────────────────────────────────────────────────────────────────
 // statusFor — replaces the `case 'claude-code':` block of _updateStatus.

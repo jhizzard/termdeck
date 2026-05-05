@@ -224,6 +224,97 @@ test('Session._detectErrors: non-claude session still uses generic PATTERNS.erro
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Sprint 57 T1 / F-T2-3 — `errorLineStart` pattern tightening.
+//
+// The pre-Sprint-57 pattern matched line-start prose like
+// "Error handling docs" (the F-T2-3 finding from Sprint 55 T2 + T4 audit:
+// 196 fires / 22 dismissed (11%) on the daily-driver project, mostly from
+// boot-prompt content + markdown headings tripping the bare `Error\b`
+// keyword arm). Tightening requires prose-shape keywords to be followed
+// by `:` + content; structural shapes (Traceback, npm ERR!,
+// `error[Ennn]:`, `failed with exit code <digit>`) still match without
+// the colon because the structure already disambiguates real errors.
+//
+// These fixtures pin both directions — the false-positive class that must
+// NO LONGER fire, and the true-positive class that must STILL fire.
+// ─────────────────────────────────────────────────────────────────────────
+
+const ERROR_LINE_FALSE_POSITIVES = [
+  ['markdown heading-style label',         'Error handling docs'],
+  ['docs prose section',                   'Error handling pattern'],
+  ['lowercase prose',                      'error tracking is in src/'],
+  ['boot-prompt-style line w/ word Error', 'Error path tested by tests/x.test.js'],
+  ['exception keyword without colon',      'Exception thrown at line 42 was rethrown'],
+  ['fatal keyword without colon',          'Fatal flaw in logic was discussed'],
+  ['ENOENT mentioned without colon',       'ENOENT was the ultimate cause yesterday'],
+  ['command-not-found prose',              'command not found case is rare'],
+  ['No such file prose',                   'No such file or directory shapes vary'],
+  ['Permission denied prose',              'Permission denied phrasing differs by shell'],
+  ['segmentation fault prose',             'segmentation fault rates dropped after fix'],
+  ['failed with exit code (no digit)',     'failed with exit code last time we tried'],
+  ['ErrorBoundary component name',         'ErrorBoundary component name'],
+];
+
+const ERROR_LINE_TRUE_POSITIVES = [
+  ['Error: prose colon shape',                 'Error: connection refused'],
+  ['lowercase error: shape',                   'error: command failed with code 1'],
+  ['ERROR: uppercase shape',                   'ERROR: out of memory'],
+  ['Exception: shape',                         'Exception: caught at frame 0'],
+  ['Fatal: git-style',                         'Fatal: not a git repository'],
+  ['ENOENT: errno colon shape',                'ENOENT: no such file or directory'],
+  ['EACCES: errno colon shape',                'EACCES: permission denied'],
+  ['ECONNREFUSED: errno colon shape',          'ECONNREFUSED: connection refused on :5432'],
+  ['Go-style panic',                           'panic: runtime error: invalid memory address'],
+  ['Traceback header',                         'Traceback (most recent call last):'],
+  ['npm ERR! tag',                             'npm ERR! code ERESOLVE'],
+  ['Rust borrow-checker error code',           'error[E0382]: borrow of moved value'],
+  ['failed with exit code N (CI marker)',      'failed with exit code 1'],
+  ['leading whitespace + Error: still fires',  '    Error: indented but real'],
+];
+
+test('Sprint 57 T1: tightened ERROR pattern rejects line-start prose without colon (F-T2-3)', () => {
+  for (const [name, fixture] of ERROR_LINE_FALSE_POSITIVES) {
+    assert.equal(
+      claudeAdapter.patterns.error.test(fixture),
+      false,
+      `expected NO match for ${name}: ${JSON.stringify(fixture)}`,
+    );
+  }
+});
+
+test('Sprint 57 T1: tightened ERROR pattern still fires on real error shapes', () => {
+  for (const [name, fixture] of ERROR_LINE_TRUE_POSITIVES) {
+    assert.equal(
+      claudeAdapter.patterns.error.test(fixture),
+      true,
+      `expected MATCH for ${name}: ${JSON.stringify(fixture)}`,
+    );
+  }
+});
+
+test('Sprint 57 T1: Session._detectErrors no longer flips claude-code to errored on "Error handling docs"', () => {
+  // End-to-end wiring assertion that mirrors the Sprint 55 T2 + T4
+  // observation: a Claude Code panel echoing prose with "Error" at line
+  // start (markdown heading, lane-brief paste, doc snippet) must NOT trip
+  // the analyzer. The pre-Sprint-57 pattern fired here; the new pattern
+  // does not. Confirms the false-positive class is closed at the wiring
+  // level, not just the regex level.
+  const s = new Session({ id: 'wire-57-1', type: 'claude-code' });
+  s.analyzeOutput('Error handling docs are at packages/server/README.md');
+  assert.notEqual(s.meta.status, 'errored');
+});
+
+test('Sprint 57 T1: Session._detectErrors still flips claude-code on real "Error: ..." line', () => {
+  // Companion assertion: the wire-7 success case (Error: + content) MUST
+  // continue to fire. This test exists alongside wire-7 to make the
+  // before/after delta legible: tightening the false-positive class must
+  // not regress the true-positive class.
+  const s = new Session({ id: 'wire-57-2', type: 'claude-code' });
+  s.analyzeOutput('Error: connection refused at db.connect()');
+  assert.equal(s.meta.status, 'errored');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // parseTranscript — Claude JSONL format, same cut-offs as the legacy
 // memory-session-end.js helper this lifts from.
 // ─────────────────────────────────────────────────────────────────────────

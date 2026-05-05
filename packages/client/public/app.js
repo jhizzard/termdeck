@@ -2825,6 +2825,63 @@
       }
     }
 
+    // Sprint 57 T2 — post-resize layout-health assertion + forced reflow.
+    // Sprint 55 T2 saw rapid Playwright resize chains crush #termGrid into
+    // the corner with no manual recovery. Codex T4-SWEEP-CELLS audit was
+    // explicit: the right shape is a health check + forced reflow at the
+    // tail of the existing debounced fitAll(), not a second window-resize
+    // listener. Reentrancy guarded so a degenerate state can't loop.
+    function verifyLayoutHealth() {
+      const grid = document.getElementById('termGrid');
+      if (!grid) return;
+      if (verifyLayoutHealth._inFlight) return;
+      const rect = grid.getBoundingClientRect();
+      // The grid spans the viewport horizontally (topbar is above it; the
+      // guide-rail is fixed-position overlay reserved by 38px right padding,
+      // not a flex sibling). A healthy grid's getBoundingClientRect().width
+      // tracks window.innerWidth modulo body margins. Flag if it shrinks
+      // below 90% of the usable viewport (briefed threshold; T4-CODEX
+      // 14:12 ET audit confirms 90% is the spec, not the looser 85%).
+      const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
+      const gridUnderwidth = viewportW > 0 && rect.width < viewportW * 0.90;
+      // Each visible terminal panel must have positive width AND height.
+      // Skip panels intentionally hidden by layout (control mode CSS-hides
+      // .term-panel via `display:none`; layout-focus hides non-focused).
+      let panelDegenerate = false;
+      let panelDegenerateId = null;
+      for (const [sid, entry] of state.sessions) {
+        if (!entry || !entry.el) continue;
+        const style = window.getComputedStyle(entry.el);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const r = entry.el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) {
+          panelDegenerate = true;
+          panelDegenerateId = sid;
+          break;
+        }
+      }
+      if (!gridUnderwidth && !panelDegenerate) return;
+      verifyLayoutHealth._inFlight = true;
+      console.warn(
+        '[client] layout health check failed (gridUnderwidth=' + gridUnderwidth
+        + ', panelDegenerate=' + panelDegenerate
+        + (panelDegenerateId ? ', sid=' + panelDegenerateId : '')
+        + ') — forcing recovery'
+      );
+      // Recovery: detach + reapply the current layout class to force the
+      // CSS Grid templates to recompute, then refit all panels. Two RAFs so
+      // the browser commits the className=''→className=cls round-trip.
+      requestAnimationFrame(() => {
+        const cls = grid.className;
+        grid.className = '';
+        void grid.offsetHeight; // force synchronous reflow
+        grid.className = cls;
+        requestAnimationFrame(() => {
+          try { fitAll(); } finally { verifyLayoutHealth._inFlight = false; }
+        });
+      });
+    }
+
     // Debounce: collapse a burst of calls (e.g. a window-resize drag firing
     // dozens of events/sec) into a single invocation after `wait` ms of quiet.
     function debounce(fn, wait) {
@@ -2836,7 +2893,13 @@
     }
 
     const fitAllDebounced = debounce(() => {
-      requestAnimationFrame(() => fitAll());
+      requestAnimationFrame(() => {
+        fitAll();
+        // Sprint 57 T2 — post-fit layout-health probe (~250 ms after fit so
+        // the browser has committed the resize). Extends the existing window
+        // resize listener (no second listener added).
+        setTimeout(verifyLayoutHealth, 250);
+      });
     }, 100);
 
     // ===== ONBOARDING TOUR =====
@@ -3444,18 +3507,29 @@
     // Topbar RAG indicator. The #stat-rag stub in index.html was hidden by
     // Sprint 9 T2; re-purpose it as a live state line so users can see, at a
     // glance, what the toggle is doing without opening Settings each time.
+    //
+    // Sprint 57 T2 (F-T2-2 + F-T2-6) — consumes the server-derived `ragMode`
+    // enum directly instead of re-deriving from `ragEnabled` + `ragConfigEnabled`
+    // booleans. The single source of truth lives in `packages/server/src/rag-mode.js`.
+    // Falls back to legacy boolean derivation for older servers (pre-Sprint-57)
+    // during a rolling upgrade.
     function updateRagIndicator() {
       const el = document.getElementById('stat-rag');
       if (!el) return;
       const cfg = state.config || {};
-      const intent = !!cfg.ragConfigEnabled;
-      const effective = !!cfg.ragEnabled;
+      let mode = cfg.ragMode;
+      if (!mode) {
+        // Pre-Sprint-57 server fallback — replicate the legacy derivation.
+        const intent = !!cfg.ragConfigEnabled;
+        const effective = !!cfg.ragEnabled;
+        mode = effective ? 'active' : (intent ? 'pending' : 'off');
+      }
       el.style.display = '';
-      if (effective) {
+      if (mode === 'active') {
         el.textContent = 'RAG · on';
         el.className = 'topbar-stat rag-on';
         el.title = 'Mnestra hybrid search + termdeck flashback enabled';
-      } else if (intent) {
+      } else if (mode === 'pending') {
         el.textContent = 'RAG · pending';
         el.className = 'topbar-stat rag-pending';
         el.title = 'RAG enabled in config.yaml but Supabase not wired — see Settings';

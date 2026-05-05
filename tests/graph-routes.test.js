@@ -31,6 +31,8 @@ const {
   fetchAllGraph,
   fetchNeighborhood,
   fetchStats,
+  encodeCursor,
+  decodeCursor,
   UUID_RE,
   PROJECT_RE,
   MAX_NODES_GLOBAL,
@@ -562,7 +564,7 @@ test('fetchAllGraph short-circuits when no nodes are returned', async () => {
     },
   ]);
   const out = await fetchAllGraph(pool);
-  assert.deepEqual(out, { nodes: [], edges: [], totalAvailable: 0, truncated: false });
+  assert.deepEqual(out, { nodes: [], edges: [], totalAvailable: 0, truncated: false, nextCursor: null });
   // Total + nodes queries ran; the edges query MUST NOT have run on an empty
   // node set (parity with fetchProjectGraph's short-circuit).
   assert.equal(calls.length, 2);
@@ -611,4 +613,219 @@ test('GET /api/graph/all returns nodes+edges+stats with truncated/totalAvailable
   assert.equal(r.body.stats.edges, 1);
   assert.equal(r.body.stats.byType.relates_to, 1);
   assert.equal(r.body.stats.totalAvailable, 3);
+  // Sprint 57 T2 — backward-compat: no-cursor request returns nextCursor:null
+  // (or explicitly null) when fewer rows than the historical ceiling.
+  assert.equal(r.body.nextCursor, null);
+});
+
+// -------- Sprint 57 T2 — /api/graph/all cursor pagination (F-T2-4) --------
+
+test('encodeCursor + decodeCursor round-trip preserves (createdAt, id)', () => {
+  const iso = '2026-05-05T12:34:56.789Z';
+  const token = encodeCursor(iso, UUID_A);
+  assert.ok(typeof token === 'string' && token.length > 0);
+  const out = decodeCursor(token);
+  assert.deepEqual(out, { createdAt: iso, id: UUID_A });
+});
+
+test('decodeCursor rejects malformed tokens', () => {
+  assert.equal(decodeCursor(null), null);
+  assert.equal(decodeCursor(''), null);
+  assert.equal(decodeCursor('not-base64-!@#$%'), null);
+  // Valid base64 but not JSON
+  assert.equal(decodeCursor(Buffer.from('not json').toString('base64')), null);
+  // Valid JSON but missing fields
+  assert.equal(decodeCursor(Buffer.from('{}').toString('base64')), null);
+  // Valid JSON, bad uuid
+  assert.equal(
+    decodeCursor(Buffer.from(JSON.stringify({ createdAt: '2026-05-05T12:00:00Z', id: 'not-a-uuid' })).toString('base64')),
+    null,
+  );
+  // Valid JSON, valid uuid, bad date
+  assert.equal(
+    decodeCursor(Buffer.from(JSON.stringify({ createdAt: 'tomorrow', id: UUID_A })).toString('base64')),
+    null,
+  );
+});
+
+test('fetchAllGraph paginates through 5 nodes in 3 pages of 2 (covers same set as single-shot)', async () => {
+  // Five nodes with descending created_at + descending uuid tie-break.
+  // Page 1: limit=2 returns nodes 1,2 (most recent) + nextCursor pointing at node 2.
+  // Page 2: cursor → node 3, 4 + nextCursor pointing at node 4.
+  // Page 3: cursor → node 5 + nextCursor:null (last page).
+  const NODE = (id, t, project = 'termdeck') => ({
+    id,
+    content: `n-${id.slice(0, 4)}`,
+    source_type: 'fact',
+    category: null,
+    project,
+    created_at: t,
+    updated_at: null,
+    is_active: true,
+    archived: false,
+    superseded_by: null,
+    degree: 0,
+  });
+  const T = (n) => `2026-05-05T12:00:0${n}.000Z`; // T(0) oldest, T(4) newest
+  const rows = [
+    NODE('aaaaaaaa-1111-1111-1111-111111111111', T(4)), // newest first
+    NODE('bbbbbbbb-2222-2222-2222-222222222222', T(3)),
+    NODE('cccccccc-3333-3333-3333-333333333333', T(2)),
+    NODE('dddddddd-4444-4444-4444-444444444444', T(1)),
+    NODE('eeeeeeee-5555-5555-5555-555555555555', T(0)),
+  ];
+  // Stub pool: count + nodes (page-aware via cursor) + edges (empty).
+  function stubForPaging(remainingRows) {
+    return makeStubPool([
+      {
+        match: (sql) => sql.includes('SELECT COUNT(*)::int AS c'),
+        rows: [{ c: rows.length }],
+      },
+      {
+        match: (sql) => sql.includes('WITH all_nodes AS'),
+        rows: (sql, params) => {
+          // Mimic LIMIT k+1 + cursor predicate. The handler asks for limit+1=3
+          // rows. If a cursor is present, we slice from there.
+          if (params && params.length === 2) {
+            const [createdAt, id] = params;
+            // Strict-less-than (created_at, id) row-key.
+            const idx = remainingRows.findIndex(
+              (r) => r.created_at < createdAt || (r.created_at === createdAt && r.id < id),
+            );
+            return idx === -1 ? [] : remainingRows.slice(idx, idx + 3);
+          }
+          return remainingRows.slice(0, 3);
+        },
+      },
+      {
+        match: (sql) => sql.includes('FROM memory_relationships') && sql.includes('source_id = ANY'),
+        rows: [],
+      },
+    ]);
+  }
+
+  const collected = [];
+  // Page 1 — no cursor.
+  let { pool: p1 } = stubForPaging(rows);
+  let page = await fetchAllGraph(p1, { limit: 2 });
+  assert.equal(page.totalAvailable, 5);
+  assert.equal(page.nodes.length, 2);
+  assert.ok(page.nextCursor, 'page 1 must carry a nextCursor');
+  collected.push(...page.nodes.map((n) => n.id));
+
+  // Page 2 — cursor from page 1.
+  let { pool: p2 } = stubForPaging(rows);
+  let cursor2 = decodeCursor(page.nextCursor);
+  page = await fetchAllGraph(p2, { cursor: cursor2, limit: 2 });
+  assert.equal(page.nodes.length, 2);
+  assert.ok(page.nextCursor, 'page 2 must carry a nextCursor');
+  collected.push(...page.nodes.map((n) => n.id));
+
+  // Page 3 — cursor from page 2.
+  let { pool: p3 } = stubForPaging(rows);
+  let cursor3 = decodeCursor(page.nextCursor);
+  page = await fetchAllGraph(p3, { cursor: cursor3, limit: 2 });
+  assert.equal(page.nodes.length, 1);
+  assert.equal(page.nextCursor, null, 'last page must have nextCursor:null');
+  collected.push(...page.nodes.map((n) => n.id));
+
+  // All 5 nodes covered, no duplicates, in descending (created_at, id) order.
+  assert.equal(collected.length, 5);
+  assert.deepEqual(
+    collected,
+    rows.map((r) => r.id),
+    'paginated chunks cover the same set as the single-shot response, in order',
+  );
+});
+
+test('GET /api/graph/all rejects malformed cursor with 400', async () => {
+  const { pool } = makeStubPool([]);
+  const app = buildApp(() => pool);
+  const r = await request(app, 'GET', '/api/graph/all?cursor=garbage!@#');
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'invalid cursor');
+});
+
+test('GET /api/graph/all default page returns at most 200 rows + nextCursor when more exist (ORCH 14:21 clarification)', async () => {
+  // Sprint 57 T2 — pagination is the default. With a corpus of 250 rows and
+  // no cursor / no limit specified, the route fetches LIMIT 201 internally,
+  // returns 200 nodes, and emits a non-null nextCursor pointing at the 200th
+  // row's (created_at, id) so the next call resumes correctly.
+  const baseTime = new Date('2026-05-05T12:00:00.000Z').getTime();
+  const allRows = [];
+  for (let i = 0; i < 250; i++) {
+    allRows.push({
+      id: `${(0xa0 + Math.floor(i / 16)).toString(16).padStart(2, '0')}${(i % 16).toString(16)}aaaaa-1111-1111-1111-${i.toString().padStart(12, '0')}`,
+      content: `n-${i}`,
+      source_type: 'fact',
+      category: null,
+      project: 'termdeck',
+      // Descending wall-clock so ORDER BY created_at DESC returns oldest-id-first
+      created_at: new Date(baseTime - i * 1000).toISOString(),
+      updated_at: null,
+      is_active: true,
+      archived: false,
+      superseded_by: null,
+      degree: 0,
+    });
+  }
+  const { pool } = makeStubPool([
+    {
+      match: (sql) => sql.includes('SELECT COUNT(*)::int AS c'),
+      rows: [{ c: 250 }],
+    },
+    {
+      match: (sql) => sql.includes('WITH all_nodes AS'),
+      // Server requests LIMIT 201; mimic by returning the first 201 rows
+      // ordered by (created_at DESC, id DESC).
+      rows: allRows.slice(0, 201),
+    },
+    {
+      match: (sql) => sql.includes('FROM memory_relationships'),
+      rows: [],
+    },
+  ]);
+  const app = buildApp(() => pool);
+  const r = await request(app, 'GET', '/api/graph/all');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.enabled, true);
+  assert.equal(r.body.nodes.length, 200);
+  assert.equal(r.body.totalAvailable, 250);
+  // truncated stays false because totalAvailable (250) is below the
+  // historical MAX_NODES_GLOBAL=2000 cap; nextCursor is the more-pages
+  // signal for paginated callers.
+  assert.equal(r.body.truncated, false);
+  assert.ok(typeof r.body.nextCursor === 'string' && r.body.nextCursor.length > 0,
+    'first-page nextCursor must be non-null when total > default page size');
+  // Decoding the cursor must round-trip the 200th row's (created_at, id).
+  const decoded = decodeCursor(r.body.nextCursor);
+  assert.deepEqual(decoded, { createdAt: allRows[199].created_at, id: allRows[199].id });
+});
+
+test('GET /api/graph/all default page returns nextCursor:null when total <= page size', async () => {
+  // 1 row total, default page=200 — nextCursor must be null on the only page.
+  const { pool } = makeStubPool([
+    {
+      match: (sql) => sql.includes('SELECT COUNT(*)::int AS c'),
+      rows: [{ c: 1 }],
+    },
+    {
+      match: (sql) => sql.includes('WITH all_nodes AS'),
+      rows: [
+        { id: UUID_A, content: 'only', source_type: 'fact', category: null, project: 'termdeck', created_at: new Date().toISOString(), updated_at: null, is_active: true, archived: false, superseded_by: null, degree: 0 },
+      ],
+    },
+    {
+      match: (sql) => sql.includes('FROM memory_relationships'),
+      rows: [],
+    },
+  ]);
+  const app = buildApp(() => pool);
+  const r = await request(app, 'GET', '/api/graph/all');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.enabled, true);
+  assert.equal(r.body.nodes.length, 1);
+  assert.equal(r.body.totalAvailable, 1);
+  assert.equal(r.body.truncated, false);
+  assert.equal(r.body.nextCursor, null);
 });
