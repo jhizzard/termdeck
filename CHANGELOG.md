@@ -16,6 +16,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sprint 46 deferrals still open after Sprint 50.5 close-out.** The Sprint 50.5 dogfood cleared four (T1 URL state codec edge case, T2 — replaced with `approvalModel` doc work — T3 TUI spinner spam, T4 dead `triggerProactiveMemoryQuery`); ten deferrals remain in `docs/sprint-46-dashboard-audit/AUDIT-FINDINGS.md` § Sprint 47 deferrals (most need design calls, not lane work).
 - Sprint 40 carry-overs: harness session-end hook PROJECT_MAP forward-fix (out-of-repo `~/.claude/hooks/memory-session-end.js`); analyzer broadening for `PATTERNS.error` case-sensitivity gaps; LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.
 
+## [1.0.11] - 2026-05-05
+
+> **v1.0.11 Sprint 56 fold-in — Rumen backlog catch-up env-var overrides.** One additive change to the bundled `rumen-tick` Edge Function source: read `RUMEN_LOOKBACK_HOURS_OVERRIDE` + `RUMEN_MAX_SESSIONS_OVERRIDE` env vars and pass them to `runRumenJob` options. Closes Sprint 55 T3 Cell #1 candidate (c) — generate insights from the 289 historic memory_sessions rows that are out of the default 72-hour window. Fails closed (invalid integer string → default used). After the catch-up settles, `supabase secrets unset` both env vars to revert to standard 72h / 10-session-per-tick behavior.
+
+### Added
+
+- **Bundled `rumen-tick/index.ts` env-var override gates** at `packages/server/src/setup/rumen/functions/rumen-tick/index.ts:53-72`. Two new gates:
+  - `RUMEN_LOOKBACK_HOURS_OVERRIDE`: integer hours; bypasses the rumen-package default (72h). Set to e.g. `2880` (120 days) for a one-off catch-up that covers all backlog.
+  - `RUMEN_MAX_SESSIONS_OVERRIDE`: integer max sessions per tick; bypasses the rumen-package default (10). Set to e.g. `300` to process the whole 289-session backlog in one tick instead of 28 ticks at default 10 each.
+  - Both validate `^\d+$` regex and pass to `runRumenJob` only when valid; invalid → ignored, default used.
+  - When override active, function emits `[rumen] override active: lookbackHours=<N> maxSessions=<N>` log line.
+- **Operational runbook for backlog catch-up** (added to CHANGELOG; will land in a Sprint 57 RELEASE.md update too):
+  ```
+  supabase secrets set RUMEN_LOOKBACK_HOURS_OVERRIDE=2880 \
+    RUMEN_MAX_SESSIONS_OVERRIDE=300 --project-ref <ref>
+  termdeck init --rumen --yes        # redeploy with new bundled source
+  curl -X POST <function-url> ...     # OR wait for next 15-min cron
+  # … verify rumen_insights count moves …
+  supabase secrets unset RUMEN_LOOKBACK_HOURS_OVERRIDE \
+    RUMEN_MAX_SESSIONS_OVERRIDE --project-ref <ref>
+  termdeck init --rumen --yes        # redeploy without overrides
+  ```
+
+### Changed
+
+- **`@jhizzard/termdeck-stack` 0.6.10 → 0.6.11 audit-trail bump.** Stack-installer JS source unchanged this release.
+
+### Notes
+
+- **Why a separate v1.0.11 not folded into v1.0.10?** The v1.0.10 wave was the Sprint 55 punch list (7 install-path correctness fixes). The env-var override gates are SCOPE-CREEP for that wave — they're not a "fix what Sprint 55 caught" item; they're "Sprint 55 T3 Cell #1 candidate (c) implementation, the orchestrator-decided catch-up tool." Better to keep the wave focused and ship the catch-up as a fold-in. Both v1.0.10 and v1.0.11 publish in the same hour as part of the Sprint 56 wave.
+- **Both env vars revert cleanly.** Once unset (or set to non-integer), the function reads `undefined` and the spread operator drops the override key from runRumenJob options — `runRumenJob` then uses its own defaults (72h / 10 sessions). No persistent state change.
+
 ## [1.0.10] - 2026-05-05
 
 > **v1.0.10 Sprint 56 — Sprint 55 multi-lane stack-sweep punch list landing.** Six discrete fixes from yesterday's full-stack adversarial sweep + the STATUS merger update. Cross-repo wave: ships alongside `@jhizzard/rumen@0.5.3` (synthesis-bug double fix — Bug A picker filter + Bug B `prepublishOnly` guard against stale-dist-publish). The rumen 0.5.3 publish is the linchpin that finally moves `rumen_insights` past the 4-day flatline; this v1.0.10 wave bundles the install-path correctness fixes that Sprint 55 surfaced.

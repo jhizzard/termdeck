@@ -52,10 +52,40 @@ serve(async (_req: Request) => {
 
   const pool = createPoolFromUrl(url);
 
+  // Sprint 56 (T3 Cell #1 backlog catch-up) — env-var overrides for one-off
+  // historic processing. Set via `supabase secrets set`:
+  //   RUMEN_LOOKBACK_HOURS_OVERRIDE=2880   (120 days; bypasses default 72h)
+  //   RUMEN_MAX_SESSIONS_OVERRIDE=300      (processes whole 289-session
+  //                                         backlog in one tick rather than
+  //                                         28 ticks at default 10 each)
+  // After the catch-up settles, unset both with
+  //   `supabase secrets unset RUMEN_LOOKBACK_HOURS_OVERRIDE
+  //                           RUMEN_MAX_SESSIONS_OVERRIDE`
+  // and the function reverts to the rumen-package defaults (72h / 10 sessions).
+  // Both gates fail closed: invalid integer string → ignored, default used.
+  const lookbackOverrideRaw = Deno.env.get('RUMEN_LOOKBACK_HOURS_OVERRIDE');
+  const maxSessionsOverrideRaw = Deno.env.get('RUMEN_MAX_SESSIONS_OVERRIDE');
+  const lookbackOverride = lookbackOverrideRaw && /^\d+$/.test(lookbackOverrideRaw)
+    ? parseInt(lookbackOverrideRaw, 10)
+    : undefined;
+  const maxSessionsOverride = maxSessionsOverrideRaw && /^\d+$/.test(maxSessionsOverrideRaw)
+    ? parseInt(maxSessionsOverrideRaw, 10)
+    : undefined;
+  if (lookbackOverride !== undefined || maxSessionsOverride !== undefined) {
+    console.log(
+      '[rumen] override active: lookbackHours=' +
+        (lookbackOverride ?? 'default') +
+        ' maxSessions=' +
+        (maxSessionsOverride ?? 'default'),
+    );
+  }
+
   try {
     console.log('[rumen] edge function tick starting');
     const summary = await runRumenJob(pool, {
       triggeredBy: 'schedule',
+      ...(lookbackOverride !== undefined ? { lookbackHours: lookbackOverride } : {}),
+      ...(maxSessionsOverride !== undefined ? { maxSessions: maxSessionsOverride } : {}),
     });
     console.log(
       '[rumen] edge function tick complete job_id=' +
