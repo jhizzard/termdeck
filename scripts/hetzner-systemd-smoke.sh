@@ -56,6 +56,8 @@ RUN_TAG="${GITHUB_RUN_ID:-local-$(date -u +%Y%m%d%H%M%S)-$$}"
 VM_NAME="termdeck-systemd-smoke-${RUN_TAG}"
 SSH_KEY_TMP="$(mktemp -t hetzner-ssh-key.XXXXXX)"
 REMOTE_SETUP_TMP="$(mktemp -t termdeck-remote-setup.XXXXXX.sh)"
+REMOTE_SECRETS_TMP="$(mktemp -t termdeck-remote-secrets.XXXXXX.env)"
+REPO_TARBALL_TMP="$(mktemp -t termdeck-candidate.XXXXXX.tar.gz)"
 REPORT_PATH="${REPORT_PATH:-./hetzner-systemd-smoke-report.json}"
 
 SSH_OPTS=(
@@ -91,7 +93,7 @@ cleanup() {
   else
     log "cleanup: HCLOUD_TOKEN unset — skipping (VM may not have been created)"
   fi
-  rm -f "${SSH_KEY_TMP}" "${REMOTE_SETUP_TMP}" 2>/dev/null || true
+  rm -f "${SSH_KEY_TMP}" "${REMOTE_SETUP_TMP}" "${REMOTE_SECRETS_TMP}" "${REPO_TARBALL_TMP}" 2>/dev/null || true
   exit "${exit_code}"
 }
 trap cleanup EXIT
@@ -130,6 +132,22 @@ export HCLOUD_TOKEN="${HETZNER_API_TOKEN}"
 printf '%s\n' "${HETZNER_SSH_PRIVATE_KEY}" > "${SSH_KEY_TMP}"
 chmod 600 "${SSH_KEY_TMP}"
 
+# Stage runtime secrets as a separate file rather than substituting them into
+# the remote script. DATABASE_URL commonly contains `&`; sed replacement would
+# treat that as "the full match" unless every value is escaped perfectly.
+cat > "${REMOTE_SECRETS_TMP}" <<SECRETS_EOF
+SUPABASE_URL=${TEST_SUPABASE_URL}
+SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+DATABASE_URL=${TEST_DATABASE_URL}
+OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+SECRETS_EOF
+chmod 600 "${REMOTE_SECRETS_TMP}"
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+log "packing checked-out candidate from ${REPO_ROOT}"
+git -C "${REPO_ROOT}" archive --format=tar.gz -o "${REPO_TARBALL_TMP}" HEAD
+
 # ── Generate the remote setup script ─────────────────────────────────────
 #
 # Built locally so we can interpolate CI secrets without re-quoting through
@@ -146,28 +164,39 @@ log() { printf '[remote %s] %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*" >&2; }
 log "apt update + install nodejs npm git curl (zsh DELIBERATELY omitted — Brad #5 fixture)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq nodejs npm git curl ca-certificates jq
+apt-get install -y -qq nodejs npm git curl ca-certificates jq tar
 
 NODE_VER=\$(node --version)
 NPM_VER=\$(npm --version)
 log "node: \${NODE_VER}, npm: \${NPM_VER}"
 
-# Brad #6 fixture: --include=optional surfaces the claude-code optional dep
-# quirk on Linux x64. We pass it on the global install so the smoke matches
-# Brad's documented Linux install path.
-log "global install @jhizzard/termdeck-stack@latest --include=optional"
-npm install -g @jhizzard/termdeck-stack@latest --include=optional --silent 2>&1 | tail -50
+log "configure npm global prefix at /root/.npm-global (PATH-sensitive systemd fixture)"
+npm config set prefix /root/.npm-global
+export PATH="/root/.npm-global/bin:\${PATH}"
+
+log "extract checked-out TermDeck candidate"
+rm -rf /opt/termdeck-candidate
+mkdir -p /opt/termdeck-candidate
+tar -xzf /tmp/termdeck-candidate.tar.gz -C /opt/termdeck-candidate
+
+log "install @jhizzard/termdeck from checked-out candidate (NOT npm @latest)"
+cd /opt/termdeck-candidate
+npm install --no-audit --no-fund --include=optional
+npm install -g . --include=optional --silent 2>&1 | tail -50
+
+log "install @jhizzard/termdeck-stack from checked-out candidate (NOT npm @latest)"
+cd /opt/termdeck-candidate/packages/stack-installer
+npm install --no-audit --no-fund --include=optional
+npm install -g . --include=optional --silent 2>&1 | tail -50
+
+log "candidate launchers"
+termdeck --version
+termdeck-stack --help >/dev/null
 
 log "write ~/.termdeck/secrets.env (chmod 600)"
 mkdir -p /root/.termdeck
 chmod 700 /root/.termdeck
-cat > /root/.termdeck/secrets.env <<SECRETS_EOF
-SUPABASE_URL=__SUPABASE_URL__
-SUPABASE_SERVICE_ROLE_KEY=__SUPABASE_SERVICE_ROLE_KEY__
-DATABASE_URL=__DATABASE_URL__
-OPENAI_API_KEY=__OPENAI_API_KEY__
-ANTHROPIC_API_KEY=__ANTHROPIC_API_KEY__
-SECRETS_EOF
+install -m 0600 /tmp/termdeck-secrets.env /root/.termdeck/secrets.env
 chmod 600 /root/.termdeck/secrets.env
 
 log "termdeck init --mnestra --yes"
@@ -187,7 +216,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/termdeck
+ExecStart=/root/.npm-global/bin/termdeck --no-stack --no-open
 EnvironmentFile=/root/.termdeck/secrets.env
 # NOTE: Environment=PATH= deliberately omitted.
 #       Sprint 59 docs add the PATH= line. Until then this unit FAILS,
@@ -209,15 +238,36 @@ sleep 30
 SYSTEMD_STATE=\$(systemctl is-active termdeck.service 2>&1 || true)
 log "probe 1 (Brad #7): systemctl is-active termdeck.service = \${SYSTEMD_STATE}"
 
-# ── Probe 2: healthz HTTP 200 ──
-HEALTHZ_CODE=\$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:3000/healthz 2>/dev/null || echo "000")
-log "probe 2 (Brad #7): curl localhost:3000/healthz HTTP code = \${HEALTHZ_CODE}"
+# ── Probe 2: API health HTTP 200 ──
+HEALTHZ_CODE=\$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:3000/api/health 2>/dev/null || echo "000")
+log "probe 2 (Brad #7): curl localhost:3000/api/health HTTP code = \${HEALTHZ_CODE}"
 
-# ── Probe 3: journalctl scan for Brad #8 PATH-not-inherited evidence ──
+# ── Probe 3: PATH-dependent command from a non-login shell under systemd ──
 journalctl -u termdeck.service --no-pager -n 500 > /tmp/journal-tail.txt 2>&1 || true
-PATH_NOT_FOUND=\$(grep -ciE 'command not found|no such file|claude.*not found|exec.*not found|cannot execute' /tmp/journal-tail.txt 2>/dev/null || true)
-PATH_NOT_FOUND="\${PATH_NOT_FOUND:-0}"
-log "probe 3 (Brad #8): journalctl matches for PATH-not-inherited evidence = \${PATH_NOT_FOUND}"
+SYSTEMD_ENVIRONMENT=\$(systemctl show termdeck.service -p Environment --value 2>/dev/null || true)
+PATH_SESSION_STATUS="not-run"
+PATH_SESSION_EXIT_CODE=""
+PATH_SESSION_DETAIL=""
+PATH_SESSION_ID=""
+if [[ "\${SYSTEMD_STATE}" == "active" ]]; then
+  PATH_SESSION_JSON=\$(curl -fsS -X POST http://localhost:3000/api/sessions \
+    -H 'content-type: application/json' \
+    -d '{"command":"termdeck --help"}' 2>/tmp/path-session.err || true)
+  PATH_SESSION_ID=\$(printf '%s' "\${PATH_SESSION_JSON}" | jq -r '.id // empty' 2>/dev/null || true)
+  if [[ -n "\${PATH_SESSION_ID}" ]]; then
+    sleep 4
+    PATH_SESSION_STATE=\$(curl -fsS "http://localhost:3000/api/sessions/\${PATH_SESSION_ID}" 2>/dev/null || true)
+    PATH_SESSION_STATUS=\$(printf '%s' "\${PATH_SESSION_STATE}" | jq -r '.meta.status // ""' 2>/dev/null || true)
+    PATH_SESSION_EXIT_CODE=\$(printf '%s' "\${PATH_SESSION_STATE}" | jq -r 'if .meta.exitCode == null then "" else (.meta.exitCode|tostring) end' 2>/dev/null || true)
+    PATH_SESSION_DETAIL=\$(printf '%s' "\${PATH_SESSION_STATE}" | jq -r '.meta.statusDetail // ""' 2>/dev/null || true)
+  else
+    PATH_SESSION_DETAIL=\$(cat /tmp/path-session.err 2>/dev/null || true)
+  fi
+else
+  PATH_SESSION_STATUS="service-not-active"
+  PATH_SESSION_DETAIL="skipped because termdeck.service is not active"
+fi
+log "probe 3 (Brad #8): termdeck --help via spawned PTY status=\${PATH_SESSION_STATUS} exit=\${PATH_SESSION_EXIT_CODE} detail=\${PATH_SESSION_DETAIL}"
 
 # ── Build JSON report ──
 status_for() {
@@ -225,75 +275,63 @@ status_for() {
 }
 SYSTEMD_STATUS=\$(status_for "\${SYSTEMD_STATE}" "active")
 HEALTHZ_STATUS=\$(status_for "\${HEALTHZ_CODE}" "200")
-if [[ "\${PATH_NOT_FOUND}" -eq 0 ]]; then PATH_STATUS="pass"; else PATH_STATUS="fail"; fi
+if [[ "\${PATH_SESSION_STATUS}" == "exited" && "\${PATH_SESSION_EXIT_CODE}" == "0" ]]; then PATH_STATUS="pass"; else PATH_STATUS="fail"; fi
 
-cat > /tmp/smoke-report.json <<JSON_EOF
-{
-  "schema": "termdeck-systemd-smoke/v1",
-  "vm": {
-    "name": "__VM_NAME__",
-    "type": "cx22",
-    "image": "ubuntu-24.04",
-    "location": "__VM_LOCATION__"
-  },
-  "node_version": "\${NODE_VER}",
-  "npm_version": "\${NPM_VER}",
-  "fixture_intent": "Reproduces Brad #7 (Type=simple TTY-check fail) + Brad #8 (no Environment=PATH=). Pre-Sprint-59: expected RED. Post-Sprint-59 fix: expected GREEN.",
-  "checks": {
-    "systemd_is_active": {
-      "expected": "active",
-      "actual": "\${SYSTEMD_STATE}",
-      "status": "\${SYSTEMD_STATUS}",
-      "brad_finding": "#7"
+jq -n \
+  --arg vm_name "${VM_NAME}" \
+  --arg vm_location "${VM_LOCATION}" \
+  --arg node_version "\${NODE_VER}" \
+  --arg npm_version "\${NPM_VER}" \
+  --arg systemd_state "\${SYSTEMD_STATE}" \
+  --arg systemd_status "\${SYSTEMD_STATUS}" \
+  --arg healthz_code "\${HEALTHZ_CODE}" \
+  --arg healthz_status "\${HEALTHZ_STATUS}" \
+  --arg path_session_status "\${PATH_SESSION_STATUS}" \
+  --arg path_session_exit_code "\${PATH_SESSION_EXIT_CODE}" \
+  --arg path_session_detail "\${PATH_SESSION_DETAIL}" \
+  --arg systemd_environment "\${SYSTEMD_ENVIRONMENT}" \
+  --arg path_status "\${PATH_STATUS}" \
+  '{
+    schema: "termdeck-systemd-smoke/v1",
+    vm: {
+      name: \$vm_name,
+      type: "cx22",
+      image: "ubuntu-24.04",
+      location: \$vm_location
     },
-    "healthz_http_200": {
-      "expected": "200",
-      "actual": "\${HEALTHZ_CODE}",
-      "status": "\${HEALTHZ_STATUS}",
-      "brad_finding": "#7"
-    },
-    "no_path_not_found_in_journal": {
-      "expected": "0 matches",
-      "actual_matches": \${PATH_NOT_FOUND},
-      "status": "\${PATH_STATUS}",
-      "brad_finding": "#8",
-      "note": "non-zero match count is positive evidence of PATH-not-inherited"
+    node_version: \$node_version,
+    npm_version: \$npm_version,
+    fixture_intent: "Installs the checked-out TermDeck candidate, then reproduces Brad #7 (Type=simple service liveness) + Brad #8 (no Environment=PATH= for spawned non-login PTYs). Pre-Sprint-59: expected RED. Post-Sprint-59 fix: expected GREEN.",
+    checks: {
+      systemd_is_active: {
+        expected: "active",
+        actual: \$systemd_state,
+        status: \$systemd_status,
+        brad_finding: "#7"
+      },
+      api_health_http_200: {
+        expected: "200",
+        actual: \$healthz_code,
+        status: \$healthz_status,
+        brad_finding: "#7"
+      },
+      path_dependent_panel_command: {
+        expected: "termdeck --help exits 0 from spawned PTY",
+        actual_status: \$path_session_status,
+        actual_exit_code: \$path_session_exit_code,
+        actual_detail: \$path_session_detail,
+        systemd_environment: \$systemd_environment,
+        status: \$path_status,
+        brad_finding: "#8",
+        note: "This command runs inside a non-login shell spawned by the systemd-started TermDeck process and fails unless TermDeck global npm bin is on that process PATH."
+      }
     }
-  }
-}
-JSON_EOF
+  }' > /tmp/smoke-report.json
 
 log "==== smoke-report.json (on VM) ===="
 cat /tmp/smoke-report.json >&2
 echo "==== /smoke-report ====" >&2
 REMOTE_SCRIPT
-
-# Substitute the secret values into the staged remote script (delimiter-safe
-# because we use sed with a separator unlikely to appear in the values).
-# This avoids `bash -c "ANTHROPIC=foo termdeck init"` quoting issues.
-substitute() {
-  local placeholder="$1"
-  local value="$2"
-  local file="$3"
-  local sep
-  for sep in '#' '|' '~' '@'; do
-    if [[ "${value}" != *"${sep}"* ]]; then
-      sed -i.bak "s${sep}${placeholder}${sep}${value}${sep}g" "${file}"
-      rm -f "${file}.bak"
-      return 0
-    fi
-  done
-  log "FATAL: cannot substitute ${placeholder} — value contains all candidate separators"
-  exit 2
-}
-
-substitute "__SUPABASE_URL__"               "${TEST_SUPABASE_URL}"               "${REMOTE_SETUP_TMP}"
-substitute "__SUPABASE_SERVICE_ROLE_KEY__"  "${TEST_SUPABASE_SERVICE_ROLE_KEY}"  "${REMOTE_SETUP_TMP}"
-substitute "__DATABASE_URL__"               "${TEST_DATABASE_URL}"               "${REMOTE_SETUP_TMP}"
-substitute "__OPENAI_API_KEY__"             "${TEST_OPENAI_API_KEY}"             "${REMOTE_SETUP_TMP}"
-substitute "__ANTHROPIC_API_KEY__"          "${TEST_ANTHROPIC_API_KEY}"          "${REMOTE_SETUP_TMP}"
-substitute "__VM_NAME__"                    "${VM_NAME}"                         "${REMOTE_SETUP_TMP}"
-substitute "__VM_LOCATION__"                "${VM_LOCATION}"                     "${REMOTE_SETUP_TMP}"
 
 # ── Provision ────────────────────────────────────────────────────────────
 
@@ -334,6 +372,10 @@ fi
 
 log "scp setup script → VM"
 scp "${SSH_OPTS[@]}" -i "${SSH_KEY_TMP}" "${REMOTE_SETUP_TMP}" "root@${VM_IP}:/tmp/setup.sh"
+log "scp candidate tarball → VM"
+scp "${SSH_OPTS[@]}" -i "${SSH_KEY_TMP}" "${REPO_TARBALL_TMP}" "root@${VM_IP}:/tmp/termdeck-candidate.tar.gz"
+log "scp secrets env → VM"
+scp "${SSH_OPTS[@]}" -i "${SSH_KEY_TMP}" "${REMOTE_SECRETS_TMP}" "root@${VM_IP}:/tmp/termdeck-secrets.env"
 
 log "ssh: bash /tmp/setup.sh"
 # Capture remote stdout/stderr but DON'T let the remote's exit code abort

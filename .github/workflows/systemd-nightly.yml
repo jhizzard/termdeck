@@ -34,6 +34,20 @@ on:
         required: false
         default: 'manual verification'
 
+# T4-CODEX 2026-05-05 16:47 finding: the install-smoke workflow and this
+# nightly workflow both consume the shared test Supabase project. If they
+# run concurrently they race on the schema reset/cleanup steps (one job's
+# DROP SCHEMA can land while another's INSERT is mid-flight). The shared
+# test project is a finite resource; queue rather than overlap.
+#
+# Group key matches the install-smoke workflow's lock key so manual
+# workflow_dispatch on either side waits for the other to complete.
+# cancel-in-progress: false because tearing down a half-applied test
+# Supabase reset is more dangerous than waiting for the previous run.
+concurrency:
+  group: shared-test-supabase-project
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

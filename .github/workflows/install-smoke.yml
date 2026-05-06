@@ -53,6 +53,15 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# Shared lock with .github/workflows/systemd-nightly.yml — both workflows
+# consume the shared test Supabase project. Concurrent runs would race on
+# the schema reset/cleanup steps. Queue rather than overlap.
+# cancel-in-progress: false because tearing down a half-applied test
+# Supabase reset is more dangerous than waiting for the previous run.
+concurrency:
+  group: shared-test-supabase-project
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -129,6 +138,8 @@ jobs:
           chmod 600 ~/.termdeck/secrets.env
 
       - name: Reset test Supabase schema (T3 owns; no-op if not yet shipped)
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
         run: |
           # Per T4-CODEX FINDING 16:21 ET: T3's reset script uses bash + here-string;
           # invoke ONLY from the runner host (Ubuntu, has bash), NEVER from inside
@@ -154,6 +165,8 @@ jobs:
 
       - name: Cleanup test Supabase schema (always-runs)
         if: always()
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
         run: |
           if [ -x scripts/test-supabase-reset.sh ]; then
             bash scripts/test-supabase-reset.sh
@@ -430,22 +443,19 @@ jobs:
           TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
         run: |
           set -e
-          mkdir -p ~/.termdeck
-          # CRITICAL — literal double-quote chars wrapping the value reproduces
-          # Brad #2: pg-loaders strip surrounding quotes; Node URL constructor
-          # doesn't and throws "Invalid URL" on the leading ". Once Sprint 59
-          # ships the wizard write-out + audit-upgrade quote-strip, this step
-          # turns from RED to GREEN.
-          cat > ~/.termdeck/secrets.env <<EOF
-          SUPABASE_URL="${TEST_SUPABASE_URL}"
-          SUPABASE_SERVICE_ROLE_KEY="${TEST_SUPABASE_SERVICE_ROLE_KEY}"
-          DATABASE_URL="${TEST_DATABASE_URL}"
-          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
-          EOF
-          chmod 600 ~/.termdeck/secrets.env
-          # init --mnestra --yes is expected to FAIL on Invalid URL until
-          # Sprint 59 ships the quote-strip.
-          termdeck init --mnestra --yes
+          # CRITICAL — inject literal double-quote characters directly into
+          # process.env. The dotenv readers in config.js / dotenv-io.js strip
+          # balanced file quotes both before and after Sprint 58, so a quoted
+          # ~/.termdeck/secrets.env is a false-GREEN proof. --from-env reaches
+          # inputsFromEnv() -> looksLikePostgresUrl() -> new URL(...) with the
+          # exact quoted value Brad's shell export can supply.
+          export SUPABASE_URL="${TEST_SUPABASE_URL}"
+          export SUPABASE_SERVICE_ROLE_KEY="${TEST_SUPABASE_SERVICE_ROLE_KEY}"
+          export DATABASE_URL="\"${TEST_DATABASE_URL}\""
+          export OPENAI_API_KEY="${TEST_OPENAI_API_KEY}"
+          # Expected to FAIL with "DATABASE_URL: not a valid URL" until the
+          # Sprint 59 quote-strip lands on the process.env path.
+          termdeck init --mnestra --from-env --yes
 
       - name: Emit fixture-status JSON artifact
         if: always()
@@ -471,7 +481,7 @@ jobs:
             "actual": "$ACTUAL",
             "status": "$STATUS",
             "fix_sprint": 59,
-            "evidence_command": "DATABASE_URL=\"<value>\" termdeck init --mnestra --yes"
+            "evidence_command": "DATABASE_URL='\"postgres://user:pass@host/db\"' termdeck init --mnestra --from-env --yes"
           }
           EOF
           cat /tmp/fixture-status/brad-2-quoted-database-url.json
@@ -521,31 +531,46 @@ jobs:
           EOF
           chmod 600 ~/.termdeck/secrets.env
           # CRITICAL: do NOT shell-source secrets.env first. Brad's environment
-          # is exactly this — `nohup termdeck` from a shell whose process.env
-          # has no DATABASE_URL. Pre-Sprint-59, the launcher's preflight reads
-          # process.env.DATABASE_URL (empty) and throws Invalid URL.
-          # Use env -i to scrub PATH-inherited env, then re-add minimal PATH.
-          # This guarantees Brad's no-shell-export reproduction shape.
+          # is exactly this — `nohup termdeck` from a shell whose initial env
+          # has no DATABASE_URL. Use env -i to scrub inherited env, then re-add
+          # only the values needed for the executable lookup and homedir.
           unset SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY DATABASE_URL OPENAI_API_KEY ANTHROPIC_API_KEY
-          nohup termdeck > /tmp/td.out 2>&1 &
+          env -i HOME="$HOME" PATH="$PATH" TERMDECK_PORT=3091 nohup termdeck --no-stack --port 3091 --no-open > /tmp/td.out 2>&1 &
           TD_PID=$!
-          # Give the launcher a few seconds to either bind or fail.
-          sleep 8
-          # Probe healthz. Any non-200 or curl-fail is RED (Brad #1).
-          if ! curl -fsS --max-time 8 http://127.0.0.1:3000/healthz; then
-            echo "[brad-1] /healthz did NOT respond — likely Invalid URL cascade"
-            kill "$TD_PID" 2>/dev/null || true
+          trap 'kill "$TD_PID" 2>/dev/null || true' EXIT
+          # Wait for the real API health route; /healthz is not a TermDeck
+          # diagnostic endpoint and can be satisfied by the SPA fallback.
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 2 http://127.0.0.1:3091/api/health > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if ! curl -fsS --max-time 8 http://127.0.0.1:3091/api/health > /dev/null; then
+            echo "[brad-1] /api/health did NOT respond — nohup server failed before env probe"
             tail -n 200 /tmp/td.out
             exit 1
           fi
-          # Even if /healthz binds, doctor exercises the secrets-loaded path.
-          if ! termdeck doctor; then
-            echo "[brad-1] doctor RED — secrets not propagated into launcher process.env"
-            kill "$TD_PID" 2>/dev/null || true
+          # Structural proof: inspect the already-running TermDeck process,
+          # not a fresh `termdeck doctor` process that rereads secrets.env.
+          ENV_PID="$TD_PID"
+          if [ ! -r "/proc/${ENV_PID}/environ" ]; then
+            ENV_PID="$(pgrep -f 'termdeck.*--port 3091|packages/cli/src/index.js.*3091' | head -n 1 || true)"
+          fi
+          if [ -z "${ENV_PID:-}" ] || [ ! -r "/proc/${ENV_PID}/environ" ]; then
+            echo "[brad-1] could not locate readable /proc environ for running TermDeck process"
+            ps -ef | grep -E 'termdeck|node' | grep -v grep || true
             tail -n 200 /tmp/td.out
             exit 1
           fi
+          if ! tr '\0' '\n' < "/proc/${ENV_PID}/environ" | grep -q '^DATABASE_URL='; then
+            echo "[brad-1] running TermDeck process env lacks DATABASE_URL"
+            tail -n 200 /tmp/td.out
+            exit 1
+          fi
+          echo "[brad-1] running TermDeck process env contains DATABASE_URL"
           kill "$TD_PID" 2>/dev/null || true
+          trap - EXIT
 
       - name: Emit fixture-status JSON artifact
         if: always()
@@ -571,7 +596,7 @@ jobs:
             "actual": "$ACTUAL",
             "status": "$STATUS",
             "fix_sprint": 59,
-            "evidence_command": "echo 'DATABASE_URL=...' > ~/.termdeck/secrets.env && unset DATABASE_URL && nohup termdeck && curl http://127.0.0.1:3000/healthz"
+            "evidence_command": "echo 'DATABASE_URL=postgres://user:pass@host/db' > ~/.termdeck/secrets.env && env -i HOME=$HOME PATH=$PATH nohup termdeck --no-stack --port 3091 && grep '^DATABASE_URL=' /proc/<pid>/environ"
           }
           EOF
           cat /tmp/fixture-status/brad-1-nohup-secrets.json
@@ -584,7 +609,7 @@ jobs:
           path: /tmp/fixture-status/brad-1-nohup-secrets.json
 
   reproduce-brad-6-claude-code-optional:
-    name: 'REPRODUCER — Brad #6: claude-code without --include=optional'
+    name: 'REPRODUCER — Brad #6: claude-code user install command'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     continue-on-error: true
@@ -594,20 +619,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Run Brad #6 reproducer (omit optional dep on Linux x64)
+      - name: Run Brad #6 reproducer (user install command on Linux x64)
         id: reproduce
         continue-on-error: true
         run: |
           set -e
-          # `--omit=optional` forces the failure mode regardless of npm
-          # version's default optional-dep behavior. On Linux x64, the
-          # `@anthropic-ai/claude-code` package depends on a
-          # platform-specific optional native binary; without it, the
-          # `claude` launcher stub fails at runtime.
-          npm install -g @anthropic-ai/claude-code --omit=optional
-          # Verify the launcher works post-install. Pre-Sprint-59 docs
-          # update, this is expected to fail because the native binary
-          # wasn't installed.
+          # Run the same install command a Linux x64 user would run. Do not
+          # force --omit=optional here; a Sprint 59 docs/default-command fix
+          # must be able to flip this reproducer GREEN naturally.
+          npm install -g @anthropic-ai/claude-code
           claude --version
 
       - name: Emit fixture-status JSON artifact
@@ -629,12 +649,12 @@ jobs:
             "schema": "${{ env.ARTIFACT_SCHEMA }}",
             "id": "brad-6-claude-code-optional",
             "brad_finding": 6,
-            "fixture_intent": "On Linux x64, @anthropic-ai/claude-code requires --include=optional to install the platform-specific native binary; without it, claude --version fails at runtime",
+            "fixture_intent": "On Linux x64, the documented @anthropic-ai/claude-code user install command must install the platform-specific native binary so claude --version works",
             "expected": "$EXPECTED",
             "actual": "$ACTUAL",
             "status": "$STATUS",
             "fix_sprint": 59,
-            "evidence_command": "npm install -g @anthropic-ai/claude-code --omit=optional && claude --version"
+            "evidence_command": "npm install -g @anthropic-ai/claude-code && claude --version"
           }
           EOF
           cat /tmp/fixture-status/brad-6-claude-code-optional.json
@@ -685,6 +705,60 @@ jobs:
           set -e
           OVERALL_PASS=true
           MATRIX=""
+
+          # ── Set-completeness assertion (T4-CODEX 2026-05-05 16:46 finding) ──
+          # The previous shape iterated `find artifacts -type f -name '*.json'`
+          # — but that only catches whatever JSON files HAPPEN to exist. If
+          # a REPRODUCER job is skipped, fails before its emit-artifact step,
+          # or uploads under a typo'd name, the meta-job silently passes
+          # because it sees no failing artifact. That's a coverage hole.
+          #
+          # Fix: hard-code the expected REPRODUCER set; assert every expected
+          # name has a matching artifact AND no unexpected names sneak in.
+          # Only after set-completeness verifies do we per-row compare.
+          # (Space-separated rather than newline-separated to avoid breaking
+          # the YAML block scalar's indentation contract.)
+          EXPECTED_FIXTURES="brad-1-nohup-secrets brad-2-quoted-database-url brad-5-no-zsh-ubuntu brad-5-alpine-bashism brad-6-claude-code-optional"
+
+          # Each upload-artifact step uses `name: fixture-status-<id>`.
+          # actions/download-artifact unpacks each into a directory of that
+          # name under artifacts/, with the JSON inside. Build the actual set.
+          ACTUAL_FIXTURES=$(find artifacts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+            | sed 's|^fixture-status-||' \
+            | sort -u | tr '\n' ' ')
+
+          MISSING=""
+          UNEXPECTED=""
+          for exp in ${EXPECTED_FIXTURES}; do
+            found=false
+            for act in ${ACTUAL_FIXTURES}; do
+              if [ "${exp}" = "${act}" ]; then found=true; break; fi
+            done
+            if [ "${found}" = "false" ]; then MISSING="${MISSING}${exp} "; fi
+          done
+          for act in ${ACTUAL_FIXTURES}; do
+            found=false
+            for exp in ${EXPECTED_FIXTURES}; do
+              if [ "${exp}" = "${act}" ]; then found=true; break; fi
+            done
+            if [ "${found}" = "false" ]; then UNEXPECTED="${UNEXPECTED}${act} "; fi
+          done
+
+          if [ -n "${MISSING}" ] || [ -n "${UNEXPECTED}" ]; then
+            echo "============================================================"
+            echo "META-JOB FAILED — fixture artifact set mismatch"
+            echo "============================================================"
+            [ -n "${MISSING}" ] && echo "MISSING fixtures (expected but no artifact uploaded): ${MISSING}"
+            [ -n "${UNEXPECTED}" ] && echo "UNEXPECTED fixtures (artifact uploaded but not in expected set): ${UNEXPECTED}"
+            echo ""
+            echo "If a REPRODUCER was intentionally added or removed, update"
+            echo "the EXPECTED_FIXTURES list in this step AND the needs: list"
+            echo "of the fixture-status-meta job above. Both must stay in sync."
+            exit 1
+          fi
+          echo "[meta] fixture set complete: $(echo "${ACTUAL_FIXTURES}" | tr '\n' ' ')"
+
+          # ── Per-row actual-vs-expected check ────────────────────────────
           # jq is preinstalled on ubuntu-24.04 runners; cleaner than spawning
           # a Node child process per field and avoids any sandbox-scope
           # ambiguity in the workflow validator.

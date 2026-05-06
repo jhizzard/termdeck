@@ -41,6 +41,91 @@ err() {
   echo "[fixture] ERROR: $*" >&2
 }
 
+write_no_zsh_config() {
+  # Force spawnTerminalSession() onto its hardcoded fallback branch:
+  #   const spawnShell = isPlainShell ? cmdTrim : (config.shell || '/bin/zsh')
+  # A missing/empty config shell is the direct Brad #5 catch surface.
+  cat > "$TD_HOME/.termdeck/config.yaml" <<EOF
+port: 3000
+host: 127.0.0.1
+shell:
+defaultTheme: tokyo-night
+rag:
+  enabled: false
+sessionLogs:
+  enabled: false
+EOF
+  log "wrote no-zsh probe config with empty shell"
+}
+
+run_no_zsh_pty_probe() {
+  log "spawning termdeck server for pre-init PTY no-zsh probe ..."
+  termdeck --no-stack --port 3000 --no-open > /tmp/td.out 2>&1 &
+  TD_PID=$!
+
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if curl -fsS http://127.0.0.1:3000/api/health > /dev/null 2>&1; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+
+  if ! curl -fsS http://127.0.0.1:3000/api/health > /dev/null 2>&1; then
+    err "server did not bind /api/health within 30s before PTY probe"
+    log "--- server log tail ---"
+    tail -n 80 /tmp/td.out 2>/dev/null || true
+    kill "$TD_PID" 2>/dev/null || true
+    exit 2
+  fi
+  log "server up on /api/health"
+
+  log "POST /api/sessions before init wizards (Brad #5 catch surface) ..."
+  RESP=$(curl -fsS -X POST http://127.0.0.1:3000/api/sessions \
+    -H 'content-type: application/json' \
+    -d '{"command":""}' 2>/tmp/curl.err) || {
+    err "POST /api/sessions failed: $(cat /tmp/curl.err)"
+    kill "$TD_PID" 2>/dev/null || true
+    exit 2
+  }
+
+  SID=$(printf '%s' "$RESP" | node -e 'try { console.log((JSON.parse(require("fs").readFileSync(0,"utf-8"))||{}).id||""); } catch (e) { console.log(""); }')
+  if [ -z "$SID" ]; then
+    err "couldn't parse session id from /api/sessions response: $RESP"
+    kill "$TD_PID" 2>/dev/null || true
+    exit 2
+  fi
+  log "session id: $SID"
+
+  sleep 2
+  STATUS_JSON=$(curl -fsS "http://127.0.0.1:3000/api/sessions/$SID" 2>/dev/null || true)
+  STATUS=$(printf '%s' "$STATUS_JSON" | node -e 'try { console.log(((JSON.parse(require("fs").readFileSync(0,"utf-8"))||{}).meta||{}).status||""); } catch (e) { console.log(""); }')
+  DETAIL=$(printf '%s' "$STATUS_JSON" | node -e 'try { console.log(((JSON.parse(require("fs").readFileSync(0,"utf-8"))||{}).meta||{}).statusDetail||""); } catch (e) { console.log(""); }')
+  EXIT_CODE=$(printf '%s' "$STATUS_JSON" | node -e 'try { const v=((JSON.parse(require("fs").readFileSync(0,"utf-8"))||{}).meta||{}).exitCode; console.log(v == null ? "" : String(v)); } catch (e) { console.log(""); }')
+
+  kill "$TD_PID" 2>/dev/null || true
+
+  if [ "$STATUS" = "active" ] || [ "$STATUS" = "idle" ]; then
+    log "PTY shell spawn SUCCEEDED before init wizards (status=$STATUS)"
+    exit 0
+  fi
+
+  if [ "$STATUS" = "errored" ] && printf '%s\n' "$DETAIL" | grep -Eiq 'zsh|ENOENT|not found|No such file'; then
+    err "confirmed Brad #5 before init wizards: status=$STATUS detail=$DETAIL"
+    log "--- server log tail ---"
+    tail -n 80 /tmp/td.out 2>/dev/null || true
+    exit 1
+  fi
+
+  err "unexpected PTY probe result: status=$STATUS exitCode=$EXIT_CODE detail=$DETAIL"
+  log "--- /api/sessions response ---"
+  printf '%s\n' "$STATUS_JSON"
+  log "--- server log tail ---"
+  tail -n 80 /tmp/td.out 2>/dev/null || true
+  exit 2
+}
+
 # ---- 1. Validate env --------------------------------------------------------
 
 if [ -z "$FIXTURE_INTENT" ]; then
@@ -110,6 +195,10 @@ EOF
 chmod 600 "$SECRETS"
 log "wrote $SECRETS"
 
+if [ "$FIXTURE_INTENT" = "brad-5-no-zsh" ]; then
+  write_no_zsh_config
+fi
+
 # ---- 4. CLI launchers parse ------------------------------------------------
 
 if ! termdeck --help > /dev/null 2>&1; then
@@ -123,6 +212,10 @@ if ! termdeck-stack --help > /dev/null 2>&1; then
   exit 2
 fi
 log "termdeck-stack --help OK"
+
+if [ "$FIXTURE_INTENT" = "brad-5-no-zsh" ]; then
+  run_no_zsh_pty_probe
+fi
 
 # ---- 5. Init wizards (--yes non-interactive) --------------------------------
 
@@ -166,21 +259,21 @@ TD_PID=$!
 
 i=0
 while [ "$i" -lt 30 ]; do
-  if curl -fsS http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:3000/api/health > /dev/null 2>&1; then
     break
   fi
   i=$((i + 1))
   sleep 1
 done
 
-if ! curl -fsS http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
-  err "server did not bind /healthz within 30s"
+if ! curl -fsS http://127.0.0.1:3000/api/health > /dev/null 2>&1; then
+  err "server did not bind /api/health within 30s"
   log "--- server log tail ---"
   tail -n 80 /tmp/td.out 2>/dev/null || true
   kill "$TD_PID" 2>/dev/null || true
   exit 1
 fi
-log "server up on /healthz"
+log "server up on /api/health"
 
 log "POST /api/sessions to spawn shell PTY (Brad #5 catch surface) ..."
 RESP=$(curl -fsS -X POST http://127.0.0.1:3000/api/sessions \
