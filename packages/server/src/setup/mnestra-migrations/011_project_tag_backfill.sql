@@ -36,7 +36,10 @@
 --     1. termdeck / mnestra      — keywords: termdeck, mnestra, "4+1 sprint"
 --     2. rumen                   — keyword:  rumen
 --     3. podium                  — keyword:  podium
---     4. pvb                     — keywords: PVB, petvetbid, pet vet bid
+--     4. pvb                     — keywords: PVB, pet vet bid (and the
+--                                   legacy single-word identifier matched
+--                                   by the load-bearing classifier on
+--                                   line 156)
 --     5. dor / openclaw          — TIGHTENED:
 --                                    word-boundary uppercase DOR  (rules out
 --                                    "dormant", "vendored", "indoor", etc.),
@@ -49,7 +52,8 @@
 --   rumen:            92 rows, all 6 sampled were true positives.
 --   podium:           58 rows, all 6 sampled were true positives.
 --   pvb:               7 rows, 1 of those overlaps with mnestra ("Mnestra
---                     repo … petvetbid project") and gets claimed by bucket 1.
+--                     repo … legacy single-word project name") and gets
+--                     claimed by bucket 1.
 --   dor (tightened):   3 rows after tightening from 6 — the original
 --                     `%dor%` ILIKE pattern caught false positives like
 --                     "dormant", "vendored". Final 3 rows are all true
@@ -143,7 +147,7 @@ BEGIN
 END $$;
 
 -- ============================================================
--- BUCKET 4 — PVB (case-insensitive PVB / petvetbid markers)
+-- BUCKET 4 — PVB (case-insensitive content markers — see code below)
 -- ============================================================
 DO $$
 DECLARE

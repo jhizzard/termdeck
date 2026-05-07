@@ -1,0 +1,321 @@
+name: macos-install-smoke
+
+# Sprint 61 — Uninstall + Fresh-Install Harness (T3 lane).
+#
+# This workflow is the macOS arm of the install-smoke catch-net. Sprint 58's
+# install-smoke.yml is Linux-only (ubuntu-24.04 + Docker fixtures for Fedora,
+# Alpine, Debian). Joshua's daily-driver is macOS, the 3+ external testers
+# include macOS users, and macOS-specific regressions (zsh-by-default,
+# Homebrew vs system Node, ~/Library/LaunchAgents, Apple Silicon arm64
+# native modules) cannot be caught by the Linux matrix.
+#
+# Acceptance shape (per Sprint 61 T3 brief):
+#   1. install-from-source on a clean macos-14 runner
+#   2. wizards run (non-interactive)
+#   3. doctor reports all probes GREEN
+#   4. termdeck-stack uninstall --yes (T1's new command) leaves zero trace
+#   5. re-install from clean state succeeds
+#   6. post-reinstall doctor reports all probes GREEN
+#   7. final uninstall (cleanup, idempotent)
+#
+# Cross-references:
+#   - Sprint 61 PLANNING:           docs/sprint-61-uninstall-and-install-harness/PLANNING.md
+#   - T3 lane brief:                docs/sprint-61-uninstall-and-install-harness/T3-fresh-install-harness.md
+#   - T1 uninstall command spec:    docs/sprint-61-uninstall-and-install-harness/T1-uninstall-cli.md
+#   - T2 migration tracking:        docs/sprint-61-uninstall-and-install-harness/T2-upgrade-detection.md
+#   - Linux companion:              .github/workflows/install-smoke.yml
+#   - Convergence plan:             docs/CONVERGENCE-PLAN.md
+#   - INSTALL-FIXTURES catch-net:   docs/INSTALL-FIXTURES.md
+#
+# Deferred to a follow-up sprint (NOT in this workflow):
+#   - macos-13 (Ventura) + macos-15 (Sequoia) matrix (only macos-14 / Sonoma here)
+#   - Intel x64 macOS (macos-13 is Intel; macos-14 + macos-15 are Apple Silicon arm64)
+#   - Codesigning / Gatekeeper interactions for any future bundled binaries
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Shared lock with .github/workflows/install-smoke.yml — both workflows
+# consume the same test Supabase project. Concurrent runs would race on
+# the schema reset/cleanup steps. Queue rather than overlap.
+# cancel-in-progress: false because tearing down a half-applied test
+# Supabase reset is more dangerous than waiting for the previous run.
+concurrency:
+  group: shared-test-supabase-project
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================================================
+  # GATING JOB — must always be GREEN. Mirrors install-smoke.yml's
+  # clean-install-ubuntu, with macOS-specific adjustments + the Sprint 61
+  # uninstall→verify→reinstall→doctor sequence appended.
+  # ============================================================================
+
+  clean-install-macos:
+    name: 'GATING — clean install + uninstall + reinstall on macOS 14'
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Confirm runner invariants
+        # macOS 14 ships zsh as the default login shell; setup-node@v4 puts
+        # node + npm at a user-writable prefix. If a future runner image
+        # regresses on either, fail fast with a clear message rather than
+        # silently producing a degraded install.
+        run: |
+          set -e
+          if ! command -v zsh > /dev/null 2>&1; then
+            echo "FIXTURE-INVARIANT-BROKEN: zsh missing on macos-14 runner"
+            exit 1
+          fi
+          if ! command -v node > /dev/null 2>&1; then
+            echo "FIXTURE-INVARIANT-BROKEN: node missing after setup-node"
+            exit 1
+          fi
+          if ! command -v npm > /dev/null 2>&1; then
+            echo "FIXTURE-INVARIANT-BROKEN: npm missing after setup-node"
+            exit 1
+          fi
+          echo "OK — zsh: $(zsh --version), node: $(node --version), npm: $(npm --version)"
+          echo "OS: $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
+
+      - name: Ensure psql client available
+        # GH macos-14 runners include PostgreSQL client by default, but
+        # Homebrew's postgresql formula sometimes needs an explicit `link`
+        # before psql lands in PATH. Defensive: check, install if missing.
+        run: |
+          set -e
+          if ! command -v psql > /dev/null 2>&1; then
+            echo "psql not on PATH; installing postgresql client via Homebrew ..."
+            brew install postgresql@16 || brew install postgresql@14
+            brew link --force --overwrite postgresql@16 2>/dev/null \
+              || brew link --force --overwrite postgresql@14 2>/dev/null \
+              || true
+          fi
+          psql --version
+
+      - name: Install stack from working tree (NOT from npm)
+        # We test THIS commit, not the previously-published version.
+        run: |
+          set -e
+          npm install --no-audit --no-fund
+          npm install -g .
+          cd packages/stack-installer && npm install --no-audit --no-fund && npm install -g .
+
+      - name: Verify CLI launchers parse
+        run: |
+          set -e
+          termdeck --help > /dev/null
+          termdeck-stack --help > /dev/null
+
+      - name: Write ~/.termdeck/secrets.env (baseline)
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.termdeck
+          # NO surrounding quotes — Brad #2 (quoted-DATABASE_URL) is not the
+          # surface this fixture probes; that lives in install-smoke.yml.
+          cat > ~/.termdeck/secrets.env <<EOF
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          SUPABASE_ANON_KEY=${TEST_SUPABASE_ANON_KEY}
+          DATABASE_URL=${TEST_DATABASE_URL}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          EOF
+          chmod 600 ~/.termdeck/secrets.env
+
+      - name: Reset test Supabase schema (pre-init)
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+        run: |
+          set -e
+          # The reset script is bash + psql; macos-14 has bash 3.2 at /bin/bash
+          # and the script's `set -euo pipefail` + POSIX `[ ... ]` work fine.
+          if [ -x scripts/test-supabase-reset.sh ]; then
+            bash scripts/test-supabase-reset.sh
+          else
+            echo "[note] scripts/test-supabase-reset.sh not yet shipped — skipping."
+          fi
+
+      - name: termdeck init --mnestra --yes
+        run: termdeck init --mnestra --yes
+
+      - name: termdeck init --rumen --yes
+        run: termdeck init --rumen --yes
+
+      - name: termdeck doctor (must report all probes GREEN)
+        run: termdeck doctor
+
+      # ========================================================================
+      # SPRINT 61 — UNINSTALL → VERIFY-CLEAN → REINSTALL → DOCTOR → IDEMPOTENCY
+      # ========================================================================
+      # Closes the convergence-test gap on macOS: the install path was already
+      # covered by the doctor probe above; this segment proves
+      #   (a) the uninstall path is complete (no leftover state, including the
+      #       ~/.claude/settings.json hook-wiring entries — T4-CODEX 18:46
+      #       AUDIT-CONCERN);
+      #   (b) a fresh install on top of the uninstalled state lands identically
+      #       (no poisoning); and
+      #   (c) running uninstall a third time on an already-clean machine is a
+      #       clean no-op exit 0 (idempotency proof — T4-CODEX 18:46
+      #       AUDIT-CONCERN: the previous shape used `|| true` which masked
+      #       real cleanup-side failures and did not prove second-run-clean).
+      # ========================================================================
+
+      - name: Uninstall after first install (Sprint 61 T1 — must succeed)
+        run: termdeck-stack uninstall --yes
+
+      - name: Verify clean state after first uninstall
+        run: |
+          set -e
+          # Per T1's spec (PLANNING § T1 "What gets removed"):
+          #   ~/.termdeck/                                — entire dir
+          #   ~/.claude.json mnestra MCP entry            — surgical splice
+          #   ~/.claude/settings.json SessionEnd + Stop   — surgical splice of
+          #     entries pointing at our bundled hook (other event wirings
+          #     preserved)
+          #   ~/.claude/hooks/memory-session-end.js       — moved to .bak.<ISO>
+          #   ~/Library/LaunchAgents/com.jhizzard.termdeck.*.plist — unloaded + removed
+
+          if [ -d "$HOME/.termdeck" ]; then
+            echo "FAIL: $HOME/.termdeck still exists after uninstall"
+            ls -la "$HOME/.termdeck" || true
+            exit 1
+          fi
+          echo "OK — ~/.termdeck removed"
+
+          if [ -f "$HOME/.claude.json" ]; then
+            if grep -q '"mnestra"' "$HOME/.claude.json"; then
+              echo "FAIL: ~/.claude.json still contains 'mnestra' MCP entry"
+              exit 1
+            fi
+            echo "OK — ~/.claude.json has no mnestra MCP entry"
+          else
+            echo "OK — ~/.claude.json absent (clean machine)"
+          fi
+
+          # T4-CODEX 18:46 part 1: settings.json wiring residue must NOT remain.
+          if [ -f "$HOME/.claude/settings.json" ]; then
+            if grep -q 'memory-session-end.js' "$HOME/.claude/settings.json"; then
+              echo "FAIL: ~/.claude/settings.json still references bundled hook"
+              cat "$HOME/.claude/settings.json"
+              exit 1
+            fi
+            echo "OK — ~/.claude/settings.json has no bundled-hook references"
+          else
+            echo "OK — ~/.claude/settings.json absent (clean machine)"
+          fi
+
+          if [ -f "$HOME/.claude/hooks/memory-session-end.js" ]; then
+            echo "FAIL: bundled hook leaked at ~/.claude/hooks/memory-session-end.js"
+            exit 1
+          fi
+          if ls "$HOME/.claude/hooks/memory-session-end.js.bak."* > /dev/null 2>&1; then
+            echo "OK — hook rotated to .bak.<ISO> (retention)"
+          else
+            echo "OK — hook absent (clean machine, nothing to rotate)"
+          fi
+
+          # macOS LaunchAgents — T1 should `launchctl unload` then remove.
+          if ls "$HOME/Library/LaunchAgents/com.jhizzard.termdeck."*.plist > /dev/null 2>&1; then
+            echo "FAIL: TermDeck LaunchAgents leaked"
+            ls -la "$HOME/Library/LaunchAgents/com.jhizzard.termdeck."*.plist
+            exit 1
+          fi
+          echo "OK — no TermDeck LaunchAgents"
+
+      - name: Re-install (clean-state install probe)
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.termdeck
+          cat > ~/.termdeck/secrets.env <<EOF
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          SUPABASE_ANON_KEY=${TEST_SUPABASE_ANON_KEY}
+          DATABASE_URL=${TEST_DATABASE_URL}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          EOF
+          chmod 600 ~/.termdeck/secrets.env
+          if [ -x scripts/test-supabase-reset.sh ]; then
+            bash scripts/test-supabase-reset.sh
+          fi
+          termdeck init --mnestra --yes
+          termdeck init --rumen --yes
+
+      - name: Doctor after re-install (must report all probes GREEN)
+        run: termdeck doctor
+
+      - name: Uninstall after re-install (must succeed — no `|| true` masking)
+        # T4-CODEX 18:46 part 2: previous `|| true` shape would have hidden a
+        # real cleanup failure. Now the post-reinstall uninstall must succeed
+        # cleanly (separate from the idempotency proof below).
+        run: termdeck-stack uninstall --yes
+
+      - name: Verify clean state after second uninstall
+        run: |
+          set -e
+          if [ -d "$HOME/.termdeck" ]; then
+            echo "FAIL: $HOME/.termdeck still exists after second uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.claude.json" ] && grep -q '"mnestra"' "$HOME/.claude.json"; then
+            echo "FAIL: ~/.claude.json still has mnestra MCP entry after second uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.claude/settings.json" ] && grep -q 'memory-session-end.js' "$HOME/.claude/settings.json"; then
+            echo "FAIL: ~/.claude/settings.json still references bundled hook after second uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.claude/hooks/memory-session-end.js" ]; then
+            echo "FAIL: bundled hook leaked after second uninstall"
+            exit 1
+          fi
+          echo "OK — clean state verified after second uninstall"
+
+      - name: Idempotency proof — third uninstall on already-clean machine
+        # T4-CODEX 18:46 part 2: explicit idempotency assertion. Per T1
+        # PLANNING § T1 "Idempotency contract": running uninstall on a
+        # fully-uninstalled machine exits 0 cleanly with "already uninstalled"
+        # semantics. NO `|| true` — a non-zero exit is a real bug.
+        run: termdeck-stack uninstall --yes
+
+      - name: Final cleanup of test Supabase schema
+        if: always()
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+        run: |
+          if [ -x scripts/test-supabase-reset.sh ]; then
+            bash scripts/test-supabase-reset.sh
+          fi

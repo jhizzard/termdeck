@@ -163,6 +163,158 @@ jobs:
         # check trips the catch-net.
         run: termdeck doctor
 
+      # ========================================================================
+      # SPRINT 61 — UNINSTALL → VERIFY-CLEAN → REINSTALL → DOCTOR → IDEMPOTENCY
+      # ========================================================================
+      # Closes the convergence-test gap on Linux: the install path was already
+      # covered by the doctor probe above; this segment proves
+      #   (a) the uninstall path is complete (no leftover state, including the
+      #       ~/.claude/settings.json hook-wiring entries — T4-CODEX 18:46
+      #       AUDIT-CONCERN);
+      #   (b) a fresh install on top of the uninstalled state lands identically
+      #       (no poisoning); and
+      #   (c) running uninstall a third time on an already-clean machine is a
+      #       clean no-op exit 0 (idempotency proof — T4-CODEX 18:46
+      #       AUDIT-CONCERN: the previous shape used `|| true` which masked
+      #       real cleanup-side failures and did not prove second-run-clean).
+      #
+      # Mirrors macos-install-smoke.yml's clean-install-macos uninstall
+      # segment; adjusted for Linux (no ~/Library/LaunchAgents — Linux uses
+      # ~/.config/systemd/user/termdeck.service per T1 PLANNING § T1).
+      # ========================================================================
+
+      - name: Uninstall after first install (Sprint 61 T1 — must succeed)
+        run: termdeck-stack uninstall --yes
+
+      - name: Verify clean state after first uninstall
+        run: |
+          set -e
+          # Per T1's spec (PLANNING § T1 "What gets removed"):
+          #   ~/.termdeck/                                — entire dir
+          #   ~/.claude.json mnestra MCP entry            — surgical splice
+          #   ~/.claude/settings.json SessionEnd + Stop   — surgical splice of
+          #     entries pointing at our bundled hook (other event wirings
+          #     preserved)
+          #   ~/.claude/hooks/memory-session-end.js       — moved to .bak.<ISO>
+          #   ~/.config/systemd/user/termdeck.service     — disabled + removed
+
+          if [ -d "$HOME/.termdeck" ]; then
+            echo "FAIL: $HOME/.termdeck still exists after uninstall"
+            ls -la "$HOME/.termdeck" || true
+            exit 1
+          fi
+          echo "OK — ~/.termdeck removed"
+
+          if [ -f "$HOME/.claude.json" ]; then
+            if grep -q '"mnestra"' "$HOME/.claude.json"; then
+              echo "FAIL: ~/.claude.json still contains 'mnestra' MCP entry"
+              exit 1
+            fi
+            echo "OK — ~/.claude.json has no mnestra MCP entry"
+          else
+            echo "OK — ~/.claude.json absent (clean machine)"
+          fi
+
+          # T4-CODEX 18:46 part 1: settings.json wiring residue must NOT remain.
+          # Substring check is sufficient because the only entries that could
+          # contain 'memory-session-end.js' in the fixture are entries pointing
+          # at our bundled hook (which T1 must splice). Unrelated event wirings
+          # (Stop entry pointing at /usr/local/lib/some/other/hook.sh) survive.
+          if [ -f "$HOME/.claude/settings.json" ]; then
+            if grep -q 'memory-session-end.js' "$HOME/.claude/settings.json"; then
+              echo "FAIL: ~/.claude/settings.json still references bundled hook"
+              cat "$HOME/.claude/settings.json"
+              exit 1
+            fi
+            echo "OK — ~/.claude/settings.json has no bundled-hook references"
+          else
+            echo "OK — ~/.claude/settings.json absent (clean machine)"
+          fi
+
+          if [ -f "$HOME/.claude/hooks/memory-session-end.js" ]; then
+            echo "FAIL: bundled hook leaked at ~/.claude/hooks/memory-session-end.js"
+            exit 1
+          fi
+          # The .bak.<ISO> retention copy is OK — that's the spec.
+          if ls "$HOME/.claude/hooks/memory-session-end.js.bak."* > /dev/null 2>&1; then
+            echo "OK — hook rotated to .bak.<ISO> (retention)"
+          else
+            echo "OK — hook absent (clean machine, nothing to rotate)"
+          fi
+
+          if [ -f "$HOME/.config/systemd/user/termdeck.service" ]; then
+            echo "FAIL: user systemd unit leaked at ~/.config/systemd/user/termdeck.service"
+            exit 1
+          fi
+          echo "OK — no user-scope systemd unit"
+
+      - name: Re-install (clean-state install probe)
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.termdeck
+          cat > ~/.termdeck/secrets.env <<EOF
+          SUPABASE_URL=${TEST_SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${TEST_SUPABASE_SERVICE_ROLE_KEY}
+          SUPABASE_ANON_KEY=${TEST_SUPABASE_ANON_KEY}
+          DATABASE_URL=${TEST_DATABASE_URL}
+          ANTHROPIC_API_KEY=${TEST_ANTHROPIC_API_KEY}
+          OPENAI_API_KEY=${TEST_OPENAI_API_KEY}
+          EOF
+          chmod 600 ~/.termdeck/secrets.env
+          # Reset DB to clean state for the second pass — the canary survives
+          # but the schema is purged so we exercise a true fresh wizard run.
+          if [ -x scripts/test-supabase-reset.sh ]; then
+            bash scripts/test-supabase-reset.sh
+          fi
+          termdeck init --mnestra --yes
+          termdeck init --rumen --yes
+
+      - name: Doctor after re-install (must report all probes GREEN)
+        run: termdeck doctor
+
+      - name: Uninstall after re-install (must succeed — no `|| true` masking)
+        # T4-CODEX 18:46 part 2: the previous shape used `|| true` which would
+        # have hidden a real cleanup failure. Now this step asserts the
+        # post-reinstall uninstall ALSO succeeds (separate from the
+        # idempotency proof step below).
+        run: termdeck-stack uninstall --yes
+
+      - name: Verify clean state after second uninstall
+        run: |
+          set -e
+          if [ -d "$HOME/.termdeck" ]; then
+            echo "FAIL: $HOME/.termdeck still exists after second uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.claude.json" ] && grep -q '"mnestra"' "$HOME/.claude.json"; then
+            echo "FAIL: ~/.claude.json still has mnestra MCP entry after second uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.claude/settings.json" ] && grep -q 'memory-session-end.js' "$HOME/.claude/settings.json"; then
+            echo "FAIL: ~/.claude/settings.json still references bundled hook after second uninstall"
+            exit 1
+          fi
+          if [ -f "$HOME/.claude/hooks/memory-session-end.js" ]; then
+            echo "FAIL: bundled hook leaked after second uninstall"
+            exit 1
+          fi
+          echo "OK — clean state verified after second uninstall"
+
+      - name: Idempotency proof — third uninstall on already-clean machine
+        # T4-CODEX 18:46 part 2: explicit second-run idempotency assertion.
+        # Per T1 PLANNING § T1 "Idempotency contract": running uninstall on
+        # a fully-uninstalled machine exits 0 cleanly with "already
+        # uninstalled" semantics. NO `|| true` here — a non-zero exit is a
+        # real bug we want to surface.
+        run: termdeck-stack uninstall --yes
+
       - name: Cleanup test Supabase schema (always-runs)
         if: always()
         env:

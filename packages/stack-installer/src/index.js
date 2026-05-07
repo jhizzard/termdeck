@@ -137,6 +137,7 @@ function printHelp() {
     termdeck-stack start          Boot the full stack (TermDeck + Mnestra)
     termdeck-stack stop           Stop the running stack
     termdeck-stack status         Print stack health
+    termdeck-stack uninstall      Tear down all TermDeck-attributable state
 
   Install:
     npx @jhizzard/termdeck-stack          Interactive wizard
@@ -752,7 +753,14 @@ function printNextSteps(plan, opts) {
 // to the wizard for backwards compat.
 async function _maybeRunSubcommand(argv) {
   const sub = argv[0];
-  if (sub !== 'start' && sub !== 'stop' && sub !== 'status') return null;
+  if (sub !== 'start' && sub !== 'stop' && sub !== 'status' && sub !== 'uninstall') return null;
+  if (sub === 'uninstall') {
+    // Sprint 61 T1 — tear down all TermDeck-attributable state. Lazy-require so
+    // the wizard / launcher paths don't pay the uninstall module's load cost.
+    const uninstallMod = require('./uninstall');
+    const result = await uninstallMod.uninstall({ argv: argv.slice(1) });
+    return result.exitCode || 0;
+  }
   // Lazy-require so the wizard path doesn't pay the launcher's load cost.
   const launcher = require('./launcher');
   if (sub === 'start') {

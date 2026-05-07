@@ -4,6 +4,13 @@
 # Sprint 58 — reset the shared test Supabase project schema between fixture
 # runs. Strategy B (advisory lock + truncate) per docs/INSTALL-FIXTURES.md.
 #
+# Sprint 61 (2026-05-07): truncate scope extended to include
+#   - mnestra_migrations (T2's migration-tracking table, mig 020)
+#   - rumen_migrations   (T2 may ship a Rumen tracker; tolerated if absent)
+# Plus a defensive auto-sweep of any public.rumen_* table not in the explicit
+# list (Rumen's table set evolves more often than Mnestra's). Post-reset
+# canary survival check confirms _termdeck_test_canary row is intact.
+#
 # Required env:
 #   TEST_DATABASE_URL   Postgres connection string for the test project.
 #                       MUST NOT point at any developer's daily-driver project.
@@ -102,12 +109,15 @@ DECLARE
     'mnestra_project_memory',
     'mnestra_developer_memory',
     'mnestra_commands',
+    'mnestra_migrations',       -- Sprint 61 T2: migration-tracking table (mig 020)
     'rumen_questions',
     'rumen_insights',
-    'rumen_jobs'
+    'rumen_jobs',
+    'rumen_migrations'          -- Sprint 61 T2: Rumen migration-tracking (if shipped)
   ];
   truncated TEXT[] := '{}';
   skipped   TEXT[] := '{}';
+  rumen_extra TEXT;
 BEGIN
   FOREACH t IN ARRAY tbls LOOP
     IF to_regclass('public.' || t) IS NOT NULL THEN
@@ -117,9 +127,48 @@ BEGIN
       skipped := skipped || t;
     END IF;
   END LOOP;
+
+  -- Sprint 61 defensive auto-sweep: any public.rumen_* table not in the
+  -- explicit list. Catches future Rumen migrations that add tables before
+  -- this script's tbls[] is updated. Mnestra is intentionally NOT auto-swept
+  -- because its mnestra_* surface includes intentionally-preserved tables
+  -- (none today, but keep the explicit-list semantics for safety).
+  FOR rumen_extra IN
+    SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name LIKE 'rumen\_%' ESCAPE '\'
+        AND NOT (table_name = ANY(tbls))
+  LOOP
+    EXECUTE format('TRUNCATE TABLE public.%I RESTART IDENTITY CASCADE', rumen_extra);
+    truncated := truncated || (rumen_extra || ' (auto-sweep)');
+  END LOOP;
+
   RAISE NOTICE '[reset] truncated (%): %', array_length(truncated, 1), array_to_string(truncated, ', ');
   IF array_length(skipped, 1) IS NOT NULL THEN
     RAISE NOTICE '[reset] skipped (table not provisioned, %): %', array_length(skipped, 1), array_to_string(skipped, ', ');
+  END IF;
+END $$;
+
+-- Sprint 61 post-reset canary survival check. _termdeck_test_canary is
+-- never in the truncate list, so this should always pass — but the explicit
+-- check protects against accidental DROP/DELETE outside this script.
+DO $$
+DECLARE
+  canary_count INT;
+BEGIN
+  SELECT count(*) INTO canary_count
+    FROM _termdeck_test_canary
+    WHERE ref = 'sprint-58-test-project';
+  IF canary_count = 0 THEN
+    RAISE WARNING '[reset] canary row missing post-reset; re-seeding';
+    INSERT INTO _termdeck_test_canary (ref, note)
+    VALUES (
+      'sprint-58-test-project',
+      'Sprint 58 canary, re-seeded by Sprint 61 reset script post-truncate verification.'
+    )
+    ON CONFLICT (ref) DO NOTHING;
+  ELSE
+    RAISE NOTICE '[reset] canary row survived';
   END IF;
 END $$;
 

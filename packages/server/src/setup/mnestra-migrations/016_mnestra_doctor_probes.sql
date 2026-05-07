@@ -27,8 +27,8 @@
 -- their grants are now wrapped in a do$$ guard that only emits them
 -- when `pg_cron` is enabled. The doctor's cron-related probes return
 -- the existing `unknown` band (Sprint 51.5 T2 already established it)
--- when the wrappers don't exist — graceful degradation. Petvetbid +
--- jizzard-brain are unaffected because both have rumen installed,
+-- when the wrappers don't exist — graceful degradation. Existing
+-- rumen-bearing installs are unaffected because both have rumen installed,
 -- which enables pg_cron via rumen's mig 002. Closes the
 -- mnestra-only-no-rumen fresh-install path.
 
@@ -103,7 +103,7 @@ grant execute on function mnestra_doctor_vault_secret_exists(text)        to ser
 --
 -- Idempotent: do$$ runs every replay; CREATE OR REPLACE keeps the
 -- function definitions in sync if pg_cron later gets enabled and the
--- migration re-runs. Existing installs (petvetbid, jizzard-brain) have
+-- migration re-runs. Existing installs typically have
 -- pg_cron from Rumen's install path and emit these unconditionally.
 
 do $cron_guard$

@@ -4,6 +4,13 @@
 # Sprint 58 (Environment Coverage Catch-Net), T1 GHACTIONS+DOCKER lane.
 # Used by docker/Dockerfile.{ubuntu,fedora,alpine,debian} as ENTRYPOINT.
 #
+# Sprint 61 T3 extension (2026-05-07): on FIXTURE_INTENT=baseline, the script
+# now appends a uninstall → verify-clean → reinstall → doctor → idempotency-
+# proof sequence after the existing PTY-spawn smoke (response to T4-CODEX
+# 18:42 ET AUDIT-CONCERN that host-only Ubuntu+macOS coverage doesn't satisfy
+# the "every fixture" acceptance criterion). REPRODUCER intents are
+# unaffected.
+#
 # This script is POSIX sh-compatible (no bashisms). Required because Alpine's
 # Dockerfile fixture deliberately omits bash (busybox ash only), per
 # T4-CODEX FINDING 2026-05-05 16:21 ET re: bash false-RED risk on Alpine.
@@ -302,6 +309,102 @@ kill "$TD_PID" 2>/dev/null || true
 
 if [ "$STATUS" = "active" ]; then
   log "session status=active — PTY shell spawn SUCCEEDED"
+
+  # ----------------------------------------------------------------------
+  # Sprint 61 (T3 + T4-CODEX 18:42 ET AUDIT-CONCERN response) — extend
+  # baseline path with uninstall-reinstall coverage so install-smoke.yml's
+  # docker-fedora-baseline + docker-debian-baseline jobs also exercise the
+  # uninstall-then-reinstall sequence (Linux fixtures, not just host
+  # ubuntu-24.04).
+  #
+  # Skipped on REPRODUCER intents (brad-5-no-zsh, brad-5-alpine-bashism)
+  # because those fixtures are bug-specific catch surfaces; uninstall is
+  # not part of their probe contract.
+  # ----------------------------------------------------------------------
+  if [ "$FIXTURE_INTENT" = "baseline" ]; then
+    log ""
+    log "Sprint 61 — uninstall → verify → reinstall → doctor → idempotency"
+
+    # ---- Uninstall #1 (after first install) ----
+    log "uninstall #1: termdeck-stack uninstall --yes"
+    if ! termdeck-stack uninstall --yes; then
+      err "uninstall #1 FAILED"
+      exit 1
+    fi
+
+    # Verify clean state — paths checked match T1 PLANNING § T1.
+    if [ -d "$TD_HOME/.termdeck" ]; then
+      err "FAIL: $TD_HOME/.termdeck still exists after uninstall #1"
+      exit 1
+    fi
+    if [ -f "$TD_HOME/.claude.json" ]; then
+      if grep -q '"mnestra"' "$TD_HOME/.claude.json"; then
+        err "FAIL: ~/.claude.json still has 'mnestra' MCP entry after uninstall #1"
+        exit 1
+      fi
+    fi
+    if [ -f "$TD_HOME/.claude/settings.json" ]; then
+      if grep -q 'memory-session-end.js' "$TD_HOME/.claude/settings.json"; then
+        err "FAIL: ~/.claude/settings.json still references bundled hook after uninstall #1"
+        cat "$TD_HOME/.claude/settings.json"
+        exit 1
+      fi
+    fi
+    if [ -f "$TD_HOME/.claude/hooks/memory-session-end.js" ]; then
+      err "FAIL: bundled hook leaked at ~/.claude/hooks/memory-session-end.js after uninstall #1"
+      exit 1
+    fi
+    log "uninstall #1 verify OK"
+
+    # ---- Reinstall (re-write secrets.env which got removed with ~/.termdeck) ----
+    mkdir -p "$TD_HOME/.termdeck"
+    cat > "$SECRETS" <<EOF
+SUPABASE_URL=$SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
+DATABASE_URL=$DATABASE_URL
+OPENAI_API_KEY=$OPENAI_API_KEY
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+EOF
+    chmod 600 "$SECRETS"
+
+    log "reinstall: termdeck init --mnestra --yes"
+    if ! termdeck init --mnestra --yes; then
+      err "reinstall mnestra FAILED"
+      exit 1
+    fi
+    log "reinstall: termdeck init --rumen --yes"
+    if ! termdeck init --rumen --yes; then
+      err "reinstall rumen FAILED"
+      exit 1
+    fi
+
+    log "doctor after reinstall"
+    if ! termdeck doctor; then
+      err "doctor FAILED after reinstall"
+      exit 1
+    fi
+
+    # ---- Uninstall #2 (after reinstall — must succeed) ----
+    log "uninstall #2: termdeck-stack uninstall --yes (must succeed; no || true masking)"
+    if ! termdeck-stack uninstall --yes; then
+      err "uninstall #2 FAILED — second-cycle uninstall regression"
+      exit 1
+    fi
+    if [ -d "$TD_HOME/.termdeck" ]; then
+      err "FAIL: $TD_HOME/.termdeck still exists after uninstall #2"
+      exit 1
+    fi
+    log "uninstall #2 verify OK"
+
+    # ---- Uninstall #3 (idempotency proof on already-clean machine) ----
+    log "uninstall #3: idempotency proof on already-uninstalled state"
+    if ! termdeck-stack uninstall --yes; then
+      err "uninstall #3 (idempotency) FAILED — second-run-on-clean regression"
+      exit 1
+    fi
+    log "uninstall-reinstall coverage PASSED"
+  fi
+
   exit 0
 fi
 

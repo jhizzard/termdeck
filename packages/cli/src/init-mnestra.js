@@ -332,23 +332,63 @@ async function promptSecretWithValidation(validator) {
   throw new Error('Too many invalid attempts — cancelling.');
 }
 
+// Sprint 61 T2 — collapsed fresh-install / upgrade paths. Pre-Sprint-61, the
+// wizard re-applied every bundled mnestra migration on every invocation,
+// relying on per-file IF NOT EXISTS / CREATE OR REPLACE idempotency. That
+// works for fresh installs but doesn't tell the wizard which migrations the
+// live database has actually received — so a user running
+// `npm install -g @latest` against an existing project lands in Class A
+// (schema drift on package upgrade): the npm package files upgrade, the
+// database stays at first-kickstart state. Brad reported this 2026-05-02.
+//
+// applyPendingMigrations (migrations.js) replaces the loop with a tracker-
+// aware diff: SELECT applied filenames from public.mnestra_migrations, run
+// only the bundled-but-unapplied ones, INSERT a tracker row per apply.
+// Pre-020 installs trigger a one-time backfill probe pass that seeds the
+// tracker for migrations whose schema artifacts are already present.
 async function applyMigrations(client, dryRun) {
   const files = migrations.listMnestraMigrations();
   if (files.length === 0) {
     throw new Error('No Mnestra migrations found. TermDeck install looks corrupted.');
   }
 
-  for (const file of files) {
-    const base = path.basename(file);
-    step(`Applying migration ${base}...`);
-    if (dryRun) { ok('(dry-run)'); continue; }
-    const result = await pgRunner.applyFile(client, file);
-    if (result.ok) {
-      ok(`(${result.elapsedMs}ms)`);
-    } else {
-      fail(result.error);
-      throw new Error(`Migration failed: ${base}`);
+  if (dryRun) {
+    // Preserve the per-file dry-run banner so the user sees the planned
+    // sequence without touching the database.
+    for (const file of files) {
+      const base = path.basename(file);
+      step(`Applying migration ${base}...`);
+      ok('(dry-run)');
     }
+    return;
+  }
+
+  step('Running tracker-aware diff-and-apply (skips already-applied migrations)...');
+  const summary = await migrations.applyPendingMigrations(client);
+
+  if (summary.errored) {
+    fail(`${summary.errored.file}: ${summary.errored.error}`);
+    throw new Error(`Migration failed: ${summary.errored.file}`);
+  }
+
+  ok(
+    `(applied ${summary.applied.length}, backfilled ${summary.backfilled.length}, ` +
+    `skipped ${summary.skipped.length})`
+  );
+
+  for (const f of summary.applied) {
+    process.stdout.write(`    ✓ applied ${f}\n`);
+  }
+  for (const f of summary.backfilled) {
+    process.stdout.write(`    ◇ backfilled ${f} (schema already present, recorded in tracker)\n`);
+  }
+  for (const w of summary.warnings) {
+    const tracked = (w.trackedChecksum || '').slice(0, 12) || '<empty>';
+    const bundled = (w.bundledChecksum || '').slice(0, 12) || '<empty>';
+    process.stdout.write(
+      `    ! checksum drift on ${w.file}: tracked=${tracked}, bundled=${bundled} ` +
+      `(no auto-overwrite — investigate before re-running)\n`
+    );
   }
 }
 
