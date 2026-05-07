@@ -516,10 +516,29 @@ class Session {
   }
 
   toJSON() {
+    const meta = { ...this.meta };
+    // Sprint 60 v1.0.14 — stale-status guard. If a panel's status is in the
+    // sticky set ('thinking', 'editing') but no PTY output has arrived for
+    // STALE_STATUS_THRESHOLD_MS, treat it as parked at end-of-turn and report
+    // 'idle' instead. Lazy: only evaluated on serialization (zero timer cost).
+    // Backstops adapter-specific end-of-turn detection — Codex's "Worked for"
+    // terminator catches the precise case; this catches the general one
+    // (Claude's stuck-on-thinking, future adapters that forget end-of-turn,
+    // any adapter where the terminator chunk is split across reads). Bit
+    // Sprint 59 twice — orchestrator's GET /api/sessions reported sticky
+    // 'thinking' for 22 minutes after the panel actually parked.
+    const STICKY_STATUSES = Session.STICKY_STATUSES;
+    if (STICKY_STATUSES.has(meta.status)) {
+      const ageMs = Date.now() - new Date(meta.lastActivity).getTime();
+      if (ageMs > Session.STALE_STATUS_THRESHOLD_MS) {
+        meta.status = 'idle';
+        meta.statusDetail = '';
+      }
+    }
     return {
       id: this.id,
       pid: this.pid,
-      meta: { ...this.meta }
+      meta
     };
   }
 
@@ -529,6 +548,13 @@ class Session {
     this._outputBuffer = '';
   }
 }
+
+// Sprint 60 v1.0.14 — class statics for the stale-status guard. Exposed on
+// the class (not const-locked inside toJSON) so tests can stub them and so
+// the threshold can be tuned in one place if signal/noise needs adjustment.
+Session.STICKY_STATUSES = new Set(['thinking', 'editing']);
+Session.STALE_STATUS_THRESHOLD_MS = 30000;
+
 
 class SessionManager {
   constructor(db) {

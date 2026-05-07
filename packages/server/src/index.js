@@ -267,12 +267,92 @@ function _termdeckVersion() {
   catch { return '0.0.0'; }
 }
 
+// Sprint 60 v1.0.14 (Item 3) — safe PTY resize. Brad's 2026-05-07 r730 crash
+// forensic surfaced 25× `[ws] message handler error: Error: ioctl(2) failed,
+// EBADF/ENOTTY` per 13h uptime. Race: WS `resize` message arrives for a PTY
+// that pty-reaper has already closed (or the child has exited), and
+// `pty.resize()` ioctls a stale fd. The error is race-expected, not a bug,
+// but the noisy console.error trace pollutes diagnostics and obscures real
+// errors. This helper guards against the race and downgrades the known
+// race-class errors (EBADF, ENOTTY, generic "ioctl failed" message shape) to
+// a silent return. Set TERMDECK_DEBUG_PTY_RACES=1 to log to console.debug
+// for diagnostics.
+function safelyResizePty(session, cols, rows) {
+  if (!session || !session.pty) return false;
+  if (session.meta && session.meta.status === 'exited') return false;
+  try {
+    session.pty.resize(cols || 120, rows || 30);
+    return true;
+  } catch (err) {
+    const msg = (err && err.message) || '';
+    const code = err && err.code;
+    // Sprint 60 v1.0.14 + T4-CODEX AUDIT-CONCERN narrowing: race classifier
+    // requires explicit EBADF or ENOTTY (in code OR message). The earlier
+    // shape — any "ioctl(N) failed" message — was too broad: it would have
+    // silently dropped a non-race ioctl failure (e.g. EINTR, EFAULT) that
+    // might indicate a real bug. Now: only the specific race-class signals
+    // get suppressed; everything else rethrows so it surfaces in logs.
+    const isRace =
+      code === 'EBADF' ||
+      code === 'ENOTTY' ||
+      /\b(?:EBADF|ENOTTY)\b/.test(msg);
+    if (isRace) {
+      if (process.env.TERMDECK_DEBUG_PTY_RACES) {
+        console.debug(`[ws] resize-after-pty-exit (race-expected): session=${session.id} ${code || msg}`);
+      }
+      return false;
+    }
+    throw err;
+  }
+}
+
 function createServer(config) {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
 
-  app.use(express.json());
+  // Sprint 60 v1.0.14 (Item 2) — pre-screen incoming JSON bodies for unescaped
+  // control characters in string contexts. Brad's 2026-05-07 r730 crash
+  // forensic logged 9x `SyntaxError: Bad control character in string literal
+  // in JSON at position 9` per 13h uptime. The post-Sprint-56 error-handler
+  // already returns a structured 400, but body-parser's internal
+  // `JSON.parse(body)` throws a verbose SyntaxError whose 10-line stack trace
+  // dumps to stderr (Express dev-mode default error logger). The verify
+  // callback below fails earlier with a tight ControlCharBodyError that our
+  // handler logs as a single-line warning instead of a stack trace.
+  //
+  // Most likely source of these bodies: agent-to-agent inject through
+  // /api/sessions/:id/input where the `text` field contains raw PTY escape
+  // sequences (e.g. one panel forwarding terminal output to another). The
+  // 400 response is the correct user-facing semantic; this just quiets the
+  // logs so real errors aren't drowned in noise.
+  app.use(express.json({
+    verify: (req, res, buf) => {
+      // O(N) single-pass scan. Only checks bytes inside double-quoted string
+      // regions so structural whitespace doesn't trigger false positives.
+      let inString = false;
+      let escape = false;
+      for (let i = 0; i < buf.length; i++) {
+        const b = buf[i];
+        if (!inString) {
+          if (b === 0x22) inString = true; // "
+          continue;
+        }
+        if (escape) { escape = false; continue; }
+        if (b === 0x5c) { escape = true; continue; }     // backslash
+        if (b === 0x22) { inString = false; continue; } // closing quote
+        // JSON forbids unescaped control chars (0x00-0x1F and 0x7F) inside
+        // string literals. Reject with a structured error.
+        if (b < 0x20 || b === 0x7f) {
+          const err = new Error(`Body contains illegal control character 0x${b.toString(16).padStart(2, '0')} at byte ${i}`);
+          err.type = 'entity.verify.failed';
+          err.statusCode = 400;
+          err.code = 'CONTROL_CHAR_IN_STRING';
+          throw err;
+        }
+      }
+    },
+  }));
 
   // Sprint 56 (T2 F-T2-1) — malformed-JSON body returns JSON 400, not
   // express's default HTML error page. Pre-Sprint-56 every POST/PATCH
@@ -281,9 +361,23 @@ function createServer(config) {
   // smoke tests). The status code (400) was correct; only the body
   // shape regressed. Mounted IMMEDIATELY after express.json() so it
   // catches body-parse errors before any route handler runs.
+  //
+  // Sprint 60 v1.0.14 — extended to also catch `entity.verify.failed` from
+  // the control-char pre-screen above, AND to log via console.warn (single
+  // line) instead of letting Express's default error logger dump a 10-line
+  // stack trace to stderr.
   app.use((err, req, res, next) => {
-    if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
-      return res.status(400).json({ error: 'Malformed JSON body', detail: err.message });
+    if (err && (
+      err.type === 'entity.parse.failed' ||
+      err.type === 'entity.verify.failed' ||
+      err instanceof SyntaxError
+    )) {
+      console.warn(`[body-parser] ${err.code || err.type || 'parse-error'}: ${err.message} (${req.method} ${req.path})`);
+      return res.status(400).json({
+        error: 'Malformed JSON body',
+        detail: err.message,
+        code: err.code,
+      });
     }
     return next(err);
   });
@@ -1489,7 +1583,10 @@ function createServer(config) {
 
     const { cols, rows } = req.body;
     try {
-      session.pty.resize(cols || 120, rows || 30);
+      const resized = safelyResizePty(session, cols, rows);
+      if (!resized) {
+        return res.status(409).json({ error: 'Session is exited or its PTY is no longer alive' });
+      }
       res.json({ ok: true, cols, rows });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -2160,9 +2257,10 @@ function createServer(config) {
             break;
 
           case 'resize':
-            if (session.pty) {
-              session.pty.resize(parsed.cols || 120, parsed.rows || 30);
-            }
+            // Sprint 60 v1.0.14 — safelyResizePty guards against the
+            // pty-reaper-closed-the-fd race that surfaced 25x in Brad's
+            // 13h uptime as ioctl EBADF/ENOTTY noise.
+            safelyResizePty(session, parsed.cols, parsed.rows);
             break;
 
           case 'meta':
@@ -2454,7 +2552,16 @@ if (require.main === module) {
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
   server.listen(port, host, () => {
-    console.log(`\n  TermDeck running at http://${host}:${port}\n`);
+    // Sprint 60 v1.0.14 (Item 5) — per-boot banner with ISO timestamp + PID.
+    // Brad's 2026-05-07 forensic: a single 260KB termdeck.log spanned Apr 25
+    // through May 7 with only ONE boot banner at the top. Crash → restart
+    // dropped its own banner somewhere we couldn't find, making post-mortem
+    // diagnosis harder. Per-boot timestamps make crash boundaries trivially
+    // greppable and let `journalctl`/`tail` users scan a single log to find
+    // the most recent restart instantly.
+    const bootIso = new Date().toISOString();
+    console.log(`\n  ════ TermDeck server boot · ${bootIso} · pid ${process.pid} ════`);
+    console.log(`  TermDeck running at http://${host}:${port}\n`);
     console.log(`  Terminals:  0 active`);
     console.log(`  Database:   ${Database ? 'SQLite OK' : 'unavailable'}`);
     console.log(`  PTY:        ${pty ? 'node-pty OK' : 'unavailable (install node-pty)'}`);
@@ -2470,6 +2577,10 @@ if (require.main === module) {
 module.exports = {
   createServer,
   loadConfig,
+  // Sprint 60 v1.0.14 (Item 3) — exported so tests can import the production
+  // helper instead of re-implementing it. T4-CODEX AUDIT-CONCERN flagged that
+  // the prior re-implementation pattern in the test could drift silently.
+  safelyResizePty,
   // Sprint 48 T4 — exported for unit testing the secrets.env → PTY env merge.
   readTermdeckSecretsForPty,
   _resetTermdeckSecretsCache,

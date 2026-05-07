@@ -1,0 +1,30 @@
+# TermDeck — canonical logrotate config (Sprint 60 v1.0.14).
+#
+# Install:
+#   sudo cp docs/examples/termdeck.logrotate /etc/logrotate.d/termdeck
+#   sudo chmod 644 /etc/logrotate.d/termdeck
+#
+# Per-user install (no sudo) — call manually or wire to a systemd-user timer:
+#   logrotate -s ~/.termdeck/.logrotate.state /path/to/this/file
+#
+# Why this exists: Brad's 2026-05-07 r730 forensic found a single 260KB
+# termdeck.log spanning Apr 25 → May 7 with only ONE boot banner. Without
+# rotation, the file grows unbounded across restarts and crash post-mortem
+# is harder than it should be. With this config plus the per-boot banner
+# the server emits in v1.0.14, finding "the log lines from the most recent
+# crash" is a 30-second operation.
+
+/home/*/.termdeck/termdeck.log /home/*/.termdeck/termdeck.err /Users/*/.termdeck/termdeck.log /Users/*/.termdeck/termdeck.err {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    # copytruncate avoids the "old fd kept open by the running process" race —
+    # the rotated file is copied, the original is truncated in place, and the
+    # running TermDeck keeps writing to the same fd without needing SIGHUP.
+    create 0600
+    su root root
+}

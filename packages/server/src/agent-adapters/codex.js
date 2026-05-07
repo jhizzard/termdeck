@@ -69,6 +69,17 @@ const TOOL = /^(?:\$\s|→\s|exec(?:_command\b|\b)|Running\b|Calling\b)/m;
 // label when it's done reasoning and waiting on the user.
 const IDLE = /^codex\s*$/m;
 
+// End-of-turn terminator (Sprint 60 v1.0.14 fix). After Codex finishes a
+// reply the TUI renders a separator with the elapsed time, e.g.
+// "─ Worked for 2m 50s ──────────" using box-drawing dashes (U+2500). This
+// pattern is unambiguous: it only ever appears when the turn closes and the
+// panel parks waiting for next input. Placed FIRST in the statusFor cascade
+// because the same chunk may also contain a final "Working" spinner update
+// that would otherwise stick `status: 'thinking'` indefinitely. Bit Sprint 59
+// twice — orchestrator's `meta.status` reported "Codex is reasoning..." for
+// 22+ minutes after Codex actually parked at end-of-turn.
+const END_OF_TURN = /─\s*Worked for\s+(?:\d+m\s*)?\d+s\s*─/;
+
 // Error patterns — line-anchored to avoid mid-line "error" mentions in tool
 // output (grep results, test logs, file dumps) flagging false positives.
 // Same shape as Claude with codex-specific OpenAI-API failure modes added
@@ -82,6 +93,12 @@ const ERROR = /^\s*(?:(?:error|Error|ERROR|exception|Exception|Traceback|fatal|F
 // ──────────────────────────────────────────────────────────────────────────
 
 function statusFor(data) {
+  // Sprint 60 v1.0.14: end-of-turn terminator wins over THINKING. Without
+  // this branch, a chunk that contains both a final "Working Xs" spinner
+  // line AND the closing "Worked for X" separator would stick on 'thinking'.
+  if (END_OF_TURN.test(data)) {
+    return { status: 'idle', statusDetail: '' };
+  }
   if (THINKING.test(data)) {
     return { status: 'thinking', statusDetail: 'Codex is reasoning...' };
   }
@@ -261,6 +278,7 @@ const codexAdapter = {
   patterns: {
     prompt: PROMPT,
     thinking: THINKING,
+    endOfTurn: END_OF_TURN,
     editing: EDITING,
     tool: TOOL,
     idle: IDLE,
