@@ -18,6 +18,8 @@ npx @jhizzard/termdeck
 
 Ninety seconds, one command. Node 18+ is all you need — prebuilt binaries mean no C++ toolchain. Your browser opens automatically at `http://127.0.0.1:3000`, an onboarding tour walks you through every button, and you're launching real PTY shells, Claude Code, Python servers, or anything else a normal terminal can run.
 
+> **Linux x64 — one-line caveat.** If `npm config get omit` returns `optional`, append `--include=optional` to any global TermDeck or `@anthropic-ai/claude-code` install (`npm install -g @jhizzard/termdeck --include=optional`). On macOS this is unnecessary. Full explanation in [docs/GETTING-STARTED.md § Linux x64 install hint](docs/GETTING-STARTED.md#linux-x64-install-hint).
+
 This is **Tier 1**. Works immediately, fully local, no accounts, no credentials, no database. You get the full dashboard — 7 grid layouts, 8 themes, per-panel metadata overlays, terminal switcher, reply button, status logs, session history in local SQLite. **Flashback is silent at this tier** because there's no memory store to query.
 
 First-time user? The **config** button in the toolbar shows what's set up and what's next — click it for a live view of each tier's status with guided next steps.

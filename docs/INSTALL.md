@@ -23,6 +23,22 @@ If you **downloaded the source code as a ZIP from GitHub** and don't know what t
 
 ---
 
+## Linux x64 — one extra flag if you've suppressed optional npm deps
+
+Skip this section on macOS — the default `npm` behavior on macOS does the right thing and you don't need to do anything.
+
+**On Linux x64**, run `npm config get omit` first. If it prints `optional`, append `--include=optional` to every `npm install -g` line below — TermDeck and `@anthropic-ai/claude-code` (the `claude` CLI used in panels) both ship their platform-specific native binaries as `optionalDependencies`, and npm will silently skip them when `omit=optional` is set. The installed `claude` stub will fail `claude --version` and TermDeck panels will be unable to launch Claude Code.
+
+```bash
+npm config get omit                                # if this prints `optional`...
+npm install -g @jhizzard/termdeck --include=optional
+npm install -g @anthropic-ai/claude-code --include=optional
+```
+
+The flag is a no-op on environments where `omit=optional` isn't set, so it's safe to leave on every Linux install command. (See `docs/GETTING-STARTED.md` § Linux x64 install hint for the full explanation.)
+
+---
+
 ## Path A — no install, just run it once
 
 **Good for:** first-time testing, trying before committing, or running from a machine you don't own.

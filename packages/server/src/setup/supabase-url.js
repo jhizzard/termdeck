@@ -9,6 +9,26 @@
 //   - init-rumen needs the project ref to run `supabase link --project-ref`
 //     and to substitute into the pg_cron schedule SQL.
 
+// Brad #2 (Sprint 59) — strip ONE pair of matched surrounding single OR
+// double quotes from a string. Idempotent: a value with no quotes returns
+// unchanged, mismatched quotes (`"foo'`, `bar"`) return unchanged. The
+// dotenv parsers in config.js / dotenv-io.js / launcher.js already strip
+// at file-read time, but Brad's reproducer ships the literal-quoted value
+// through process.env (shell `export DATABASE_URL="\"$URL\""`), bypassing
+// the file parsers entirely. Adding the strip here defends the validator
+// boundary so any caller that hands us a quoted env-var value gets the
+// same handling as a quoted secrets.env line.
+function stripSurroundingQuotes(value) {
+  if (typeof value !== 'string') return value;
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === '"' || first === "'") && first === last) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
 // A Supabase project URL looks like:
 //   https://<project-ref>.supabase.co
 // The ref is 20 characters of lowercase alphanumerics, but we accept anything
@@ -17,7 +37,7 @@ function parseProjectUrl(url) {
   if (!url || typeof url !== 'string') {
     return { ok: false, error: 'empty url' };
   }
-  const trimmed = url.trim().replace(/\/+$/, '');
+  const trimmed = stripSurroundingQuotes(url.trim()).replace(/\/+$/, '');
   let u;
   try {
     u = new URL(trimmed);
@@ -82,9 +102,10 @@ function looksLikeAnthropicKey(key) {
 // and direct connection URLs (`postgres://postgres:...@db.<ref>.supabase.co:5432/postgres`).
 function looksLikePostgresUrl(url) {
   if (!url || typeof url !== 'string') return 'empty';
+  const stripped = stripSurroundingQuotes(url.trim());
   let u;
   try {
-    u = new URL(url);
+    u = new URL(stripped);
   } catch (_err) {
     return 'not a valid URL';
   }
@@ -137,16 +158,25 @@ function isTransactionPoolerUrl(parsedUrl) {
 // because validation is the caller's job (looksLikePostgresUrl handles that).
 function normalizeDatabaseUrl(url) {
   if (!url || typeof url !== 'string') return { url, modified: false };
+  // Brad #2: strip surrounding quotes silently — `modified` stays scoped
+  // to "appended pgbouncer params" so the caller's user-facing message
+  // ("Detected transaction pooler URL — appending ...") doesn't fire for
+  // a no-op quote strip. The strip itself is reflected in the returned
+  // `url` so downstream `new URL(normalized.url)` / pg.Pool consumers
+  // don't re-throw.
+  const stripped = stripSurroundingQuotes(url.trim());
   let u;
   try {
-    u = new URL(url);
+    u = new URL(stripped);
   } catch (_err) {
-    return { url, modified: false };
+    return { url: stripped, modified: false };
   }
-  if (!isTransactionPoolerUrl(u)) return { url, modified: false };
+  if (!isTransactionPoolerUrl(u)) return { url: stripped, modified: false };
 
-  // Already has pgbouncer set? Don't touch.
-  if (u.searchParams.has('pgbouncer')) return { url, modified: false };
+  // Already has pgbouncer set? Don't touch — but still return the stripped URL,
+  // not the original (Sprint 59 T4-CODEX residual fix: pre-fix returned `url`,
+  // which would re-leak surrounding quotes from a quoted-pgbouncer-URL secrets.env).
+  if (u.searchParams.has('pgbouncer')) return { url: stripped, modified: false };
 
   u.searchParams.set('pgbouncer', 'true');
   // Set connection_limit only if not already set — preserve user intent.
@@ -171,5 +201,6 @@ module.exports = {
   looksLikePostgresUrl,
   isTransactionPoolerUrl,
   normalizeDatabaseUrl,
-  maskSecret
+  maskSecret,
+  stripSurroundingQuotes
 };

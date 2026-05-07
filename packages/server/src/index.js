@@ -82,6 +82,7 @@ const orchestrationPreview = require('./orchestration-preview');
 const { createPtyReaper } = require('./pty-reaper');
 const { AGENT_ADAPTERS } = require('./agent-adapters');
 const { deriveRagMode } = require('./rag-mode');
+const { resolveSpawnShell } = require('./spawn-shell');
 
 // Sprint 48 T4 deliverable 2: PTY env-var propagation.
 // Reads ~/.termdeck/secrets.env once per server lifetime so each PTY spawn
@@ -325,6 +326,26 @@ function createServer(config) {
       if (orphaned.changes > 0) {
         console.log(`[db] Marked ${orphaned.changes} orphaned session(s) as exited`);
       }
+      // Sprint 59 T4-CODEX cleanup: reap upload tempdirs whose owning session is
+      // exited or unknown (crashed processes, hard kills, pre-this-version dirs).
+      try {
+        const uploadsRoot = path.join(os.tmpdir(), 'termdeck-uploads');
+        if (fs.existsSync(uploadsRoot)) {
+          const liveIds = new Set();
+          try {
+            for (const row of db.prepare('SELECT id FROM sessions WHERE exited_at IS NULL').all()) {
+              liveIds.add(row.id);
+            }
+          } catch (_e) { /* live-set empty → all dirs are stale */ }
+          let reaped = 0;
+          for (const dir of fs.readdirSync(uploadsRoot)) {
+            if (!liveIds.has(dir)) {
+              try { fs.rmSync(path.join(uploadsRoot, dir), { recursive: true, force: true }); reaped++; } catch (_e) {}
+            }
+          }
+          if (reaped > 0) console.log(`[uploads] Reaped ${reaped} stale upload tempdir(s)`);
+        }
+      } catch (_err) { /* non-blocking */ }
       console.log('[db] SQLite initialized');
     } catch (err) {
       console.warn('[db] SQLite init failed:', err.message);
@@ -955,7 +976,13 @@ function createServer(config) {
       const PLAIN_SHELLS = /^(zsh|bash|fish|sh|dash|tcsh|ksh|csh|pwsh|powershell)$/i;
       const isPlainShell = PLAIN_SHELLS.test(cmdTrim);
 
-      const spawnShell = isPlainShell ? cmdTrim : (config.shell || '/bin/zsh');
+      // Sprint 59 T2 — Brad #5: resolveSpawnShell chains config.shell →
+      // $SHELL → /bin/sh so a host without zsh (Alpine, minimal Ubuntu after
+      // `apt remove zsh`) still spawns a working interactive shell instead of
+      // failing silently from execvp(/bin/zsh).
+      const spawnShell = isPlainShell
+        ? cmdTrim
+        : resolveSpawnShell('', config.shell, process.env.SHELL);
       const args = (cmdTrim && !isPlainShell) ? ['-c', cmdTrim] : [];
 
       try {
@@ -1042,6 +1069,14 @@ function createServer(config) {
           onPanelClose(session).catch((err) => {
             console.error('[onPanelClose] async error:', err && err.message ? err.message : err);
           });
+
+          // Sprint 59 T4-CODEX UPLOAD-AUDIT-CONCERN closure: blow away the
+          // per-session upload tempdir so dropped files don't outlive the panel
+          // that received them. Fire-and-forget; never blocks teardown.
+          try {
+            const sessUploadDir = path.join(os.tmpdir(), 'termdeck-uploads', session.id);
+            fs.rmSync(sessUploadDir, { recursive: true, force: true });
+          } catch (_err) { /* non-blocking */ }
         });
 
         // Wire command logging to SQLite + RAG
@@ -1291,6 +1326,47 @@ function createServer(config) {
 
     res.json({ ok: true, bytes: normalized.length, replyCount: session.meta.replyCount });
   });
+
+  // POST /api/sessions/:id/upload?name=<filename> - File drop / clipboard image paste
+  // Body: raw octet-stream of the file content (max 50MB).
+  // Writes to /tmp/termdeck-uploads/<sessionId>/<sanitizedName>, returns {ok, path, name, size}.
+  // Client typically follows up with POST /api/sessions/:id/input { text: "@<path> " } so
+  // the agent (Claude/Codex/Gemini/Grok) sees the standard @filepath attachment syntax.
+  // Added Sprint 59 (2026-05-07) to close Brad's "how do I drop a zip into Codex" gap.
+  app.post('/api/sessions/:id/upload',
+    express.raw({ type: '*/*', limit: '50mb' }),
+    (req, res) => {
+      const session = sessions.get(req.params.id);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      if (session.meta.status === 'exited' || !session.pty) {
+        return res.status(404).json({ error: 'Session is exited' });
+      }
+
+      const rawName = (req.query.name || '').toString();
+      if (!rawName) return res.status(400).json({ error: 'Missing ?name=' });
+      // Sanitize: strip path traversal + control chars; cap at 200 chars.
+      // Replace anything not alphanumeric / dash / underscore / dot / space with _
+      const safeName = rawName
+        .replace(/[\x00-\x1f\x7f/\\]/g, '_')
+        .replace(/^\.+/, '_')
+        .replace(/\.\.+/g, '_')
+        .slice(0, 200) || 'upload.bin';
+
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'Empty body' });
+      }
+
+      const uploadsRoot = path.join(os.tmpdir(), 'termdeck-uploads', session.id);
+      try {
+        fs.mkdirSync(uploadsRoot, { recursive: true, mode: 0o700 });
+        const fullPath = path.join(uploadsRoot, safeName);
+        fs.writeFileSync(fullPath, req.body, { mode: 0o600 });
+        res.json({ ok: true, path: fullPath, name: safeName, size: req.body.length });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+  );
 
   // POST /api/sessions/:id/poke - PTY-flush recovery endpoint
   // Body: { methods?: ('sigcont' | 'bracketed-paste' | 'cr-flood' | 'all')[] }  default ['all']

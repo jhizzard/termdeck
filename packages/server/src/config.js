@@ -59,8 +59,10 @@ function loadSecretsEnv() {
     const parsed = parseDotenv(raw);
     const keys = [];
     for (const [k, v] of Object.entries(parsed)) {
-      // Do not clobber pre-set process env; shell wins.
-      if (process.env[k] === undefined) {
+      // Do not clobber pre-set process env; shell wins. Sprint 59 T4-CODEX residual
+      // fix: also fill when parent env is empty string (Brad's actual failure shape
+      // includes DATABASE_URL= in the parent service environment, not only missing).
+      if (process.env[k] === undefined || process.env[k] === '') {
         process.env[k] = v;
       }
       keys.push(k);

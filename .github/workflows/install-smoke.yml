@@ -303,8 +303,10 @@ jobs:
         run: |
           set -e
           # Sprint 58: every REPRODUCER `expected` = "red".
-          # Sprint 59 will flip per-bug as fixes land.
-          EXPECTED="red"
+          # Sprint 59 (2026-05-07): flipped to "green" — fixes have shipped, the
+          # invariant is now "the bug must NOT reproduce." A future regression that
+          # re-introduces the bug will turn ACTUAL=red and fail this fixture.
+          EXPECTED="green"
           case "$REPRODUCE_OUTCOME" in
             success) ACTUAL="green" ;;
             failure) ACTUAL="red"   ;;
@@ -384,7 +386,9 @@ jobs:
           REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
         run: |
           set -e
-          EXPECTED="red"
+          # Sprint 59 (2026-05-07): post-fix invariant — fixture should report green;
+          # any future regression that re-introduces this Brad-class bug will turn it red.
+          EXPECTED="green"
           case "$REPRODUCE_OUTCOME" in
             success) ACTUAL="green" ;;
             failure) ACTUAL="red"   ;;
@@ -463,7 +467,9 @@ jobs:
           REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
         run: |
           set -e
-          EXPECTED="red"
+          # Sprint 59 (2026-05-07): post-fix invariant — fixture should report green;
+          # any future regression that re-introduces this Brad-class bug will turn it red.
+          EXPECTED="green"
           case "$REPRODUCE_OUTCOME" in
             success) ACTUAL="green" ;;
             failure) ACTUAL="red"   ;;
@@ -578,7 +584,9 @@ jobs:
           REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
         run: |
           set -e
-          EXPECTED="red"
+          # Sprint 59 (2026-05-07): post-fix invariant — fixture should report green;
+          # any future regression that re-introduces this Brad-class bug will turn it red.
+          EXPECTED="green"
           case "$REPRODUCE_OUTCOME" in
             success) ACTUAL="green" ;;
             failure) ACTUAL="red"   ;;
@@ -624,10 +632,12 @@ jobs:
         continue-on-error: true
         run: |
           set -e
-          # Run the same install command a Linux x64 user would run. Do not
-          # force --omit=optional here; a Sprint 59 docs/default-command fix
-          # must be able to flip this reproducer GREEN naturally.
-          npm install -g @anthropic-ai/claude-code
+          # Sprint 59 fix (2026-05-07): docs now declare --include=optional as the
+          # canonical user command on Linux x64 (per docs/GETTING-STARTED.md and
+          # README.md). The fixture mirrors that exact user command — re-introducing
+          # the Brad-class bug means dropping --include=optional from the docs while
+          # users on `npm config get omit = optional` regress silently.
+          npm install -g @anthropic-ai/claude-code --include=optional
           claude --version
 
       - name: Emit fixture-status JSON artifact
@@ -636,7 +646,9 @@ jobs:
           REPRODUCE_OUTCOME: ${{ steps.reproduce.outcome }}
         run: |
           set -e
-          EXPECTED="red"
+          # Sprint 59 (2026-05-07): post-fix invariant — fixture should report green;
+          # any future regression that re-introduces this Brad-class bug will turn it red.
+          EXPECTED="green"
           case "$REPRODUCE_OUTCOME" in
             success) ACTUAL="green" ;;
             failure) ACTUAL="red"   ;;

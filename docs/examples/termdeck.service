@@ -1,0 +1,84 @@
+# TermDeck — canonical systemd unit
+#
+# Drop into /etc/systemd/system/termdeck.service for a system-scope install
+# (run as root or via `sudo cp`), or into ~/.config/systemd/user/termdeck.service
+# for a per-user install (run with `systemctl --user enable --now termdeck`).
+#
+# Required Sprint 59 fixes this unit incorporates:
+#   - Brad #7 (launcher exits 0 immediately under Type=simple): the --service
+#     flag bypasses the auto-stack fire-and-forget path so the foreground
+#     ExecStart process stays alive for systemd to monitor. Without --service,
+#     plain `termdeck` auto-routes through stack.js which spawns a child and
+#     returns 0 — systemd then marks the service inactive (Restart=on-failure
+#     does not trigger on a clean exit-0).
+#   - Brad #8 (systemd does not inherit user PATH): Environment=PATH=...
+#     prepends the npm-global bin directory so spawned panels (claude, codex,
+#     gemini, grok, python, etc.) can resolve their binaries from inside a
+#     non-login PTY child of the systemd-started TermDeck process.
+#
+# Tested against:
+#   - Ubuntu 24.04 (systemd 255) — Hetzner CX22 nightly fixture
+#   - Debian 12 + Fedora 41 (smoke installs in Sprint 58 catch-net)
+#
+# See also:
+#   - docs/GETTING-STARTED.md § Running TermDeck under systemd
+#   - docs/INSTALL-FIXTURES.md § 4.5 systemd-nightly
+#   - https://www.freedesktop.org/software/systemd/man/systemd.service.html
+
+[Unit]
+Description=TermDeck browser terminal multiplexer
+Documentation=https://github.com/jhizzard/termdeck
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Default ExecStart assumes per-user npm-global install (the most common shape;
+# matches Brad's Ubuntu R730 setup and the Sprint 58 systemd-nightly fixture).
+# %h resolves to the home directory of the User= account, or to /root when no
+# User= is declared and the unit runs in system scope as root.
+ExecStart=%h/.npm-global/bin/termdeck --service
+
+# Alternative for a system-wide npm install (npm -g without a user-local prefix
+# typically lands binaries under /usr/local/bin/termdeck). Comment out the
+# default ExecStart above and uncomment this line to use it:
+# ExecStart=/usr/local/bin/termdeck --service
+
+# Brad #8 fix — systemd starts processes with a minimal PATH that excludes
+# every npm-global bin directory. Spawned panels (`claude`, `codex`, `gemini`,
+# `python`, `node`, etc.) inherit this PATH and fail with `command not found`
+# unless we prepend it explicitly here. %h again resolves to the home dir.
+Environment="PATH=%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Secrets are loaded from ~/.termdeck/secrets.env (DATABASE_URL, SUPABASE_URL,
+# SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.). The
+# launcher also self-reads this file and merges into process.env (Sprint 59
+# Brad #1 fix), so this line is belt-and-suspenders rather than load-bearing.
+EnvironmentFile=-%h/.termdeck/secrets.env
+
+# Resilience — restart on crash, but rate-limited so a tight crash loop
+# eventually surfaces as a failed unit instead of hammering the host.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# Sandboxing — TermDeck does need write access to ~/.termdeck/ for SQLite
+# persistence (sessions, command history, RAG events) and may need to write
+# session-log markdown files; keep ProtectHome=false. ProtectSystem=full
+# leaves /etc, /usr, /boot read-only without affecting /home or /root.
+ProtectSystem=full
+NoNewPrivileges=true
+
+# Forward stdout/stderr to the journal so journalctl -u termdeck.service
+# captures the startup banner and any panel-spawn errors.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# system scope: WantedBy=multi-user.target and `systemctl enable termdeck`.
+# user   scope: WantedBy=default.target and `systemctl --user enable termdeck`.
+# Default to multi-user.target (system scope) since that's what Brad and the
+# Sprint 58 fixture use; user-scope installers should swap this line.
+WantedBy=multi-user.target

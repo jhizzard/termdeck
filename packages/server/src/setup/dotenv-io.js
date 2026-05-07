@@ -40,13 +40,22 @@ function readSecretsRaw(filepath = SECRETS_PATH) {
 }
 
 // Escape a value for safe re-serialization. Wraps in double quotes if the
-// value contains whitespace, `#`, or `"`. Always safe to wrap — we wrap when
-// in doubt to avoid ambiguity with the dotenv parser.
+// value contains whitespace, `#`, or a quote char. `=` was previously in the
+// regex but excluded after Sprint 59 Brad #2 — every Postgres URL with query
+// params (e.g. `?sslmode=require`) contains `=`, and dotenv splits a line on
+// the FIRST `=` only, so subsequent `=` chars in the value need no quoting.
+// Quoting URLs broke the "writer must never add surrounding quotes to a
+// DATABASE_URL" contract; the value still round-tripped because every reader
+// strips matching quotes, but a downstream consumer that sourced the file
+// via `set -a; . secrets.env` and didn't strip would see a literal-quoted
+// value re-introduced into process.env. Keeping the regex tight to actual
+// dotenv ambiguities (whitespace, `#` for comments, embedded quote chars)
+// avoids that round-trip-but-not-quite class of bug at the source.
 function formatValue(value) {
   if (value == null) return '';
   const str = String(value);
   if (str === '') return '';
-  const needsQuoting = /[\s#"'=]/.test(str);
+  const needsQuoting = /[\s#"']/.test(str);
   if (!needsQuoting) return str;
   const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `"${escaped}"`;

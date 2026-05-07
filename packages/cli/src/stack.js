@@ -432,7 +432,7 @@ async function checkRumen() {
 
 // ── Step 4: TermDeck ────────────────────────────────────────────────
 
-function execTermDeck({ port, extra }) {
+function execTermDeck({ port, extra }, deps = {}) {
   // Spawn a fresh node process for the CLI rather than require()-ing it
   // in-process. Two reasons:
   //   1. require() hits Node's module cache after stack.js → index.js →
@@ -443,22 +443,45 @@ function execTermDeck({ port, extra }) {
   //      stack.js tried to re-require the (cached) CLI — silent exit.
   //   2. Pass --no-stack on the way back so index.js definitively skips
   //      the auto-orchestrate detection. Defensive even with the spawn.
+  //
+  // Sprint 59 T2 — Brad #7: returns Promise<exitCode> that resolves when the
+  // child exits. Pre-Sprint-59 the function returned undefined synchronously,
+  // so main() returned 0 immediately and `process.exit(0)` fired before the
+  // child had bound the port. Under `systemd Type=simple`, ExecStart=
+  // /usr/local/bin/termdeck "succeeded" in milliseconds and the cgroup tore
+  // down the orphaned child — service stuck inactive even though everything
+  // looked fine to the operator. The await in main() now blocks ExecStart
+  // for the lifetime of the child server. `deps` exposes spawn + signals as
+  // injection points for tests/launcher-service-flag.test.js.
+  const _spawn = deps.spawn || spawn;
+  const _signals = deps.signals || process;
   const cliPath = path.join(__dirname, 'index.js');
   const argv = [cliPath, '--no-stack'];
   if (port) argv.push('--port', String(port));
   argv.push(...extra);
-  const child = spawn(process.execPath, argv, {
+  const child = _spawn(process.execPath, argv, {
     stdio: 'inherit',
     env: process.env,
   });
-  child.on('exit', (code, signal) => {
-    if (signal) process.kill(process.pid, signal);
-    else process.exit(code == null ? 0 : code);
-  });
-  // Forward Ctrl+C cleanly so the spawned server can shut down.
+  // Forward Ctrl+C / systemd-stop signals cleanly so the child can flush
+  // before exit. Listeners are attached to the parent's signal source so
+  // tests can simulate signal delivery without raising real signals.
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(sig, () => { try { child.kill(sig); } catch (_e) { /* gone */ } });
+    _signals.on(sig, () => { try { child.kill(sig); } catch (_e) { /* gone */ } });
   }
+  return new Promise((resolve) => {
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        // Re-raise the signal on the parent so the caller (systemd / shell)
+        // sees the right termination state, then resolve so main() can
+        // unwind.
+        try { _signals.kill(_signals.pid, signal); } catch (_e) { /* fallthrough */ }
+        resolve(code == null ? 0 : code);
+        return;
+      }
+      resolve(code == null ? 0 : code);
+    });
+  });
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -514,8 +537,11 @@ async function main(rawArgs) {
   stepLine('4/4', 'Starting TermDeck', 'BOOT', `(port ${port})`);
   process.stdout.write(`\n  ${ANSI.bold}Stack:${ANSI.reset} ${ANSI.green}${summary.join(' | ')}${ANSI.reset}\n\n`);
 
-  execTermDeck({ port, extra: args.extra });
-  return 0;
+  // Sprint 59 T2 — Brad #7: await the child so ExecStart blocks for the
+  // child's full lifetime. Without the await, `Type=simple` units saw
+  // ExecStart return 0 in milliseconds and tore the service down.
+  const exitCode = await execTermDeck({ port, extra: args.extra });
+  return exitCode;
 }
 
 module.exports = function (argv) {
@@ -532,3 +558,6 @@ module.exports.CLAUDE_MCP_PATH_CANONICAL = CLAUDE_MCP_PATH_CANONICAL;
 module.exports.CLAUDE_MCP_PATH_LEGACY = CLAUDE_MCP_PATH_LEGACY;
 module.exports.CLAUDE_MCP_PATHS = CLAUDE_MCP_PATHS;
 module.exports.hasMnestraMcpEntry = hasMnestraMcpEntry;
+// Sprint 59 T2 — Brad #7: exposed for tests/launcher-service-flag.test.js so
+// the wait-semantics fix can be verified without a real Node child spawn.
+module.exports._execTermDeck = execTermDeck;

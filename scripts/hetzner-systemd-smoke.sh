@@ -205,31 +205,41 @@ termdeck init --mnestra --yes 2>&1 | tail -100 || log "WARN: mnestra init exited
 log "termdeck init --rumen --yes"
 termdeck init --rumen --yes 2>&1 | tail -100 || log "WARN: rumen init exited non-zero"
 
-# ── Brad #7 + #8 fixture: systemd unit deliberately reproduces both bugs ──
-log "writing fixture systemd unit at /etc/systemd/system/termdeck.service"
-log "  - Type=simple → reproduces Brad #7 (launcher's TTY check fails under non-interactive parent)"
-log "  - Environment=PATH= deliberately OMITTED → reproduces Brad #8 (~/.npm-global/bin missing)"
+# ── Brad #7 + #8 fixture: post-Sprint-59 canonical unit ──
+# Pre-Sprint-59: this script wrote a deliberately-broken unit (no --service flag,
+# no Environment=PATH=) to PROVE the fixture caught the bugs. Post-Sprint-59
+# (2026-05-07): the fixes have shipped, so we install the CANONICAL unit (mirrors
+# docs/examples/termdeck.service). The catch-net invariant is now "the canonical
+# unit MUST work" — any future regression that breaks --service or PATH wiring
+# turns this fixture RED, which is the entire point of keeping the fixture in CI.
+log "writing canonical systemd unit at /etc/systemd/system/termdeck.service"
+log "  - ExecStart uses --service (Brad #7 fix: keeps launcher in foreground for Type=simple)"
+log "  - Environment=PATH= prepends ~/.npm-global/bin (Brad #8 fix)"
 cat > /etc/systemd/system/termdeck.service <<UNIT_EOF
 [Unit]
-Description=TermDeck Multiplexer (Sprint 58 fixture — DELIBERATELY broken to catch Brad #7+#8)
-After=network.target
+Description=TermDeck browser terminal multiplexer
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/root/.npm-global/bin/termdeck --no-stack --no-open
-EnvironmentFile=/root/.termdeck/secrets.env
-# NOTE: Environment=PATH= deliberately omitted.
-#       Sprint 59 docs add the PATH= line. Until then this unit FAILS,
-#       which is exactly the proof that the fixture catches Brad #7+#8.
+ExecStart=/root/.npm-global/bin/termdeck --service
+Environment="PATH=/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=-/root/.termdeck/secrets.env
 Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=300
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 UNIT_EOF
 
 systemctl daemon-reload
-log "systemctl enable --now termdeck.service (failures are EXPECTED pre-Sprint-59)"
-systemctl enable --now termdeck.service 2>&1 || log "systemctl enable failed (expected pre-Sprint-59)"
+log "systemctl enable --now termdeck.service (post-Sprint-59 canonical unit; should stay active)"
+systemctl enable --now termdeck.service 2>&1 || log "systemctl enable failed — investigate"
 
 log "sleep 30s to let the service settle (or fail)"
 sleep 30
@@ -301,7 +311,7 @@ jq -n \
     },
     node_version: \$node_version,
     npm_version: \$npm_version,
-    fixture_intent: "Installs the checked-out TermDeck candidate, then reproduces Brad #7 (Type=simple service liveness) + Brad #8 (no Environment=PATH= for spawned non-login PTYs). Pre-Sprint-59: expected RED. Post-Sprint-59 fix: expected GREEN.",
+    fixture_intent: "Installs the checked-out TermDeck candidate + the canonical systemd unit (post-Sprint-59 shape: ExecStart=...termdeck --service, Environment=PATH=...). Verifies Brad #7 (Type=simple service liveness) + Brad #8 (PATH inherited by spawned non-login PTYs). Post-Sprint-59 expected: GREEN. Future regression that re-breaks either flag turns this RED.",
     checks: {
       systemd_is_active: {
         expected: "active",

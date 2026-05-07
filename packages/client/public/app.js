@@ -177,6 +177,15 @@
       panel.addEventListener('drop', (e) => {
         e.preventDefault();
         panel.classList.remove('drag-over');
+        panel.classList.remove('file-drop-active');
+        // External file drop (zip / image / any binary) → upload + type @path.
+        // Detected when dataTransfer.files has entries and there's no internal panel drag.
+        const files = e.dataTransfer && e.dataTransfer.files;
+        const hasInternalDrag = !!document.querySelector('.term-panel.dragging');
+        if (!hasInternalDrag && files && files.length > 0) {
+          uploadFilesAndType(panel, Array.from(files));
+          return;
+        }
         const draggedId = (() => {
           try { return e.dataTransfer.getData('text/plain'); } catch (_e) { return ''; }
         })();
@@ -188,6 +197,82 @@
         const dropAfter = (e.clientX - rect.left) > rect.width / 2;
         panel.parentNode.insertBefore(dragged, dropAfter ? panel.nextSibling : panel);
       });
+
+      // Sprint 59 scope-expansion (Brad's "drop a zip into Codex" question 2026-05-07):
+      // file drop and clipboard image paste upload to /api/sessions/:id/upload, then type
+      // @<path> via the existing /input endpoint so the agent (Claude/Codex/Gemini/Grok)
+      // sees the standard @filepath attachment syntax.
+      panel.addEventListener('dragover', (e) => {
+        const types = (e.dataTransfer && e.dataTransfer.types) || [];
+        const hasFiles = Array.from(types).includes('Files');
+        if (!hasFiles) return;
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'copy'; } catch (_e) {}
+        panel.classList.add('file-drop-active');
+      });
+
+      panel.addEventListener('dragleave', (e) => {
+        if (!panel.contains(e.relatedTarget)) panel.classList.remove('file-drop-active');
+      });
+
+      panel.addEventListener('paste', (e) => {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        const blobs = [];
+        for (const item of items) {
+          if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
+            const blob = item.getAsFile();
+            if (blob) blobs.push(blob);
+          }
+        }
+        if (blobs.length === 0) return;
+        e.preventDefault();
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const named = blobs.map((b, i) => {
+          const ext = (b.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
+          const name = b.name && b.name.length > 0
+            ? b.name
+            : `pasted-${ts}${blobs.length > 1 ? '-' + i : ''}.${ext}`;
+          return new File([b], name, { type: b.type });
+        });
+        uploadFilesAndType(panel, named);
+      });
+    }
+
+    async function uploadFilesAndType(panel, files) {
+      const sessionId = panel.id.replace(/^panel-/, '');
+      for (const file of files) {
+        try {
+          const url = `/api/sessions/${sessionId}/upload?name=${encodeURIComponent(file.name)}`;
+          const buf = await file.arrayBuffer();
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            credentials: 'same-origin',
+            body: buf,
+          });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            console.error('[upload] failed', res.status, errText);
+            continue;
+          }
+          const data = await res.json();
+          // Type "@<path> " into the panel via the existing /input endpoint so the
+          // shape matches a manually-typed @filepath. The trailing space lets the
+          // user keep typing the rest of their prompt.
+          const inputRes = await fetch(`/api/sessions/${sessionId}/input`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ text: `@${data.path} `, source: 'file-drop' }),
+          });
+          if (!inputRes.ok) {
+            const errText = await inputRes.text().catch(() => '');
+            console.error('[upload] file uploaded but typing failed', inputRes.status, errText);
+          }
+        } catch (err) {
+          console.error('[upload] exception', err);
+        }
+      }
     }
 
     // ===== Create Terminal Panel =====

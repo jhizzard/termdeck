@@ -119,11 +119,20 @@ function parseFlags(argv) {
 function inputsFromEnv() {
   const env = process.env;
   const missing = [];
+  // Brad #2 (Sprint 59): strip surrounding matched quotes from each value
+  // BEFORE shape-checks. The dotenv parsers (config.js / dotenv-io.js /
+  // launcher.js readSecrets) all strip at file-read time, but `--from-env`
+  // bypasses those — Brad's reproducer exports a literal-quoted DATABASE_URL
+  // directly into the shell's environment via
+  //   export DATABASE_URL="\"$TEST_DATABASE_URL\""
+  // and the leading `"` makes new URL() throw 'Invalid URL'. Strip here at
+  // the validator boundary so a quoted env-var value gets the same handling
+  // as a quoted secrets.env line.
   const required = {
-    SUPABASE_URL: env.SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
-    DATABASE_URL: env.DATABASE_URL,
-    OPENAI_API_KEY: env.OPENAI_API_KEY
+    SUPABASE_URL: urlHelper.stripSurroundingQuotes((env.SUPABASE_URL || '').trim()),
+    SUPABASE_SERVICE_ROLE_KEY: urlHelper.stripSurroundingQuotes((env.SUPABASE_SERVICE_ROLE_KEY || '').trim()),
+    DATABASE_URL: urlHelper.stripSurroundingQuotes((env.DATABASE_URL || '').trim()),
+    OPENAI_API_KEY: urlHelper.stripSurroundingQuotes((env.OPENAI_API_KEY || '').trim())
   };
   for (const [k, v] of Object.entries(required)) {
     if (!v || !v.trim()) missing.push(k);
@@ -155,7 +164,7 @@ function inputsFromEnv() {
   const oaErr = urlHelper.looksLikeOpenAiKey(required.OPENAI_API_KEY);
   if (oaErr) throw new Error(`OPENAI_API_KEY: ${oaErr}`);
 
-  const anthropicKey = (env.ANTHROPIC_API_KEY || '').trim() || null;
+  const anthropicKey = urlHelper.stripSurroundingQuotes((env.ANTHROPIC_API_KEY || '').trim()) || null;
   if (anthropicKey) {
     const aErr = urlHelper.looksLikeAnthropicKey(anthropicKey);
     if (aErr) {

@@ -18,6 +18,23 @@ The full stack in four tiers. Each tier is independent — stop wherever you hav
 | **OpenAI API key** | 2+ | For `text-embedding-3-large` embeddings in Mnestra |
 | **Anthropic API key** | 3 | For Haiku synthesis in Rumen |
 | **Supabase CLI + Deno** | 3 | Required only for Edge Function deployment |
+| **Claude Code (or another AI CLI)** | optional | TermDeck panels run *any* command; Claude Code (`claude`) is the default. Install: `npm install -g @anthropic-ai/claude-code` (Linux x64: see hint below). |
+
+### Linux x64 install hint
+
+The pass-`--include=optional` rule for npm-globally-suppressed optional deps. Both `@jhizzard/termdeck-stack` and `@anthropic-ai/claude-code` ship platform-specific native binaries via npm `optionalDependencies`. On macOS this is invisible — npm installs the matching binary automatically. **On Linux x64, if your environment has set `omit=optional`** (check with `npm config get omit`; common in CI images, slim Docker bases, or after running `npm install --omit=optional` once at user-config level), npm silently skips the platform binary and the installed `claude` stub fails `claude --version` with a missing-binary error. The fix is to pass `--include=optional` explicitly on the install:
+
+```bash
+# macOS (default behavior is already correct, but the flag is harmless)
+npm install -g @jhizzard/termdeck-stack
+npm install -g @anthropic-ai/claude-code
+
+# Linux x64 (mandatory if `npm config get omit` returns `optional`)
+npm install -g @jhizzard/termdeck-stack --include=optional
+npm install -g @anthropic-ai/claude-code --include=optional
+```
+
+If you've already installed without the flag and `claude --version` fails, re-install with the flag — npm will pick up the missed platform binary on the second pass. This affects any `optionalDependencies`-using package; the flag is a safe always-on choice on Linux x64.
 
 ---
 
@@ -118,6 +135,8 @@ Create a project at [supabase.com](https://supabase.com). Copy **Project URL** a
 ### Step 2 — Get your DATABASE_URL
 
 Dashboard > **Connect** (green button) > **Transaction pooler** tab > **toggle ON "Use IPv4 connection (Shared Pooler)"** (this is critical — see [RUMEN-UNBLOCK.md](./RUMEN-UNBLOCK.md) gotcha #1). Copy the displayed URL. Type your password in the password field at the top — it substitutes into the URL.
+
+> **Note on pooler URL query parameters.** Supabase's Transaction pooler URL often appears as `...pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`. Those `pgbouncer=true` and `connection_limit=1` parameters are **Prisma-specific hints** that Prisma's connection-string parser strips before opening the underlying `pg` connection. `psql` and other plain-`pg` clients (including TermDeck's wizard and `mnestra doctor` probes) treat them as unknown libpq params and emit a harmless `WARNING: invalid configuration parameter` on connect. The cross-client portable form is plain `?sslmode=require` — both shapes work, the Prisma-specific form just adds noise to `psql` output. **Either is safe to paste** into `DATABASE_URL`; if you want a clean `psql` log, trim back to `?sslmode=require`. Do not surround the value with quotes — the URL parser does not strip them and you'll see `Invalid URL`.
 
 ### Step 3 — Apply migrations
 
@@ -389,6 +408,83 @@ Restart TermDeck. Check:
 4. Panel header shows project tag with theme color
 5. Open Claude Code in a panel — it should immediately call `memory_recall`
 6. Ask Claude Code "where is the [project-name] project?" — it should answer from the directory map, not search blindly
+
+---
+
+## Running TermDeck under systemd (Linux always-on launch)
+
+Skip this section if you launch TermDeck interactively from a shell — `termdeck` (Tier 1+) or `termdeck-stack start` (Tier 2+) covers that case and is the recommended path on a workstation.
+
+Use systemd when you want TermDeck to start automatically on boot, restart on crash, and run unattended on a Linux server (Hetzner, DigitalOcean, a home-lab box, etc.). The canonical unit lives at **[`docs/examples/termdeck.service`](./examples/termdeck.service)** — copy it into place rather than authoring your own; it incorporates two non-obvious fixes you would otherwise have to debug yourself:
+
+| Fix | Why it's required |
+|---|---|
+| `ExecStart=...termdeck --service` (the `--service` flag) | Plain `termdeck` auto-routes through the stack launcher (`stack.js`), which spawns the real TermDeck server as a detached child and *returns 0* immediately. systemd's `Type=simple` interprets the exit-0 as a clean shutdown and marks the service inactive — `Restart=on-failure` does NOT trigger on clean exits. The `--service` flag (added Sprint 59) bypasses the auto-stack fire-and-forget path so the foreground process stays alive for systemd to monitor. **Without it, your unit will appear to start, then immediately go inactive.** |
+| `Environment="PATH=%h/.npm-global/bin:..."` | systemd starts processes with a minimal PATH (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`). Every npm-global bin directory — including `~/.npm-global/bin` (where `termdeck`, `claude`, `codex`, `gemini` typically live) — is invisible. PTY children spawned by TermDeck inherit this minimal PATH, so panels launching `claude` or any global CLI fail silently with `command not found`. The `Environment=PATH=...` line prepends the npm-global directory so panel-spawn works inside the systemd-supervised process. |
+
+### Step 1 — Install the unit
+
+System scope (run as root or via sudo; service starts at boot for all users):
+
+```bash
+sudo cp docs/examples/termdeck.service /etc/systemd/system/termdeck.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now termdeck.service
+```
+
+User scope (per-user, no sudo; service starts when the user logs in if `loginctl enable-linger <user>` is set):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp docs/examples/termdeck.service ~/.config/systemd/user/termdeck.service
+# Edit the [Install] section to swap WantedBy=multi-user.target → WantedBy=default.target
+systemctl --user daemon-reload
+systemctl --user enable --now termdeck.service
+loginctl enable-linger "$(whoami)"   # so the unit survives logout
+```
+
+Adjust `ExecStart` if your `termdeck` binary lives somewhere other than `~/.npm-global/bin/termdeck` — the canonical unit has a commented-out `ExecStart=/usr/local/bin/termdeck --service` alternative for system-wide npm installs. Run `which termdeck` to confirm your path.
+
+### Step 2 — Verify
+
+```bash
+sudo systemctl is-active termdeck.service       # expect: active
+sudo systemctl status termdeck.service          # expect: Active: active (running)
+curl -sf http://localhost:3000/api/health       # expect: 200, {"status":"ok",...}
+sudo journalctl -u termdeck.service -n 50 --no-pager
+```
+
+If any of these fail, see the troubleshooting table below for the most common cases.
+
+### Step 3 — Confirm panel-spawn under systemd PATH
+
+The Brad #8 fix is only effective if `Environment=PATH=...` actually exposes the global npm bin to spawned PTYs. Confirm by spawning a panel that invokes a global CLI:
+
+```bash
+curl -sS -X POST http://localhost:3000/api/sessions \
+  -H 'content-type: application/json' \
+  -d '{"command":"claude --version"}' \
+  | jq -r '.id'                                  # capture the session id
+sleep 5
+curl -sS http://localhost:3000/api/sessions/<id> \
+  | jq '{status: .meta.status, exit: .meta.exitCode, detail: .meta.statusDetail}'
+# Expect: status="exited", exit=0, detail unset
+```
+
+`exit=127` or `detail` containing `command not found` means PATH is still wrong — re-check the `Environment=PATH=...` line in your unit and that `which claude` (run as the same user the unit runs under) succeeds.
+
+### systemd troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `systemctl is-active termdeck.service` reports `inactive` immediately after `enable --now` | Missing `--service` flag — launcher fire-and-forget exits 0 (Brad #7) | Confirm `ExecStart=...termdeck --service` (NOT bare `termdeck`); restart with `systemctl restart termdeck.service` |
+| Service is `active` but `curl /api/health` returns nothing | Health bind hasn't completed yet | Wait 15-30s after start; if still nothing, check `journalctl -u termdeck.service -n 100` for bind errors |
+| Service is `active` but Claude / Codex panels fail with `command not found` | PATH not inheriting `~/.npm-global/bin` (Brad #8) | Confirm `Environment="PATH=%h/.npm-global/bin:..."` is in the unit; `systemctl daemon-reload && systemctl restart termdeck.service` |
+| `EnvironmentFile=-%h/.termdeck/secrets.env` skipped silently | The leading `-` makes the file optional; secrets are missing | Verify file exists and is readable by the User= account; check `journalctl` for secret-related errors. The launcher's `--service` mode also self-reads `~/.termdeck/secrets.env` (Brad #1 fix) so EnvironmentFile is belt-and-suspenders. |
+| Service crashes on boot with `Permission denied` writing SQLite | `ProtectHome=true` (not in canonical unit, but a common over-hardening copy-paste) | Remove any `ProtectHome=true` line — TermDeck needs write access to `~/.termdeck/` |
+| Service runs but TermDeck UI in browser shows port mismatch | Default port 3000 collides with another service | Add `--port 3001` (or similar) to the ExecStart; also update any reverse-proxy config |
+
+For the full reproducer infrastructure that catches systemd regressions, see `docs/INSTALL-FIXTURES.md` § 4.5 systemd-nightly (a Hetzner CX22 VM provisioned and torn down nightly to verify the unit still works against fresh OS images).
 
 ---
 

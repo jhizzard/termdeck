@@ -14,7 +14,93 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { exec, execSync } = require('child_process');
+const { exec, execSync, spawn } = require('child_process');
+
+// Sprint 59 — Brad #1 nohup-secrets bootstrap.
+//
+// Brad's environment: `nohup termdeck --no-stack ...` from a shell that has
+// NOT sourced ~/.termdeck/secrets.env. In-process `setenv()` (which Node's
+// loadSecretsEnv() uses) updates libc's `environ` pointer but does NOT
+// propagate to /proc/<pid>/environ on Linux glibc — the kernel reads from
+// the env_start..env_end memory range fixed at execve() time, and new keys
+// added via setenv() get heap-allocated outside that range. A probe that
+// introspects /proc therefore sees the empty initial env.
+//
+// Fix: when launched in non-TTY mode (nohup detaches stdin/stdout/stderr)
+// AND secrets.env exists with at least one key not already in process.env,
+// spawn a detached child node with the merged env and exit the parent. The
+// child's /proc/<pid>/environ contains the merged keys because spawn() goes
+// through fork+execve(), which sets the kernel env range with the new env.
+//
+// Guards (must ALL be true to spawn-and-exit):
+//   1. __TERMDECK_BOOTSTRAPPED env marker absent (we're the original entry,
+//      not the re-execed child).
+//   2. argv[0] is NOT a subcommand we hand off (`init`, `forge`, `doctor`,
+//      `stack`). Those subcommands have their own env-loading paths
+//      (init's --from-env, doctor's dotenv-io reader, stack's loadSecrets)
+//      and run interactively under piped stdio in tests / CI. Brad's bug
+//      is specifically the default server-launch path; bootstrap there.
+//   3. neither stdout nor stderr is a TTY (interactive `termdeck` keeps the
+//      legacy in-process loadSecretsEnv path so Ctrl+C / signal handling /
+//      user-visible boot output stay attached to the user's terminal).
+//   4. argv does NOT include --service or --non-interactive (T2 owns those
+//      flags for systemd Type=simple; that path runs in foreground so
+//      systemd's cgroup-tracked main process stays alive).
+//   5. ~/.termdeck/secrets.env exists.
+//   6. parsing the file yields at least one key that is NOT already in
+//      process.env (don't clobber pre-set shell vars; user env wins).
+function maybeBootstrapAndDetach() {
+  if (process.env.__TERMDECK_BOOTSTRAPPED === '1') {
+    delete process.env.__TERMDECK_BOOTSTRAPPED;
+    return false;
+  }
+  const argv = process.argv.slice(2);
+  const SKIP_SUBCOMMANDS = new Set(['init', 'forge', 'doctor', 'stack']);
+  if (argv.length > 0 && SKIP_SUBCOMMANDS.has(argv[0])) return false;
+  if (process.stdout.isTTY || process.stderr.isTTY) return false;
+  const argvSet = new Set(argv);
+  if (argvSet.has('--service') || argvSet.has('--non-interactive')) return false;
+  const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
+  if (!fs.existsSync(secretsPath)) return false;
+
+  let raw;
+  try { raw = fs.readFileSync(secretsPath, 'utf-8'); }
+  catch (_e) { return false; }
+
+  const merged = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
+    let val = trimmed.slice(eq + 1).trim();
+    if (val.length >= 2 && (val[0] === '"' || val[0] === "'") && val[val.length - 1] === val[0]) {
+      val = val.slice(1, -1);
+    }
+    // Sprint 59 T4-CODEX residual fix: file value fills when parent env is undefined
+    // OR empty string (Brad's actual failure shape includes parent env present-but-blank,
+    // not only missing entirely). Non-empty parent env still wins.
+    if (process.env[key] === undefined || process.env[key] === '') merged[key] = val;
+  }
+  if (Object.keys(merged).length === 0) return false;
+
+  const env = { ...process.env, ...merged, __TERMDECK_BOOTSTRAPPED: '1' };
+  const child = spawn(process.execPath, [__filename, ...process.argv.slice(2)], {
+    env,
+    stdio: 'inherit',
+    detached: true,
+  });
+  child.unref();
+  // Parent exits immediately. The fixture's TD_PID points at the parent
+  // process; once the parent dies, /proc/<TD_PID>/environ becomes unreadable
+  // and the fixture's pgrep fallback finds the child (which has the merged
+  // env in its /proc/<pid>/environ via execve). The child keeps running.
+  process.exit(0);
+}
+
+maybeBootstrapAndDetach();
 
 // Sprint 35 T4: stale-port reclaim. If the target port is held by a previous
 // TermDeck instance (crash, runaway, prior `termdeck` left orphaned), kill it
@@ -215,9 +301,24 @@ const noStackIdx = args.indexOf('--no-stack');
 const noStackRequested = noStackIdx !== -1;
 if (noStackRequested) args.splice(noStackIdx, 1); // strip before flag parsing
 
+// Sprint 59 T2 — Brad #7: --service / --non-interactive flag for systemd
+// Type=simple deployment. When set, the launcher must (a) skip browser
+// auto-open (no DISPLAY in service contexts), (b) bypass the auto-orchestrate
+// child-spawn detour so ExecStart=/usr/local/bin/termdeck --service blocks
+// for the lifetime of the server (Type=simple sees an active foreground
+// process), (c) be tolerated everywhere `--no-stack` is. Strip both aliases
+// repeatedly so duplicates don't survive into the flag-parsing loop.
+let serviceMode = false;
+while (true) {
+  const idx = args.findIndex((a) => a === '--service' || a === '--non-interactive');
+  if (idx === -1) break;
+  serviceMode = true;
+  args.splice(idx, 1);
+}
+
 const wantsHelp = args.includes('--help') || args.includes('-h');
 
-if (!KNOWN_SUBCOMMANDS.has(args[0]) && !noStackRequested && !wantsHelp && shouldAutoOrchestrate()) {
+if (!KNOWN_SUBCOMMANDS.has(args[0]) && !noStackRequested && !serviceMode && !wantsHelp && shouldAutoOrchestrate()) {
   const stack = require(path.join(__dirname, 'stack.js'));
   stack(args).then((code) => process.exit(code || 0)).catch((err) => {
     console.error('[cli] auto-stack failed:', err && err.stack || err);
@@ -243,6 +344,8 @@ for (let i = 0; i < args.length; i++) {
     termdeck                    Auto-orchestrate stack if configured, else Tier-1-only
     termdeck stack              Force boot Mnestra + check Rumen + start TermDeck
     termdeck --no-stack         Skip orchestrator (force Tier-1-only boot)
+    termdeck --service          Non-interactive foreground mode for systemd Type=simple
+                                (alias: --non-interactive; implies --no-stack + --no-open)
     termdeck --port 8080        Start on custom port
     termdeck --no-open          Don't auto-open browser
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
@@ -275,6 +378,16 @@ const { runPreflight, printHealthBanner } = require(path.join(__dirname, '..', '
 // reads process.env at require-time sees them.
 if (flags.sessionLogs) {
   process.env.TERMDECK_SESSION_LOGS = '1';
+}
+
+// Sprint 59 T2 — Brad #7: --service implies --no-open. The browser auto-open
+// path runs `xdg-open` / `open` which has no meaning under systemd (no
+// DISPLAY) and would just dump a non-fatal error to stderr/journalctl every
+// boot. Honoring serviceMode here is in addition to the auto-orchestrate
+// bypass above — a user could pass `--no-stack --service` and we still want
+// noOpen to win.
+if (serviceMode) {
+  flags.noOpen = true;
 }
 
 // First-run detection (Sprint 19 T3): surface a one-line hint pointing at
