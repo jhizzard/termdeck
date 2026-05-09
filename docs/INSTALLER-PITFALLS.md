@@ -144,6 +144,7 @@ Each entry: incident date, version(s) involved, symptom, root cause, fix, failur
   3. **Symptom-side regardless:** Add to `mnestra doctor` (planned for upcoming release) — if `rumen-tick` runs N consecutive cycles with `sessions_processed=0 AND insights_generated=0`, surface a one-line warning. Brad's "silent no-op" pattern is what hid this for 6 days.
 - **Status:** Captured as **P0** in `docs/BACKLOG.md`. Suggested sprint shape: "Stack-installer upgrade-aware migration detection."
 - **Class:** **A — Schema drift** (primary), **I — Silent no-op** (compounding).
+- **2026-05-09 soak-check:** clean — 1-week post-fix probe sent to Josh; verify locally before final close.
 
 ### #14 — Multi-arg `supabase secrets set` drops + Vault UI removal + Edge Function env friction (2026-05-03 — Brad's 4-project install pass)
 
