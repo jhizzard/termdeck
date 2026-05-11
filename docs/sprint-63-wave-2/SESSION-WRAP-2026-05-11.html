@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TermDeck — Session Wrap 2026-05-11 — Sprint 62 publish + Sprint 63 = Wave 2</title>
+<style>
+:root {
+  --bg: #0f1218; --fg: #e8eaed; --muted: #98a1b3; --accent: #7ec3ff;
+  --border: #232936; --panel: #161b25; --good: #4caf50; --warn: #f5a623; --bad: #ef5350;
+  --code-bg: #0a0d13; --code-fg: #d4d4d4;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.55 -apple-system, "SF Pro Text", system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+.layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+nav.toc {
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  background: var(--panel); border-right: 1px solid var(--border); padding: 24px 20px;
+  font-size: 13px;
+}
+nav.toc h1 { font-size: 14px; margin: 0 0 16px; color: var(--accent); }
+nav.toc ul { list-style: none; padding: 0; margin: 0; }
+nav.toc li { margin: 6px 0; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--fg); }
+nav.toc .sub { margin-left: 14px; font-size: 12px; }
+main { padding: 32px 48px; max-width: 920px; }
+h1, h2, h3, h4 { color: var(--fg); margin-top: 1.8em; }
+h1.title { font-size: 26px; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+h2 { font-size: 20px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+h3 { font-size: 16px; color: var(--accent); }
+h4 { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+p { margin: 8px 0; }
+strong { color: var(--fg); }
+em { color: var(--muted); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); color: var(--code-fg); padding: 1px 5px; border-radius: 3px; }
+pre { background: var(--code-bg); color: var(--code-fg); padding: 14px 18px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--border); font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+th { color: var(--accent); font-weight: 600; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.pill.good { background: rgba(76,175,80,.15); color: var(--good); }
+.pill.warn { background: rgba(245,166,35,.15); color: var(--warn); }
+.pill.bad { background: rgba(239,83,80,.15); color: var(--bad); }
+.callout { background: var(--panel); border-left: 3px solid var(--accent); padding: 14px 18px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+.callout.green { border-color: var(--good); }
+.callout.yellow { border-color: var(--warn); }
+.timeline { list-style: none; padding-left: 0; }
+.timeline li { border-left: 2px solid var(--border); padding: 4px 0 10px 16px; margin-left: 8px; position: relative; }
+.timeline li::before { content: ""; position: absolute; left: -6px; top: 7px; width: 10px; height: 10px; background: var(--accent); border-radius: 50%; }
+.timeline .ts { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+hr { border: 0; border-top: 1px solid var(--border); margin: 32px 0; }
+footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <h1>Session Wrap — 2026-05-11</h1>
+  <ul>
+    <li><a href="#tl-dr">TL;DR</a></li>
+    <li><a href="#timeline">Timeline of the day</a></li>
+    <li><a href="#wave-1">Wave 1 — Sprint 62 publish + fold-ins</a>
+      <ul class="sub">
+        <li><a href="#mnestra-049">mnestra@0.4.9</a></li>
+        <li><a href="#termdeck-111">termdeck@1.1.1</a></li>
+      </ul>
+    </li>
+    <li><a href="#wave-2">Wave 2 — Sprint 63</a>
+      <ul class="sub">
+        <li><a href="#t1">T1 — Crash class</a></li>
+        <li><a href="#t2">T2 — Empirical proof</a></li>
+        <li><a href="#t3">T3 — Diagnostic surface</a></li>
+        <li><a href="#t4">T4-CODEX — Auditor</a></li>
+      </ul>
+    </li>
+    <li><a href="#codex-catches">Codex adversarial catches</a></li>
+    <li><a href="#live-proof">Live acceptance proof</a></li>
+    <li><a href="#convergence">Convergence to MacBook Air</a></li>
+    <li><a href="#sprint-64">Sprint 64 candidates</a></li>
+    <li><a href="#restart">Restart instructions</a></li>
+    <li><a href="#resume">Resume command</a></li>
+  </ul>
+</nav>
+
+<main>
+<h1 class="title">TermDeck — Session Wrap 2026-05-11 (Monday)</h1>
+<p><em>Two npm publish waves shipped (Sprint 62 + Sprint 63 = Wave 2). Investigation 1 of <code>CRITICAL-READ-FIRST-2026-05-07</code> closes on acceptance grounds, verified live during sprint close.</em></p>
+
+<h2 id="tl-dr">TL;DR</h2>
+<ul>
+  <li><strong>Morning wave (Sprint 62 + 2026-05-11 fold-ins):</strong> <code>@jhizzard/mnestra@0.4.9</code> + <code>@jhizzard/termdeck@1.1.1</code> + <code>@jhizzard/termdeck-stack@1.1.1</code>. Cross-agent <code>/exit</code> capture closure on code/test grounds + Brad's EADDRINUSE catch + SQLite ABI fail-fast.</li>
+  <li><strong>Afternoon wave (Sprint 63 = Wave 2):</strong> <code>@jhizzard/termdeck@1.2.0</code> + <code>@jhizzard/termdeck-stack@1.2.0</code>. Crash class (PTY-leak, WS ioctl, body-parser, 410 Gone) + diagnostic surface (launcher Step 3, health taxonomy, shell -l drop) + empirical /exit-capture acceptance + gemini .jsonl filter.</li>
+  <li><strong>Investigation 1 closed on acceptance grounds.</strong> At 14:23:33-43 ET, Joshua's 4 lane panels (3 Claude + 1 Codex) all wrote <code>session_summary</code> rows to Mnestra within 10 seconds of /exit. Real-world live proof.</li>
+  <li><strong>Adversarial Codex paid off again.</strong> 4 AUDIT-CONCERNs, 3 load-bearing.</li>
+  <li><strong>Next: Sprint 64</strong> = install-polish wizard + Wave 2 carve-outs + Mnestra companion patch + Investigation 2. After Sprint 64, MacBook Air clean-install dogfood becomes runnable.</li>
+</ul>
+
+<h2 id="timeline">Timeline of the day (US Eastern)</h2>
+<ul class="timeline">
+  <li><span class="ts">~12:45</span> Session opens. Brad's two 2026-05-11 reports (EADDRINUSE 42K-crash 5d storm + SQLite ABI 21MB log cascade) reviewed.</li>
+  <li><span class="ts">12:58</span> Engram commit <code>f917c85</code> with EADDRINUSE fold-in pushed.</li>
+  <li><span class="ts">12:59</span> TermDeck commit <code>6d64fea</code> with SQLite ABI fail-fast pushed (after gitleaks scrub of 6 forbidden literals).</li>
+  <li><span class="ts">13:00</span> WhatsApp to Brad: morning publishes confirmed (1.1.1 / 0.4.9 / 1.1.1).</li>
+  <li><span class="ts">13:04</span> Sprint 63 = Wave 2 docs staged (PLANNING.md, STATUS.md, T1/T2/T3/T4 briefs, inject script).</li>
+  <li><span class="ts">13:10</span> 4-panel inject: 3 Claude workers + 1 Codex auditor. All 4 reasoning within 8s.</li>
+  <li><span class="ts">13:13-13:33</span> T4-CODEX catches 4 AUDIT-CONCERNs in real-time (3 load-bearing).</li>
+  <li><span class="ts">13:22</span> T1 DONE first pass; <span class="ts">13:33</span> re-engaged for T4's body-parser concern.</li>
+  <li><span class="ts">13:26</span> T4-CODEX shell-block (<code>exec_command</code> exit -1). Auditor self-flags verification gap.</li>
+  <li><span class="ts">13:33-13:43</span> T3 DONE first pass + re-engaged for outer-catch concern.</li>
+  <li><span class="ts">13:43</span> T2 FINDING: 1/4 acceptance with 3 silent-skip surfaces root-caused (gemini .jsonl, codex cross-panel, &lt;5-msg).</li>
+  <li><span class="ts">13:46</span> ORCH FINDING: codex auto-update lifecycle hazard root-caused for T2's bada8478 panel.</li>
+  <li><span class="ts">13:51</span> ORCH SCOPE: narrow T2 to land Finding #2 inline; defer #1+#3 to Sprint 64.</li>
+  <li><span class="ts">13:59</span> T4-CODEX FINAL-VERDICT YELLOW.</li>
+  <li><span class="ts">14:02</span> ORCH PSQL-PROXY: independent verification shows 2/4 live (claude + codex retry).</li>
+  <li><span class="ts">14:03</span> T2 DONE: Finding #2 landed, 119/119 root tests green.</li>
+  <li><span class="ts">14:05</span> Sprint 63 close: commit <code>7375d2a</code> pushed.</li>
+  <li><span class="ts">14:20</span> npm publish wave: termdeck@1.2.0 + termdeck-stack@1.2.0.</li>
+  <li><span class="ts">14:23:33-43</span> Joshua closes all 4 lane panels. <strong>4/4 wrote session_summary to Mnestra within 10s.</strong> Investigation 1 acceptance closure captured live.</li>
+  <li><span class="ts">14:30</span> Wrap artifacts: PLANNING Resolution + RESTART-PROMPT-2026-05-11 + this HTML.</li>
+</ul>
+
+<h2 id="wave-1">Wave 1 — Sprint 62 publish + 2026-05-11 fold-ins</h2>
+
+<h3 id="mnestra-049">@jhizzard/mnestra@0.4.9</h3>
+<ul>
+  <li><strong>EADDRINUSE catch</strong> — <code>src/webhook-server.ts:308</code>. Attaches <code>server.on('error')</code> before <code>listen()</code>; on EADDRINUSE emits one clean stderr line and <code>process.exit(0)</code> instead of throwing. Kills Brad's 42K-crash 5d log accumulation cold.</li>
+  <li>ws-polyfill for Node &lt;22 RealtimeClient (originally 0.4.8, rolled into 0.4.9).</li>
+  <li>Migration 021: project-tag canonicalize claimguard (818 rows merged).</li>
+  <li>Migration 022: source_agent backfill (98% → 4.36% NULL residual).</li>
+  <li><code>include_null_source</code> recall flag.</li>
+</ul>
+
+<h3 id="termdeck-111">@jhizzard/termdeck@1.1.1</h3>
+<ul>
+  <li><strong>SQLite ABI fail-fast</strong> — <code>packages/server/src/index.js:19</code>. Narrow catch on <code>ERR_DLOPEN_FAILED + NODE_MODULE_VERSION</code>; logs exact <code>npm rebuild better-sqlite3</code> hint and exits 1 instead of cascading into null-handle storm. Other require failures preserve graceful fallback.</li>
+  <li>Adapter session-end writer production-wiring fence tests (Sprint 62, 8 tests).</li>
+  <li>Bundled mirrors of migrations 021 + 022; MIGRATION_PROBES entries.</li>
+  <li>Document-level capture-phase image-paste handler (closes post-1.1.0 paste regression).</li>
+</ul>
+
+<h2 id="wave-2">Wave 2 — Sprint 63 = @jhizzard/termdeck@1.2.0</h2>
+
+<div class="callout green">
+<strong>Pattern:</strong> 3+1+1 = 3 Claude worker lanes (T1/T2/T3) + 1 Codex auditor (T4) + orchestrator.
+Wall-clock ~3h inject-to-FINAL-VERDICT.
+</div>
+
+<h3 id="t1">T1 — Crash class <span class="pill good">AUDIT-OK</span></h3>
+<p>Closes Brad's r730 §4.1 (body-parser flood) + §4.2 (WS ioctl + PTY accumulation) + 410 Gone semantics.</p>
+<ul>
+  <li><strong>PTY-leak fix</strong> at <code>index.js:1211-1256</code> — <code>session.pty = null</code> on <code>term.onExit</code> after <code>onPanelClose</code> fires. Root cause of Joshua's 5/8-5/9 overnight ptmx_max=511 exhaustion.</li>
+  <li><strong>WS ioctl race</strong> — <code>isPtyRaceError()</code> race-class classifier; <code>safelyResizePty</code> short-circuits on <code>_destroyed</code>; DELETE stamps the flag; outer catch downgrades EBADF/ENOTTY to debug.</li>
+  <li><strong>410 Gone</strong> — POST <code>/api/sessions/:id/resize</code> distinguishes 404 (never existed) from 410 (exited).</li>
+  <li><strong>body-parser raw-body</strong> — <code>req.rawBody</code> capture + hex-escape 32-byte prefix log.</li>
+  <li><strong>33+ fence tests</strong> including production-path body-parser fence (closes T4's 13:20 ET concern).</li>
+</ul>
+
+<h3 id="t2">T2 — Empirical /exit-capture proof <span class="pill warn">PARTIAL-YELLOW</span></h3>
+<p>The priority lane. Drove 4 canary sessions via REST API; probed Mnestra dual-schema.</p>
+
+<table>
+<tr><th>Adapter</th><th>Schema A (memory_items)</th><th>Schema B (memory_sessions)</th><th>Result</th></tr>
+<tr><td>claude-code</td><td>✓ 9 msgs / 2532 bytes</td><td>✓ matched session_id</td><td><span class="pill good">PASS</span></td></tr>
+<tr><td>codex (retry)</td><td>✓ 7 msgs / 2422 bytes</td><td>✓ matched session_id</td><td><span class="pill good">PASS (post-update)</span></td></tr>
+<tr><td>gemini</td><td>0 rows</td><td>0 rows</td><td><span class="pill bad">FAIL — Finding #2 (fixed inline)</span></td></tr>
+<tr><td>grok</td><td>0 rows</td><td>0 rows</td><td><span class="pill bad">FAIL — Finding #3 (Sprint 64)</span></td></tr>
+</table>
+
+<p><strong>Finding #2 LANDED inline</strong> — <code>packages/server/src/agent-adapters/gemini.js:86</code> filter <code>!name.endsWith('.json')</code> → accept both <code>.json</code> AND <code>.jsonl</code>. Gemini CLI changed format between 2026-05-02 and 2026-05-08; every gemini session since produced zero Mnestra rows. One-line filter fix + 5 fence tests.</p>
+
+<p><strong>Findings #1 + #3 deferred to Sprint 64:</strong></p>
+<ul>
+  <li>Codex <code>resolveTranscriptPath</code> cross-panel contamination at <code>codex.js:181-194</code> — mtime-desc-then-first-cwd-match returns stale rollout files from other codex panels when target dies pre-rollout. Needs fresher mtime-vs-spawn-time gate.</li>
+  <li><code>&lt;5 messages</code> threshold at <code>memory-session-end.js:576</code> — silent-skip on short conversations even when bytes &gt; 5KB.</li>
+  <li><strong>Bonus finding:</strong> codex CLI auto-update lifecycle hazard — automated spawn of stale codex CLI self-exits before any work happens (no <code>--no-update</code> flag).</li>
+  <li><strong>Bonus finding:</strong> <code>spawnTerminalSession</code> ignores adapter.spawn config; wraps every adapter as <code>zsh -c &lt;command&gt;</code> regardless.</li>
+</ul>
+
+<h3 id="t3">T3 — Diagnostic surface <span class="pill good">AUDIT-OK</span></h3>
+<p>Closes Brad §4.4 (launcher Step 3) + §4.5 (probe drift + health semantics) + §4.6 (PTY shell health-check) + §3 #3 (his 2026-05-11 reframe).</p>
+<ul>
+  <li><strong>stack.js:413</strong> — <code>MAX(created_at)</code> → <code>MAX(started_at)</code> on rumen_jobs. Sprint 35 doctor fix finally propagated to launcher. Catch tightened to emit actionable column-not-exist message.</li>
+  <li><strong>health.js</strong> — full <code>red:&lt;category&gt;</code> taxonomy (UNREACHABLE / TIMEOUT / DEPENDENCY_DOWN / INIT_FAILED). Classifiers for HTTP + DB. Outer-catch hardening at <code>:506-572</code> with invariant fence ("no non-pass row anywhere lacks a category"). Log-once init-failed gate. Dependent-propagation (one root cause, not 6 independent REDs).</li>
+  <li><strong>preflight.js:264</strong> — drop <code>-l</code> login-mode from shell-spawn (Brad's conda profile was 3s-timing-out the probe).</li>
+  <li><strong>28 fence tests.</strong></li>
+</ul>
+
+<h3 id="t4">T4-CODEX — Adversarial auditor <span class="pill warn">YELLOW final-verdict</span></h3>
+<p>Codex caught 4 AUDIT-CONCERNs in real-time (3 load-bearing). Self-flagged a shell-sandbox failure at 13:26 ET and proposed the orchestrator-psql-proxy plan. Honest auditor.</p>
+
+<h2 id="codex-catches">Codex adversarial catches (load-bearing detail)</h2>
+<ol>
+  <li><strong>13:13 ET — T2 brief named non-existent <code>mnestra_session_summary</code> table.</strong> The brief I authored named the table; T2 would have queried it, returned 0 rows, and reported PROOF FAILED — when the system was actually writing correctly to <code>memory_sessions</code>. Codex's independent schema probe caught this.</li>
+  <li><strong>13:20 ET — T1's body-parser fence rebuilt middleware in test instead of driving production <code>createServer</code>.</strong> A production miswire could have passed the rebuilt-middleware test. T1's re-engage added a real production-path fence.</li>
+  <li><strong>13:27 ET — T3's outer-catch fallbacks at <code>health.js:506-533</code> still emitted uncategorized non-pass checks</strong> despite the new taxonomy. T3's re-engage added an invariant fence that locks "no non-pass row anywhere in the report lacks a category."</li>
+  <li><strong>13:29 ET — T4 self-flagged the shell-block as a Phase 2 verification gap.</strong> Auditor honesty matters; ORCH ran psql proxy as substrate at 14:02 ET.</li>
+</ol>
+<p>Plus minor: 13:12 ET — T2's BOOTED post used <code>####</code> not <code>###</code> (post-shape rule). Fixed.</p>
+
+<h2 id="live-proof">Live acceptance proof — Investigation 1 closed</h2>
+<div class="callout green">
+At <strong>14:23:33-43 ET</strong>, Joshua closed all 4 lane panels. All 4 wrote <code>session_summary</code> to Mnestra within 10 seconds.
+</div>
+<pre><code>source_agent | sess     | bytes | et_created
+-------------+----------+-------+-----------
+claude       | bb1e465c |  4088 | 14:23:33
+claude       | 430e256f |  5744 | 14:23:37
+claude       | b8607d3d |  5062 | 14:23:41
+codex        | fed67517 |  2422 | 14:23:43</code></pre>
+<p>Sprint 62 closed Investigation 1 on code/test grounds (fence tests prove the wire-up). Sprint 63 closed it on acceptance grounds for 2/4 adapters during the sprint itself; the orchestrator+lane <code>/exit</code> sequence at 14:23 ET supplied the missing 2/4 (T1/T3 Claude panels + T4 Codex auditor) for a 4/4 close.</p>
+
+<h2 id="convergence">Convergence path — to MacBook Air dogfood + virtual install matrix</h2>
+<p>Per <code>docs/CONVERGENCE-PLAN.md</code>:</p>
+<table>
+<tr><th>Sprint</th><th>Goal</th><th>Status</th></tr>
+<tr><td>60</td><td>v1.0.14 hotfix bundle</td><td><span class="pill good">shipped 2026-05-07</span></td></tr>
+<tr><td>61</td><td>Uninstall + fresh-install harness + upgrade-detection (v1.1.0 keystone)</td><td><span class="pill good">shipped 2026-05-07</span></td></tr>
+<tr><td>62</td><td>Mnestra session-end coverage (code/test grounds) (v1.1.1)</td><td><span class="pill good">shipped 2026-05-11 AM</span></td></tr>
+<tr><td>63 = Wave 2</td><td>Brad bug-bundle + empirical /exit-capture (v1.2.0). Original 63 (install-polish) displaced.</td><td><span class="pill good">shipped 2026-05-11 PM</span></td></tr>
+<tr><td><strong>64</strong></td><td>Install-polish wizard + Supabase MCP auto-provision + OS-detection + Wave 2 carve-outs + Mnestra companion + Investigation 2</td><td><span class="pill warn">next</span></td></tr>
+<tr><td>Dogfood</td><td>MacBook Air clean-install + uninstall acceptance test</td><td>blocked on Sprint 64</td></tr>
+<tr><td>Matrix</td><td>Virtual install matrix activation (macOS + Ubuntu + Docker fedora + debian; ~35-45 min Phase B operator runbook)</td><td>blocked on operator runbook</td></tr>
+<tr><td>End</td><td>HN-postable / external rollout</td><td>—</td></tr>
+</table>
+
+<h2 id="sprint-64">Sprint 64 candidates (consolidated)</h2>
+<ol>
+  <li><strong>Install-polish wizard with Supabase MCP auto-provision + OS-detection</strong> — original Sprint 63 scope per CONVERGENCE-PLAN.md, displaced by Wave 2. This is the final convergence sprint before MacBook Air dogfood.</li>
+  <li><strong>Mnestra companion patch</strong> — Brad §3 #2/#4/#6 from 2026-05-11: log rotation + pre-listen singleton probe + attach-to-existing on autostart + pidfile. Ships as 0.4.10 or 0.5.0.</li>
+  <li><strong>Codex <code>resolveTranscriptPath</code> cross-panel contamination</strong> (Sprint 63 Finding #1). Fresher mtime-vs-spawn-time gate.</li>
+  <li><strong><code>&lt;5 messages</code> silent-skip threshold</strong> (Sprint 63 Finding #3).</li>
+  <li><strong>Codex CLI auto-update lifecycle hazard.</strong> Pre-spawn version check + wrapper shim. No <code>--no-update</code> flag in codex --help.</li>
+  <li><strong><code>spawnTerminalSession</code> ignoring adapter.spawn config</strong> — wraps every adapter as <code>zsh -c</code> regardless of declaration.</li>
+  <li><strong>Investigation 2: auto-commit on context compaction-near.</strong> Still open from CRITICAL-READ-FIRST-2026-05-07. Codex CLI lacks pre-compact hook surface (verified today via <code>codex --help</code>).</li>
+</ol>
+
+<h2 id="restart">Restart instructions (fresh session)</h2>
+<p>For a clean re-boot from this point, the next Claude Code session should:</p>
+<ol>
+  <li><code>mcp__mnestra__memory_recall(project="termdeck", query="Sprint 63 Wave 2 close-out empirical exit-capture acceptance")</code></li>
+  <li><code>mcp__mnestra__memory_recall(query="recent decisions and bugs 2026-05-08 through 2026-05-11")</code></li>
+  <li>Read <code>~/.claude/CLAUDE.md</code> (global rules)</li>
+  <li>Read <code>./CLAUDE.md</code> (TermDeck project)</li>
+  <li>Read <code>docs/CRITICAL-READ-FIRST-2026-05-07.md</code> (Investigation 1 = closed; Investigation 2 = still open)</li>
+  <li>Read <code>docs/RESTART-PROMPT-2026-05-11.md</code> (this session's restart prompt — has full state)</li>
+  <li>Read <code>docs/sprint-63-wave-2/PLANNING.md</code> § Resolution + <code>STATUS.md</code> if depth needed</li>
+  <li><code>mcp__mnestra__memory_recall(query="<specific topic Joshua signals at session start>")</code></li>
+  <li>Begin</li>
+</ol>
+
+<h2 id="resume">Resume command — re-attach to this exact orchestrator session</h2>
+<p>If the prior session's in-context mental model matters more than a clean re-boot:</p>
+<pre><code>claude --resume 09d89364-e6dd-4a9a-b765-c8d4c6a49f12</code></pre>
+<p>Or, if your CLI exposes the slash form:</p>
+<pre><code>/restore 09d89364-e6dd-4a9a-b765-c8d4c6a49f12</code></pre>
+<p>Verify the exact flag against your current Claude Code 2.x CLI; may be <code>-r</code> or <code>--resume</code>. Session UUID discovered from <code>~/.claude/projects/-Users-joshuaizzard-Documents-Graciella-ChopinNashville-SideHustles-TermDeck-termdeck/09d89364-e6dd-4a9a-b765-c8d4c6a49f12.jsonl</code>.</p>
+
+<footer>
+Generated 2026-05-11 14:30 ET. Session UUID <code>09d89364-e6dd-4a9a-b765-c8d4c6a49f12</code>.
+Lane panels (closed 14:23 ET): T1 <code>23a722c5</code>, T2 <code>937f0b26</code>, T3 <code>2dc7a844</code>, T4 <code>fed67517</code>.
+Commits: engram <code>f917c85</code>, termdeck <code>6d64fea</code> (morning) + <code>7375d2a</code> (afternoon).
+</footer>
+</main>
+</div>
+</body>
+</html>

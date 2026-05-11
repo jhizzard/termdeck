@@ -122,3 +122,47 @@ Every Tn lane briefing file repeats this sequence inline. Path: `docs/sprint-63-
 8. Read `docs/sprint-63-wave-2/T<n>-<lane>.md` — your full briefing
 
 Then begin. Stay in your lane. Post FINDING / FIX-PROPOSED / DONE in STATUS.md with the canonical `### [Tn] ...` shape. Do NOT bump versions, edit CHANGELOG, or commit — orchestrator handles those at sprint close.
+
+---
+
+## Resolution — 2026-05-11
+
+**Sprint 63 = Wave 2 closed at ~14:24 ET.**
+
+### Wave shipped
+- `@jhizzard/termdeck@1.2.0` published (Passkey 2026-05-11; commit `7375d2a`).
+- `@jhizzard/termdeck-stack@1.2.0` published (audit-trail aligned).
+- `@jhizzard/mnestra` unchanged at `0.4.9` — companion patch (log rotation + singleton probe + attach-to-existing + pidfile) deferred to Sprint 64.
+
+### Lane outcomes
+- **T1** (crash class): DONE 13:35 ET — PTY-leak fix + WS ioctl race + body-parser raw-body + 410 Gone. 33+ fence tests. T4-CODEX AUDIT-OK on code/test grounds.
+- **T2** (empirical proof, PRIORITY): DONE 14:03 ET — gemini `.jsonl` filter fix landed inline + 5 fence tests; Findings #1 (codex cross-panel contamination) + #3 (`<5 messages` threshold) deferred to Sprint 64 as documented carve-outs at `docs/sprint-63-wave-2/EXIT-CAPTURE-VERIFICATION.md`.
+- **T3** (diagnostic surface): DONE 13:43 ET — stack.js `created_at`→`started_at` + full `red:<category>` health taxonomy with outer-catch invariant fence + preflight `-l` drop. 28 fence tests. T4-CODEX AUDIT-OK on code/test grounds.
+- **T4-CODEX** (adversarial auditor): FINAL-VERDICT YELLOW 13:59 ET. Caught 4 AUDIT-CONCERNs (3 load-bearing); shell-blocked from 13:26 ET onward; orchestrator ran psql proxy as Phase-2 substrate at 14:02 ET.
+
+### Live acceptance proof (the load-bearing claim)
+At 14:23:33 → 14:23:43 ET, Joshua closed all 4 lane panels (3 Claude + 1 Codex). All 4 wrote `session_summary` rows to Mnestra within 10 seconds:
+- claude bb1e465c — 14:23:33 ET — 4088 bytes
+- claude 430e256f — 14:23:37 ET — 5744 bytes
+- claude b8607d3d — 14:23:41 ET — 5062 bytes
+- codex fed67517 — 14:23:43 ET — 2422 bytes
+
+**Investigation 1 of `docs/CRITICAL-READ-FIRST-2026-05-07.md` closes on acceptance grounds.** Sprint 62 closed it on code/test grounds; Sprint 63 closed it on real-world `/exit` capture — verified live during sprint close itself.
+
+### Adversarial Codex catches (load-bearing)
+1. T2 brief named non-existent `mnestra_session_summary` table — without the catch T2 would have produced a phantom-table FAIL.
+2. T1 body-parser fence rebuilt middleware vs driving production `createServer` — production miswire could have passed test.
+3. T3 outer-catch fallbacks at `health.js:506-533` re-introduced uncategorized rows — T3 added invariant fence.
+
+3+1+1 paid off again — same pattern as Sprint 51.6 + Sprint 61.
+
+### Sprint 64 candidates (consolidated)
+- Install-polish wizard with Supabase MCP auto-provision + OS-detection (original Sprint 63 scope per CONVERGENCE-PLAN.md, displaced by Wave 2).
+- Codex `resolveTranscriptPath` cross-panel contamination (Finding #1).
+- `<5 messages` silent-skip threshold (Finding #3).
+- Codex CLI auto-update lifecycle hazard.
+- `spawnTerminalSession` ignoring `adapter.spawn` config.
+- Mnestra companion patch: log rotation + singleton probe + attach-to-existing + pidfile (Brad §3 #2/#4/#6).
+- Investigation 2: auto-commit on context compaction-near for all agents.
+
+After Sprint 64 ships, the MacBook Air clean-install + uninstall acceptance test from CONVERGENCE-PLAN.md should run clean. Then Phase B activation (35-45 min operator runbook) brings the virtual install matrix online.
