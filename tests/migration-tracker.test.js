@@ -251,14 +251,25 @@ function checksum(content) {
 
 // ── Probe-set sanity ────────────────────────────────────────────────────────
 
-test('MIGRATION_PROBES has exactly 19 entries (001-019)', () => {
+test('MIGRATION_PROBES has exactly 21 entries (001-019 + 021 + 022)', () => {
+  // Sprint 62 T2 added 021_project_tag_canonicalize_claimguard.sql; Sprint 62
+  // T3 added 022_source_agent_backfill.sql. 020 is bootstrap-special-cased
+  // and intentionally absent from MIGRATION_PROBES.
   const keys = Object.keys(MIGRATION_PROBES);
-  assert.equal(keys.length, 19);
+  assert.equal(keys.length, 21);
   for (let i = 1; i <= 19; i++) {
     const n = String(i).padStart(3, '0');
     const present = keys.some((k) => k.startsWith(`${n}_`));
     assert.ok(present, `MIGRATION_PROBES missing entry for ${n}_*`);
   }
+  assert.ok(
+    keys.some((k) => k.startsWith('021_')),
+    'MIGRATION_PROBES missing entry for 021_* (Sprint 62 T2 — project-tag canonicalize)'
+  );
+  assert.ok(
+    keys.some((k) => k.startsWith('022_')),
+    'MIGRATION_PROBES missing entry for 022_* (Sprint 62 T3 — source_agent backfill)'
+  );
 });
 
 test('MIGRATION_PROBES has non-null probes for every 001-019 entry (post-audit refinement)', () => {
@@ -378,6 +389,10 @@ test('Case 2: partial applied (5 of 20) → applies remaining 15', async () => {
 
 test('Case 3: backfill detects schema-present probes; seeds backfill + applies probe-ineligible', async () => {
   // Synthesize the real bundled migration filenames so the probe table maps.
+  // Sprint 62 T2 added 021_project_tag_canonicalize_claimguard; Sprint 62 T3
+  // added 022_source_agent_backfill. Both have NOT-EXISTS-shaped probes; in
+  // this fixture both are set to present so they join the backfilled list
+  // rather than the applied list.
   const realFilenames = [
     '001_mnestra_tables.sql', '002_mnestra_search_function.sql',
     '003_mnestra_event_webhook.sql', '004_mnestra_match_count_cap_and_explain.sql',
@@ -388,7 +403,9 @@ test('Case 3: backfill detects schema-present probes; seeds backfill + applies p
     '013_reclassify_uncertain.sql', '014_explicit_grants.sql',
     '015_source_agent.sql', '016_mnestra_doctor_probes.sql',
     '017_memory_sessions_session_metadata.sql', '018_rumen_processed_at.sql',
-    '019_security_hardening.sql', '020_migration_tracking.sql'
+    '019_security_hardening.sql', '020_migration_tracking.sql',
+    '021_project_tag_canonicalize_claimguard.sql',
+    '022_source_agent_backfill.sql'
   ];
   const sqlByBasename = {};
   const filenames = realFilenames.map((b) => {
@@ -427,9 +444,12 @@ test('Case 3: backfill detects schema-present probes; seeds backfill + applies p
   });
 
   assert.equal(summary.errored, null);
-  // 18 backfilled (all of 001-018, including 003/011/012 with their
-  // refined probes per the post-audit update). Matches the brief's literal
-  // "18 backfilled rows + 19 + 20 = 20 total" acceptance.
+  // 20 backfilled (001-018, including 003/011/012 with their refined probes
+  // per the post-audit update, plus 021 added in Sprint 62 T2 and 022 added
+  // in Sprint 62 T3). 020 is bootstrap-special-cased and not in
+  // MIGRATION_PROBES, so it always lands in `applied`; 019 has its probe
+  // set to absent in this fixture, so it also lands in `applied`. Net:
+  // 20 backfilled + 2 applied = 22 tracker rows.
   const backfilledExpected = [
     '001_mnestra_tables.sql', '002_mnestra_search_function.sql',
     '003_mnestra_event_webhook.sql',
@@ -440,10 +460,12 @@ test('Case 3: backfill detects schema-present probes; seeds backfill + applies p
     '011_project_tag_backfill.sql', '012_project_tag_re_taxonomy.sql',
     '013_reclassify_uncertain.sql', '014_explicit_grants.sql',
     '015_source_agent.sql', '016_mnestra_doctor_probes.sql',
-    '017_memory_sessions_session_metadata.sql', '018_rumen_processed_at.sql'
+    '017_memory_sessions_session_metadata.sql', '018_rumen_processed_at.sql',
+    '021_project_tag_canonicalize_claimguard.sql',
+    '022_source_agent_backfill.sql'
   ];
   assert.deepEqual(summary.backfilled.sort(), backfilledExpected.sort());
-  assert.equal(summary.backfilled.length, 18);
+  assert.equal(summary.backfilled.length, 20);
 
   // Applied: 020 (bootstrap) + 019 (probe-absent → genuine apply) = 2.
   const appliedExpected = [
@@ -453,8 +475,34 @@ test('Case 3: backfill detects schema-present probes; seeds backfill + applies p
   assert.deepEqual(summary.applied.sort(), appliedExpected.sort());
   assert.equal(summary.applied.length, 2);
 
-  // Tracker total: 18 + 2 = 20.
-  assert.equal(state.trackerRows.size, 20);
+  // Sprint 62 T2: explicit 021 probe behavior assertion. With the NOT-EXISTS
+  // probe set to present in this fixture (no legacy gorgias / gorgias-ticket-
+  // monitor rows expected on a post-canonicalized live install), 021 is
+  // backfilled rather than applied — exercising the "DML migration with a
+  // present-style probe" branch end-to-end.
+  assert.ok(
+    summary.backfilled.includes('021_project_tag_canonicalize_claimguard.sql'),
+    'Sprint 62 T2: 021 probe (NOT-EXISTS) reports present → must backfill, not apply'
+  );
+  assert.ok(
+    !summary.applied.includes('021_project_tag_canonicalize_claimguard.sql'),
+    'Sprint 62 T2: 021 must NOT land in applied when probe reports present'
+  );
+
+  // Sprint 62 T3: same explicit assertion for 022. The NOT-EXISTS probe over
+  // Predicate A/B/D's row-set reports present → backfill, not apply. Mirrors
+  // the post-canonicalized install state where 022 has already done its work.
+  assert.ok(
+    summary.backfilled.includes('022_source_agent_backfill.sql'),
+    'Sprint 62 T3: 022 probe (NOT-EXISTS over A/B/D) reports present → must backfill, not apply'
+  );
+  assert.ok(
+    !summary.applied.includes('022_source_agent_backfill.sql'),
+    'Sprint 62 T3: 022 must NOT land in applied when probe reports present'
+  );
+
+  // Tracker total: 20 + 2 = 22.
+  assert.equal(state.trackerRows.size, 22);
 
   // Specifically check that backfilled rows have the epoch sentinel.
   const epochRow = state.trackerRows.get('001_mnestra_tables.sql');

@@ -16,6 +16,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sprint 46 deferrals still open after Sprint 50.5 close-out.** The Sprint 50.5 dogfood cleared four (T1 URL state codec edge case, T2 — replaced with `approvalModel` doc work — T3 TUI spinner spam, T4 dead `triggerProactiveMemoryQuery`); ten deferrals remain in `docs/sprint-46-dashboard-audit/AUDIT-FINDINGS.md` § Sprint 47 deferrals (most need design calls, not lane work).
 - Sprint 40 carry-overs: harness session-end hook PROJECT_MAP forward-fix (out-of-repo `~/.claude/hooks/memory-session-end.js`); analyzer broadening for `PATTERNS.error` case-sensitivity gaps; LLM-classification pass on the ~898 chopin-nashville-tagged "other/uncertain" rows.
 
+## [1.1.1] - 2026-05-08
+
+> **Sprint 62 — Mnestra session-end coverage gap (TermDeck side) + paste-image fix.** Patch ship aligning with `@jhizzard/mnestra@0.4.9` + `@jhizzard/termdeck-stack@1.1.1`. Sprint 62 was 3+1+1 with Codex auditor; ~80 min wall-clock from inject (20:34 ET) to FINAL-VERDICT GREEN (21:54 ET). T4-CODEX caught and routed 9 audit concerns (8 resolved in flight; 1 RED block on T1 cleared in re-audit). Closes Investigation 1 of `docs/CRITICAL-READ-FIRST-2026-05-07.md` (cross-agent Mnestra capture on close — empirically confirmed at 27% coverage during ClaimGuard Sprint 8.0 Pipeline Compliance Audit). **Pre-publish fold-in 2026-05-11:** SQLite-init ABI-mismatch fail-fast at `packages/server/src/index.js:19` (Brad's 2026-05-11 r730 cascade report — Node 20→22 `apt upgrade` left `better_sqlite3.node` at `NODE_MODULE_VERSION 115`; bare `catch { Database = null; }` masked the failure into a per-cycle null-handle storm masquerading as "Mnestra unreachable / Database timeout" in health probes).
+
+### Fixed — SQLite-init ABI-mismatch fail-fast with actionable rebuild hint
+
+Brad's 2026-05-11 r730 cascade: `apt upgrade` rolled Node 20 → 22.22.2; the bundled native `better_sqlite3.node` was built against Node 20 (NODE_MODULE_VERSION 115) and never rebuilt. TermDeck's `index.js:19` conditional require swallowed the dlopen failure (`try { Database = require('better-sqlite3'); } catch { Database = null; }`), leaving the server up on `:3000` with `db = null`. Downstream consumers produced an unbounded `Cannot read properties of null (reading 'prepare')` error storm and four health probes returned misleading `red: timeout` results that pointed away from the true cause.
+
+Fix (`packages/server/src/index.js:19`): narrow the bare `catch` to detect ABI mismatch specifically (`err.code === 'ERR_DLOPEN_FAILED'` AND `/NODE_MODULE_VERSION/.test(err.message)`). On match, log the actionable rebuild hint (`cd "$(npm root -g)/@jhizzard/termdeck" && npm rebuild better-sqlite3`) and `process.exit(1)`. Other require failures preserve the legacy graceful-fallback `Database = null` (used for first-run scenarios where deps haven't installed yet).
+
+This is the minimum patch. The broader health-probe semantics work (distinguish `unreachable` / `timeout` / `dependency-down` / `init-failed`; stop sharing a broken `db` handle across probes) is queued for Sprint 63 = Wave 2 under §4.5 dashboard ↔ launcher probe drift.
+
+### Added
+
+- **Production-wiring fence tests for the adapter session-end writer** (Sprint 62 T1, `packages/server/tests/adapter-session-end-writer.test.js`, 8 tests, 686 lines). Net-new test surface; **no production code shifted**. Confirms the Sprint 50 T1 close-path wire-up (`onPanelClose` at `packages/server/src/index.js:192-223`, registered to `term.onExit` at `:1163`, called from `DELETE /api/sessions/:id` at `:1353-1363`) actually fires for non-Claude adapters end-to-end. Coverage:
+  - **Helper-level positives** — Codex/Gemini/Grok synthesize JSONL fixtures, call `onPanelClose(session)` directly, assert spawn-hook-impl captor invoked exactly once with the canonical `source_agent`.
+  - **Production-wiring fence (`:545`)** — boots a real Express `createServer(config)` server, POSTs `/api/sessions {type:'codex'}`, fires `term._emitExit({exitCode:0})` on the fake PTY (injected via `require.cache` at `:76-134` BEFORE `index.js` is required), asserts exactly one spawn through the registered lambda. Closes T4-CODEX 21:03 ET FINAL-VERDICT RED.
+  - **Route-level fence (`:609`)** — full HTTP `DELETE /api/sessions/:id` → `session.pty.kill()` → `setImmediate` → onExit → onPanelClose chain. Verifies the production HTTP-level close path through `index.js:1353-1364`.
+  - **Negative case (`:653`)** — `term.onExit` on a shell session is a no-op. Locks the early-return at `:197-205` (the symmetric contract that 73% of TermDeck panels — legitimate shells — don't fire spurious `session_summary` writes from PTY exit).
+  - **Stale-JSONL guard, JSONL rotation no-double-write, source_agent canonicalization, adapter dual-lookup tolerance** — additional fences for known regression vectors.
+- **Bundled mirrors of Mnestra migrations 021 + 022** at `packages/server/src/setup/mnestra-migrations/021_project_tag_canonicalize_claimguard.sql` + `022_source_agent_backfill.sql` (byte-identical with `engram/migrations/`; sha256-verified). The Sprint 61 migration tracker will detect and apply (or backfill) on next `termdeck init --mnestra`. Same pattern Sprint 61 used to mirror engram's `019_security_hardening.sql` security baseline.
+- **`MIGRATION_PROBES` entries for 021 + 022** at `packages/server/src/setup/migrations.js:123-142`. NOT-EXISTS-shaped probes detect post-apply state for retroactive backfill of `mnestra_migrations` rows on projects upgraded through Sprint 61's tracker. 021's probe: `select 1 where not exists (select 1 from memory_items where project in ('gorgias', 'gorgias-ticket-monitor'))`. 022's probe: NOT-EXISTS over Predicate A/B/D row-set only (Predicate C residual deliberately excluded so the probe can turn true after the intentional partial backfill).
+- **Document-level capture-phase image-paste handler** (`packages/client/public/app.js:299-331`, registered once from `init()` at `:137`). Sprint 59's per-panel `paste` listener was bubble-phase but xterm.js@5.5.0's hidden helper-textarea reads only `clipboardData.getData('text/plain')` — image data in `clipboardData.items[kind=file, type=image/*]` was silently dropped. Fix: document-level listener with `{capture: true}` runs in capture phase BEFORE the event reaches xterm-helper-textarea; if event target is inside `.term-panel` and clipboard contains image files, `preventDefault()` + `stopPropagation()` route through `uploadFilesAndType()`. Joshua reported this on 2026-05-08 post-v1.1.0 upgrade; drag-drop already worked from Sprint 59.
+
+### Changed
+
+- **`tests/migration-loader-precedence.test.js`** — bundled-file list and `listMnestraMigrations()` count assertions bumped to 22 entries (covers 021 + 022); stale-shadow guard count to 22.
+- **`tests/migration-tracker.test.js`** — probe-count test bumped 19→21 with explicit 021- and 022-presence assertions; Case 3 (backfill simulation) `realFilenames` extended to include 021 + 022; `backfilledExpected` length 18→20; tracker total bumped 20→22.
+- **`tests/project-tag-invariant.test.js`** — claimguard project-tag invariant un-deferred (`deferredToSprint35` removed) per Sprint 62 T2 closure. The mnestra invariant deferral STAYS (separate `global` → `mnestra` drift; future sprint candidate).
+
+### Verification
+
+- `npm test` (root): **48/48 pass** (40 baseline + 5 helper-level adapter writer + 3 production-wiring fence). 5.2 s. No regressions.
+- Bundled mirror sha256 checks: 021 + 022 byte-identical with engram source.
+- T1 production source check: `git diff -- packages/server/src/index.js packages/server/src/session.js packages/server/src/agent-adapters/codex.js` is empty (only `setup/migrations.js` MIGRATION_PROBES additions in `packages/server/src/`).
+- T4-CODEX FINAL-VERDICT GREEN with file:line evidence at `docs/sprint-62-mnestra-session-end-coverage/STATUS.md:297-298`.
+
+### Wave
+
+- `@jhizzard/termdeck@1.1.0 → 1.1.1`
+- `@jhizzard/termdeck-stack@1.1.0 → 1.1.1` (version-aligned audit-trail bump per Sprint 61 convergence precedent)
+- `@jhizzard/mnestra@0.4.7 → 0.4.9` (skipped 0.4.8 — staged but never published; rolled into 0.4.9 with Sprint 62 work)
+
+### Sprint 62 origin
+
+The coverage gap was empirically surfaced during ClaimGuard Sprint 8.0 Pipeline Compliance Audit (2026-05-08): three TermDeck panels (Codex/Gemini/Grok) `/exit`'d cleanly at sprint close, zero `session_summary` rows landed in Mnestra. `mcp__mnestra__memory_status` showed `session_summary=97 / sessions_processed=359 = 27%` coverage — the missing 73% were non-Claude panels. Closes Investigation 1 of CRITICAL-READ-FIRST-2026-05-07. Investigation 2 (auto-commit on context compaction) remains a separate sprint candidate.
+
 ## [1.1.0] - 2026-05-07
 
 > **Sprint 61 — Convergence keystone: uninstall + fresh-install harness + upgrade-detection.** 3+1+1 with Codex auditor. Wave: `@jhizzard/termdeck@1.1.0` + `@jhizzard/termdeck-stack@1.1.0` (minor bump — first feature ship since v1.0.0) + `@jhizzard/mnestra@0.4.7` (security-hardening mirror + migration tracking table). Wall-clock ~1h from inject (18:34 ET) to FINAL-VERDICT GREEN (19:26 ET). T4-CODEX caught and routed 8 audit concerns across T1+T2+T3 + 4 hygiene catches forcing orchestrator-side scrubs; lanes addressed all in real-time before sprint close.

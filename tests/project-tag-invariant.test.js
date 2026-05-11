@@ -72,13 +72,13 @@ const INVARIANTS = [
       '%gorgias-ticket-monitor%',
       '%Unagi/%',
     ],
-    // v0.7.2 Sprint 34 backfill scoped to project='chopin-nashville' only.
-    // Claimguard content is mis-tagged as 'gorgias' (368 rows) and
-    // 'gorgias-ticket-monitor' (117 rows) on rows that were never tagged
-    // chopin-nashville. The harness-hook fix in Sprint 35 (PERMANENT TODO
-    // memory) addresses the upstream source; a follow-on backfill SQL
-    // covers these tags. Skipped here until Sprint 35 ships.
-    deferredToSprint35: 'gorgias→claimguard tag drift outside chopin-nashville scope',
+    // Sprint 62 T2 (2026-05-08) — un-deferred. Migration 021 finished the
+    // gorgias + gorgias-ticket-monitor → claimguard rename that the prior
+    // Sprint 34 backfill (scoped to project='chopin-nashville') and Sprint 35
+    // hook fix could not reach: 786 rows merged on the reference Mnestra
+    // project, conservation-checked (claimguard 32 → 818, gorgias=0,
+    // gorgias-ticket-monitor=0). Identifier-match content rows now top-tag
+    // claimguard (30/47 ≈ 64%); the invariant runs unskipped.
   },
   {
     label: 'mnestra (engram dir)',

@@ -5,6 +5,11 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [1.1.1] — 2026-05-08
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@1.1.1`, the Sprint 62 close-out ship. Wave bundles (a) Brad-reported `RealtimeClient` Node-20 WebSocket polyfill in `@jhizzard/mnestra@0.4.9`, (b) cross-agent `session_summary` writer fence tests + bundled migration mirrors `021_project_tag_canonicalize_claimguard.sql` + `022_source_agent_backfill.sql` + `MIGRATION_PROBES` entries in `@jhizzard/termdeck@1.1.1`, (c) document-level capture-phase image-paste handler closing the post-v1.1.0 paste regression, (d) **2026-05-11 pre-publish fold-ins** — Mnestra `webhook-server` EADDRINUSE singleton-collision catch (Brad's 42K-crash 5-day log accumulation) + TermDeck SQLite-init ABI-mismatch fail-fast (Brad's Node 20→22 `apt upgrade` cascade into a null-handle storm). Closes Investigation 1 of `docs/CRITICAL-READ-FIRST-2026-05-07.md` (cross-agent Mnestra capture on close, empirically confirmed at 27% coverage during ClaimGuard Sprint 8.0 audit). No installer-side code changes — this is an audit-trail-only bump aligning the stack-installer's published trail with the underlying `@jhizzard/termdeck@1.1.1`.
+
 ## [0.3.3] — 2026-04-27
 
 ### Documentation

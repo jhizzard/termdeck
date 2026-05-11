@@ -16,7 +16,25 @@ const { createCachedLookup, createFailureLogger } = require('./rumen-pool-resili
 // Conditional imports (graceful fallback if not installed yet)
 let pty, Database, pg;
 try { pty = require('@homebridge/node-pty-prebuilt-multiarch'); } catch { pty = null; }
-try { Database = require('better-sqlite3'); } catch { Database = null; }
+try {
+  Database = require('better-sqlite3');
+} catch (err) {
+  // Brad Heath 2026-05-11: distinguish a native-ABI mismatch (Node upgraded
+  // after install) from "package not installed yet." ABI mismatch leaves
+  // Database=null and cascades into a null-handle storm downstream that
+  // masquerades as "Mnestra unreachable / DB timeout" in health probes.
+  // Fail fast with the actionable rebuild hint instead.
+  const msg = err && err.message ? String(err.message) : '';
+  if (err && err.code === 'ERR_DLOPEN_FAILED' && /NODE_MODULE_VERSION/.test(msg)) {
+    console.error('[db] better-sqlite3 native ABI mismatch (Node was upgraded after install).');
+    console.error('[db] TermDeck cannot serve memory features without a working SQLite.');
+    console.error('[db] Fix:');
+    console.error('       cd "$(npm root -g)/@jhizzard/termdeck" && npm rebuild better-sqlite3');
+    console.error('[db] Then restart TermDeck. Aborting.');
+    process.exit(1);
+  }
+  Database = null;
+}
 try { pg = require('pg'); } catch { pg = null; }
 
 // Module-level singleton Postgres pool for rumen_insights (petvetbid DB).

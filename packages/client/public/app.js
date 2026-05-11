@@ -129,6 +129,12 @@
       // Sprint 37 T1: orchestrator Guide right-rail. Lazy — fetches the doc
       // on first expand to keep page load light.
       setupGuideRail();
+
+      // 2026-05-08 hotfix: document-level capture-phase image-paste handler.
+      // Intercepts Cmd+V image data before xterm-helper-textarea consumes it
+      // (xterm reads only text/plain, drops images silently). See comment on
+      // setupGlobalImagePaste() near uploadFilesAndType() for details.
+      setupGlobalImagePaste();
     }
 
     // ===== Drag/drop reorder of PTY panels (Sprint 42 T4) =====
@@ -273,6 +279,57 @@
           console.error('[upload] exception', err);
         }
       }
+    }
+
+    // Document-level capture-phase image paste handler.
+    //
+    // The Sprint 59 per-panel `paste` listener at line 218 is bubble-phase, but
+    // xterm.js@5.5.0's hidden helper-textarea has its own `paste` handler that
+    // reads only `clipboardData.getData('text/plain')`. Image data lives in
+    // `clipboardData.items` with `kind: 'file'` and never reaches xterm's
+    // text path — and the panel-level bubble-phase handler runs after xterm's,
+    // by which point xterm has already returned (silently dropping the image).
+    // Net: pre-fix, Cmd+V'ing a screenshot into a focused TermDeck panel did
+    // nothing. Joshua reported this on 2026-05-08 (post-v1.1.0 upgrade).
+    //
+    // Fix: document-level listener with `{capture: true}` runs in capture
+    // phase BEFORE the event reaches xterm-helper-textarea. If the event
+    // target is inside a `.term-panel` AND the clipboard contains image
+    // files, we preventDefault + stopPropagation (so xterm + the bubble-phase
+    // panel handler don't see it) and route through `uploadFilesAndType`.
+    // For text paste (no image files) we let the event continue normally.
+    //
+    // Idempotent: setupGlobalImagePaste() is called once from init().
+    let _globalImagePasteSetup = false;
+    function setupGlobalImagePaste() {
+      if (_globalImagePasteSetup) return;
+      _globalImagePasteSetup = true;
+      document.addEventListener('paste', (e) => {
+        const target = e.target;
+        if (!(target instanceof Element)) return;
+        const panel = target.closest('.term-panel');
+        if (!panel) return;
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        const blobs = [];
+        for (const item of items) {
+          if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
+            const blob = item.getAsFile();
+            if (blob) blobs.push(blob);
+          }
+        }
+        if (blobs.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const named = blobs.map((b, i) => {
+          const ext = (b.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
+          const name = b.name && b.name.length > 0
+            ? b.name
+            : `pasted-${ts}${blobs.length > 1 ? '-' + i : ''}.${ext}`;
+          return new File([b], name, { type: b.type });
+        });
+        uploadFilesAndType(panel, named);
+      }, { capture: true });
     }
 
     // ===== Create Terminal Panel =====

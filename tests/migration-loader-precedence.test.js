@@ -47,6 +47,10 @@ test('bundled migration directory contains all expected files including 008', ()
   // Sprint 61 T2: 019_security_hardening (mirrored from engram for the 0.4.6
   // RLS + REVOKE EXECUTE + search_path-with-extensions migration) +
   // 020_migration_tracking (the new mnestra_migrations tracker table).
+  // Sprint 62 T2: 021_project_tag_canonicalize_claimguard mirrored from
+  // engram for the gorgias / gorgias-ticket-monitor → claimguard merge.
+  // Sprint 62 T3: 022_source_agent_backfill mirrored from engram for the
+  // pre-Sprint-50 source_agent backfill.
   const files = fs.readdirSync(BUNDLED_DIR).filter((f) => f.endsWith('.sql')).sort();
   assert.deepEqual(files, [
     '001_mnestra_tables.sql',
@@ -68,14 +72,16 @@ test('bundled migration directory contains all expected files including 008', ()
     '017_memory_sessions_session_metadata.sql',
     '018_rumen_processed_at.sql',
     '019_security_hardening.sql',
-    '020_migration_tracking.sql'
+    '020_migration_tracking.sql',
+    '021_project_tag_canonicalize_claimguard.sql',
+    '022_source_agent_backfill.sql'
   ]);
 });
 
-test('listMnestraMigrations() returns 20 files in lexical order', () => {
+test('listMnestraMigrations() returns 22 files in lexical order', () => {
   const m = loadMigrations();
   const list = m.listMnestraMigrations();
-  assert.equal(list.length, 20, 'expected 20 mnestra migrations after Sprint 61 T2 added 019_security_hardening + 020_migration_tracking');
+  assert.equal(list.length, 22, 'expected 22 mnestra migrations after Sprint 62 T2+T3 added 021/022');
   const basenames = list.map((p) => path.basename(p));
   // Lexical order is what the SQL runner relies on — pin it.
   assert.deepEqual(basenames, [
@@ -98,7 +104,9 @@ test('listMnestraMigrations() returns 20 files in lexical order', () => {
     '017_memory_sessions_session_metadata.sql',
     '018_rumen_processed_at.sql',
     '019_security_hardening.sql',
-    '020_migration_tracking.sql'
+    '020_migration_tracking.sql',
+    '021_project_tag_canonicalize_claimguard.sql',
+    '022_source_agent_backfill.sql'
   ]);
 });
 
@@ -161,9 +169,9 @@ test('listMnestraMigrations() prefers bundled even when a stale @jhizzard/mnestr
       fakeReachable = true;
     } catch (_e) { /* fake not reachable; the tryNodeModules path won't resolve either */ }
 
-    assert.equal(list.length, 20, fakeReachable
-      ? 'bundled (20) must win over a stale node_modules @jhizzard/mnestra (6)'
-      : 'bundled fallback must still return 20 even when no @jhizzard/mnestra is reachable');
+    assert.equal(list.length, 22, fakeReachable
+      ? 'bundled (22) must win over a stale node_modules @jhizzard/mnestra (6)'
+      : 'bundled fallback must still return 22 even when no @jhizzard/mnestra is reachable');
     // And the resolved paths must be the bundled ones, not the fake's.
     for (const p of list) {
       assert.ok(

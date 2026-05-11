@@ -110,7 +110,33 @@ const MIGRATION_PROBES = Object.freeze({
   '018_rumen_processed_at.sql':
     "select 1 from information_schema.columns where table_schema='public' and table_name='memory_sessions' and column_name='rumen_processed_at'",
   '019_security_hardening.sql':
-    "select 1 from pg_proc p, unnest(coalesce(p.proconfig,'{}'::text[])) c where p.proname='memory_hybrid_search' and c like 'search_path=%' and c like '%extensions%'"
+    "select 1 from pg_proc p, unnest(coalesce(p.proconfig,'{}'::text[])) c where p.proname='memory_hybrid_search' and c like 'search_path=%' and c like '%extensions%'",
+  // 021 canonicalizes legacy gorgias / gorgias-ticket-monitor project tags to
+  // claimguard. Probe is NOT-EXISTS-shaped: returns 1 row when both legacy
+  // tags carry zero rows (021's effects are in place OR the install never had
+  // legacy data). Returns 0 rows when at least one legacy tag still has rows
+  // (021 has not yet run). False-positive backfill costs nothing because the
+  // migration's UPDATE is gated on `project IN ('gorgias', 'gorgias-ticket-monitor')`
+  // so a re-apply against an already-canonicalized corpus is a 0-row no-op.
+  // Sprint 62 T2 added this; 020 is bootstrap-special-cased and intentionally
+  // absent from MIGRATION_PROBES.
+  '021_project_tag_canonicalize_claimguard.sql':
+    "select 1 where not exists (select 1 from memory_items where project in ('gorgias', 'gorgias-ticket-monitor'))",
+  // 022 backfills source_agent for the rows where the writer is inferable from
+  // row shape (Predicate A: decision/bug_fix/architecture/preference/code_context
+  // → 'claude'; Predicate B: fact rows with source_session_id → 'claude';
+  // Predicate D: document_chunk → 'orchestrator'). Predicate C (fact rows
+  // with no session and no path) is intentionally NOT backfilled — see the
+  // migration body for the provenance-preservation rationale. Probe is
+  // NOT-EXISTS-shaped over the A/B/D row-set: returns 1 when those targets
+  // all have source_agent set (022's effects in place), 0 when any A/B/D
+  // target still has NULL (022 has not yet run). Excludes Predicate C from
+  // the probe predicate so the residual NULL slice doesn't keep the probe
+  // false forever. False-positive backfill costs nothing because the
+  // migration body is gated on `source_agent IS NULL` and a re-apply against
+  // an already-tagged corpus is a 0-row no-op. Sprint 62 T3.
+  '022_source_agent_backfill.sql':
+    "select 1 where not exists (select 1 from memory_items where source_agent is null and (source_type in ('decision','bug_fix','architecture','preference','code_context') or (source_type='fact' and source_session_id is not null) or source_type='document_chunk'))"
 });
 
 // Sprint 61 T2 — self-transactional detection.
