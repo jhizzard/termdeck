@@ -5,6 +5,11 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [1.2.0] — 2026-05-11
+
+### Documentation
+- Audit-trail update: validated against `@jhizzard/termdeck@1.2.0`, the Sprint 63 = Wave 2 close-out. Wave bundles (a) Brad-reported crash-class fixes — PTY-leak `session.pty=null` on exit + WS ioctl race + `_destroyed` short-circuit + `410 Gone` semantics on resize-after-exit + body-parser raw-body hex-prefix log; (b) diagnostic surface hardening — `stack.js` `started_at` fix + full `red:<category>` health-probe taxonomy with outer-catch invariant fence + `preflight.js` `-l` login-mode drop; (c) gemini `resolveTranscriptPath` `.jsonl` filter fix closing a structural silent-data-loss path for every gemini session since the 2026-05-02→2026-05-08 format switch; (d) live acceptance proof for claude + codex `/exit`-capture chain via independent psql against the reference Mnestra. Sprint 64 carve-outs explicit in the underlying CHANGELOG. No installer-side code changes — this is an audit-trail-only bump aligning the stack-installer's published trail with `@jhizzard/termdeck@1.2.0`.
+
 ## [1.1.1] — 2026-05-08
 
 ### Documentation

@@ -50,13 +50,18 @@ function statusFor(data) {
 // resolveTranscriptPath — Sprint 50 T1.
 //
 // Gemini CLI persists chats at
-//   ~/.gemini/tmp/<basename(cwd)>/chats/session-<ISO-ts>-<short-id>.json
-// (single-JSON-object shape that matches parseGeminiJson, verified
-// 2026-05-02 substrate probe). Pick the most recently modified file whose
-// mtime is at-or-after `session.meta.createdAt`. Falls back to walking
-// every project directory under `~/.gemini/tmp/*/chats/` if the basename
-// heuristic produces no candidate (e.g., Gemini renormalized the project
-// name to deduplicate against an existing one).
+//   ~/.gemini/tmp/<basename(cwd)>/chats/session-<ISO-ts>-<short-id>.{json,jsonl}
+// (single-JSON-object shape that matches parseGeminiJson for the .json
+// flavor, verified 2026-05-02 substrate probe; .jsonl flavor introduced
+// some time between 2026-05-02 and 2026-05-08, surfaced by Sprint 63 T2
+// acceptance — see docs/sprint-63-wave-2/EXIT-CAPTURE-VERIFICATION.md
+// Finding #2. The extension filter accepts both shapes; downstream parser
+// handling of JSONL deltas is a Sprint 64 candidate). Pick the most
+// recently modified file whose mtime is at-or-after
+// `session.meta.createdAt`. Falls back to walking every project directory
+// under `~/.gemini/tmp/*/chats/` if the basename heuristic produces no
+// candidate (e.g., Gemini renormalized the project name to deduplicate
+// against an existing one).
 // ──────────────────────────────────────────────────────────────────────────
 
 async function resolveTranscriptPath(session) {
@@ -83,7 +88,8 @@ async function resolveTranscriptPath(session) {
     let entries;
     try { entries = fs.readdirSync(dir); } catch (_) { return; }
     for (const name of entries) {
-      if (!name.startsWith('session-') || !name.endsWith('.json')) continue;
+      if (!name.startsWith('session-')) continue;
+      if (!name.endsWith('.json') && !name.endsWith('.jsonl')) continue;
       const full = path.join(dir, name);
       let st;
       try { st = fs.statSync(full); } catch (_) { continue; }

@@ -410,7 +410,14 @@ async function checkRumen() {
   }
   const pool = new pg.Pool({ connectionString: dbUrl, max: 1, connectionTimeoutMillis: 5000 });
   try {
-    const r = await pool.query("SELECT to_char(NOW() - MAX(created_at), 'HH24:MI:SS') AS ago FROM rumen_jobs");
+    // Sprint 63 T3 §3.1 — `rumen_jobs` has `started_at` (migration 001), NOT
+    // `created_at`. Pre-Sprint-63 this probed `created_at` and threw a
+    // generic WARN that doctor's same-DB check did not (Sprint 35 doctor fix
+    // landed RUMEN_TIME_COL.rumen_jobs='started_at' but never propagated
+    // here). Brad reproduced on r730 2026-05-11; doctor 23/23 GREEN while
+    // launcher Step 3 emitted `WARN  (query failed: column "created_at"
+    // does not exist)`. Aligned both probes to the same column.
+    const r = await pool.query("SELECT to_char(NOW() - MAX(started_at), 'HH24:MI:SS') AS ago FROM rumen_jobs");
     const ago = r.rows[0] && r.rows[0].ago;
     if (ago) {
       stepLine('3/4', 'Checking Rumen', 'OK', `(last job ${ago} ago)`);
@@ -419,10 +426,20 @@ async function checkRumen() {
     stepLine('3/4', 'Checking Rumen', 'WARN', '(no jobs yet — try termdeck init --rumen)');
     return { ago: null };
   } catch (err) {
-    if (/relation .*rumen_jobs.* does not exist/i.test(String(err.message))) {
+    const msg = String(err && err.message ? err.message : err);
+    if (/relation .*rumen_jobs.* does not exist/i.test(msg)) {
       stepLine('3/4', 'Checking Rumen', 'SKIP', '(rumen_jobs table not present — run termdeck init --rumen)');
     } else {
-      stepLine('3/4', 'Checking Rumen', 'WARN', `(query failed: ${err.message})`);
+      const colMatch = msg.match(/column "([^"]+)" does not exist/i);
+      if (colMatch) {
+        // Schema drift — rumen_jobs is missing the column we queried. Naming
+        // the column + remediation beats a bare `query failed` that operators
+        // learn to filter out (Brad's r730, 2026-05-11).
+        stepLine('3/4', 'Checking Rumen', 'WARN',
+          `(rumen_jobs.${colMatch[1]} column missing — re-run \`termdeck init --rumen\` to apply migration 001)`);
+      } else {
+        stepLine('3/4', 'Checking Rumen', 'WARN', `(query failed: ${err.message})`);
+      }
     }
     return { ago: null };
   } finally {

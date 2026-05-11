@@ -261,7 +261,13 @@ async function checkShellSanity() {
     let output = '';
     let resolved = false;
 
-    const proc = ptyMod.spawn(shell, ['-l', '-c', 'echo TERMDECK_OK'], {
+    // Sprint 63 T3 §3.3 — drop `-l` (login mode). `-l` sources ~/.bash_profile
+    // / ~/.zshrc and friends, which on heavy profiles (nvm, conda, plugin
+    // managers — Brad's r730 has conda) routinely exceeds the 3s timeout
+    // budget below. A PTY-spawn health check answers "can $SHELL spawn a
+    // PTY and emit output?" — not "does the user's interactive profile
+    // complete fast?" Login-mode startup time is unrelated to PTY health.
+    const proc = ptyMod.spawn(shell, ['-c', 'echo TERMDECK_OK'], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,

@@ -37,7 +37,7 @@ try {
 }
 try { pg = require('pg'); } catch { pg = null; }
 
-// Module-level singleton Postgres pool for rumen_insights (petvetbid DB).
+// Module-level singleton Postgres pool for rumen_insights (the daily-driver DB).
 // Lazy-initialized on first rumen endpoint hit so startup stays fast and
 // servers without DATABASE_URL never pay the connection cost.
 //
@@ -292,36 +292,76 @@ function _termdeckVersion() {
 // `pty.resize()` ioctls a stale fd. The error is race-expected, not a bug,
 // but the noisy console.error trace pollutes diagnostics and obscures real
 // errors. This helper guards against the race and downgrades the known
-// race-class errors (EBADF, ENOTTY, generic "ioctl failed" message shape) to
-// a silent return. Set TERMDECK_DEBUG_PTY_RACES=1 to log to console.debug
-// for diagnostics.
+// race-class errors (EBADF, ENOTTY) to a silent return. Set
+// TERMDECK_DEBUG_PTY_RACES=1 to log to console.debug for diagnostics.
+//
+// Sprint 63 T1 — `isPtyRaceError(err)` extracted so the WS message-handler
+// outer catch can also downgrade race-class errors that escape the helper's
+// own catch (e.g. if `pty.write` ever races the close, future code paths).
+// `session.pty._destroyed` short-circuit added as belt-and-suspenders for the
+// `term.kill()` → before-`term.onExit`-fires window: the DELETE handler now
+// stamps `_destroyed = true` immediately after kill(), so resize attempts in
+// that interval short-circuit without an ioctl call.
+function isPtyRaceError(err) {
+  if (!err) return false;
+  const msg = (err.message) || '';
+  const code = err.code;
+  return code === 'EBADF' ||
+    code === 'ENOTTY' ||
+    /\b(?:EBADF|ENOTTY)\b/.test(msg);
+}
+
 function safelyResizePty(session, cols, rows) {
   if (!session || !session.pty) return false;
+  if (session.pty._destroyed) return false;
   if (session.meta && session.meta.status === 'exited') return false;
   try {
     session.pty.resize(cols || 120, rows || 30);
     return true;
   } catch (err) {
-    const msg = (err && err.message) || '';
-    const code = err && err.code;
     // Sprint 60 v1.0.14 + T4-CODEX AUDIT-CONCERN narrowing: race classifier
     // requires explicit EBADF or ENOTTY (in code OR message). The earlier
     // shape — any "ioctl(N) failed" message — was too broad: it would have
     // silently dropped a non-race ioctl failure (e.g. EINTR, EFAULT) that
     // might indicate a real bug. Now: only the specific race-class signals
     // get suppressed; everything else rethrows so it surfaces in logs.
-    const isRace =
-      code === 'EBADF' ||
-      code === 'ENOTTY' ||
-      /\b(?:EBADF|ENOTTY)\b/.test(msg);
-    if (isRace) {
+    if (isPtyRaceError(err)) {
       if (process.env.TERMDECK_DEBUG_PTY_RACES) {
-        console.debug(`[ws] resize-after-pty-exit (race-expected): session=${session.id} ${code || msg}`);
+        console.debug(`[ws] resize-after-pty-exit (race-expected): session=${session.id} ${err.code || err.message}`);
       }
       return false;
     }
     throw err;
   }
+}
+
+// Sprint 63 T1 (Item 1.3) — body-parser hardening. The pre-existing
+// `entity.verify.failed` / `entity.parse.failed` handler logged the error
+// message but not WHICH bytes triggered the parse failure. Operators on
+// Brad's r730 saw 9× SyntaxError flood over 13h with no fingerprint to
+// identify the offending caller. `hexEscapePrefix` renders a 32-byte
+// prefix of the raw body in a single-line, log-safe form: printable ASCII
+// kept verbatim, non-printables rendered as `\xNN`, backslash escaped as
+// `\\`. PII-conservative because we cap at 32 bytes (truncation marker `…`
+// appended if more). The error middleware injects this into the existing
+// `console.warn` line so the log signature is identifiable without
+// dumping the full body.
+function hexEscapePrefix(buf, maxBytes = 32) {
+  if (!buf || buf.length === 0) return '<no-body>';
+  const len = Math.min(buf.length, maxBytes);
+  let out = '';
+  for (let i = 0; i < len; i++) {
+    const b = buf[i];
+    if (b === 0x5c) {
+      out += '\\\\';
+    } else if (b >= 0x20 && b < 0x7f) {
+      out += String.fromCharCode(b);
+    } else {
+      out += '\\x' + b.toString(16).padStart(2, '0');
+    }
+  }
+  if (buf.length > maxBytes) out += '…';
+  return out;
 }
 
 function createServer(config) {
@@ -346,6 +386,13 @@ function createServer(config) {
   // logs so real errors aren't drowned in noise.
   app.use(express.json({
     verify: (req, res, buf) => {
+      // Sprint 63 T1 (Item 1.3) — capture a stable copy of the raw body so
+      // the error middleware below can render a 32-byte hex-escaped prefix.
+      // `Buffer.from(buf)` copies because express may pool the underlying
+      // accumulator across requests; without the copy the error handler
+      // could see bytes from a later request.
+      req.rawBody = Buffer.from(buf);
+
       // O(N) single-pass scan. Only checks bytes inside double-quoted string
       // regions so structural whitespace doesn't trigger false positives.
       let inString = false;
@@ -390,7 +437,13 @@ function createServer(config) {
       err.type === 'entity.verify.failed' ||
       err instanceof SyntaxError
     )) {
-      console.warn(`[body-parser] ${err.code || err.type || 'parse-error'}: ${err.message} (${req.method} ${req.path})`);
+      // Sprint 63 T1 (Item 1.3) — append a 32-byte hex-escaped prefix of the
+      // raw body so the operator can identify which caller is sending bad
+      // JSON without exposing the full payload. Falls through to `<no-body>`
+      // if the verify callback never ran (parse error before verify, or no
+      // body at all).
+      const prefix = hexEscapePrefix(req.rawBody);
+      console.warn(`[body-parser] ${err.code || err.type || 'parse-error'}: ${err.message} (${req.method} ${req.path}) prefix="${prefix}"`);
       return res.status(400).json({
         error: 'Malformed JSON body',
         detail: err.message,
@@ -1189,6 +1242,18 @@ function createServer(config) {
             const sessUploadDir = path.join(os.tmpdir(), 'termdeck-uploads', session.id);
             fs.rmSync(sessUploadDir, { recursive: true, force: true });
           } catch (_err) { /* non-blocking */ }
+
+          // Sprint 63 T1 (Item 1.1) — null `session.pty` so the wrapper is
+          // eligible for GC and downstream `if (session.pty)` guards correctly
+          // identify the exited state. Root cause of Joshua's 2026-05-08/09
+          // overnight `kern.tty.ptmx_max=511` exhaustion (516 fds for 4 panels):
+          // without this nulling, node-pty's wrapper stayed pinned by onData /
+          // onExit closures even after the child exited, holding the master
+          // fd until next GC pass. Set AFTER `onPanelClose` fires (fire-and-
+          // forget; reads `session.meta` + `session.id`, not `session.pty`) and
+          // AFTER the upload-dir cleanup so any sync reader above this line
+          // sees the original wrapper.
+          session.pty = null;
         });
 
         // Wire command logging to SQLite + RAG
@@ -1346,7 +1411,7 @@ function createServer(config) {
   });
 
   // Graph endpoints (Sprint 38 T4) — knowledge-graph view backing graph.html.
-  // Reuses the petvetbid pg pool (same DATABASE_URL serves memory_items +
+  // Reuses the daily-driver pg pool (same DATABASE_URL serves memory_items +
   // memory_relationships alongside rumen_*). Graceful-degrades when the pool
   // is absent.
   createGraphRoutes({
@@ -1376,6 +1441,14 @@ function createServer(config) {
     // Kill PTY process
     if (session.pty) {
       try { session.pty.kill(); } catch (err) { console.error('[pty] kill failed for session', req.params.id + ':', err); }
+      // Sprint 63 T1 (Item 1.2) — stamp `_destroyed = true` on the pty wrapper
+      // so `safelyResizePty` can short-circuit any resize attempts that arrive
+      // in the kill()→onExit window. node-pty's `kill()` only signals the
+      // child; onExit fires asynchronously once the child reaps. Without this
+      // marker, a WS resize message in that window would ioctl a fd whose
+      // child has just SIGHUP'd, surfacing as EBADF/ENOTTY. node-pty doesn't
+      // set this property itself; the convention is owned by TermDeck.
+      session.pty._destroyed = true;
     }
 
     sessions.remove(req.params.id);
@@ -1595,15 +1668,23 @@ function createServer(config) {
   });
 
   // POST /api/sessions/:id/resize - resize terminal
+  // Sprint 63 T1 (Item 1.2) — distinguish "session never existed" (404) from
+  // "session exists but PTY has exited" (410 Gone). Pre-Sprint-63 both paths
+  // collapsed to 404 (when session.pty was null after the PTY-leak fix) or
+  // 409 (when safelyResizePty returned false). 410 is the semantically
+  // correct response: the resource was here, the resource is now gone.
   app.post('/api/sessions/:id/resize', (req, res) => {
     const session = sessions.get(req.params.id);
-    if (!session?.pty) return res.status(404).json({ error: 'Session not found' });
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (!session.pty || (session.meta && session.meta.status === 'exited')) {
+      return res.status(410).json({ error: 'PTY is gone (session exited)' });
+    }
 
     const { cols, rows } = req.body;
     try {
       const resized = safelyResizePty(session, cols, rows);
       if (!resized) {
-        return res.status(409).json({ error: 'Session is exited or its PTY is no longer alive' });
+        return res.status(410).json({ error: 'PTY is gone (session exited)' });
       }
       res.json({ ok: true, cols, rows });
     } catch (err) {
@@ -2027,7 +2108,7 @@ function createServer(config) {
   });
 
   // ==================== Rumen insights (Sprint 4 T2) ====================
-  // Read-only access to rumen_insights + rumen_jobs in the petvetbid Postgres
+  // Read-only access to rumen_insights + rumen_jobs in the daily-driver Postgres
   // instance. Contract frozen in docs/sprint-4-rumen-integration/API-CONTRACT.md.
 
   function rumenUnreachable(res) {
@@ -2268,7 +2349,7 @@ function createServer(config) {
 
         switch (parsed.type) {
           case 'input':
-            if (session.pty) {
+            if (session.pty && !session.pty._destroyed) {
               session.pty.write(parsed.data);
               session.trackInput(parsed.data);
             }
@@ -2289,7 +2370,21 @@ function createServer(config) {
             }));
             break;
         }
-      } catch (err) { console.error('[ws] message handler error:', err); }
+      } catch (err) {
+        // Sprint 63 T1 (Item 1.2) — belt-and-suspenders: if a race-class
+        // ioctl error somehow escapes safelyResizePty's own catch (or comes
+        // from a future write/ioctl path), downgrade to console.debug
+        // instead of polluting stderr with the noisy ws-message-handler
+        // error log. safelyResizePty itself already catches the resize
+        // path; this catches any other race-class shape that bubbles here.
+        if (isPtyRaceError(err)) {
+          if (process.env.TERMDECK_DEBUG_PTY_RACES) {
+            console.debug(`[ws] message handler race-class (suppressed): ${err.code || err.message}`);
+          }
+        } else {
+          console.error('[ws] message handler error:', err);
+        }
+      }
     });
 
     ws.on('close', () => {
@@ -2599,6 +2694,11 @@ module.exports = {
   // helper instead of re-implementing it. T4-CODEX AUDIT-CONCERN flagged that
   // the prior re-implementation pattern in the test could drift silently.
   safelyResizePty,
+  // Sprint 63 T1 (Item 1.2 + 1.3) — race-class classifier + raw-body hex
+  // prefix renderer exported so fence tests can import the production
+  // helpers instead of re-implementing them.
+  isPtyRaceError,
+  hexEscapePrefix,
   // Sprint 48 T4 — exported for unit testing the secrets.env → PTY env merge.
   readTermdeckSecretsForPty,
   _resetTermdeckSecretsCache,
