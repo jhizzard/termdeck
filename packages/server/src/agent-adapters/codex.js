@@ -155,6 +155,41 @@ function _codexCandidateDirs(homedir, now) {
   return out;
 }
 
+// Sprint 64 T2 (carve-out 2.1) — `min(birthtime, mtime)` is the right gate
+// for cross-panel contamination. Sprint 63 EXIT-CAPTURE-VERIFICATION.md
+// Finding #1 documents the failure mode: when codex panel-B spawned and
+// self-exited during the 0.129→0.130 auto-update, panel-A's rollout was
+// still being written by panel-A's ongoing turns; A's `mtimeMs` exceeded
+// B's `createdAtMs`, so A was returned as B's transcript.
+//
+// Why `min(birthtime, mtime)` rather than birthtime alone or mtime alone:
+//   • Cross-panel contamination (Sprint 63 Finding #1): Panel-A active panel
+//     has `birthtime=T_A_create` (in the past) and `mtime=NOW` (bumped each
+//     turn). min = birthtime — correctly rejects when birthtime < spawn time.
+//   • Backdated-mtime stale rollouts: mtime < birthtime. min = mtime —
+//     correctly rejects when backdated mtime < spawn time.
+//   • Same-session rollout (this panel's own): birthtime AND mtime both
+//     post-spawn. min = birthtime ≈ mtime — correctly admits.
+//   • Platforms without birthtime (some Linux tmpfs returns birthtimeMs=0):
+//     fall back to `mtime` for both terms of the min → equivalent to mtime
+//     gate, same behavior as pre-fix.
+//
+// Gate epsilon (per Sprint 64 T4-CODEX 16:21 AUDIT-CONCERN — deterministic
+// pre-spawn rejection on birthtime-capable platforms):
+//   • Birthtime-capable platforms (APFS, ext4 with `statx`, NTFS): STRICT,
+//     no epsilon. Birthtime is deterministic FS metadata — no jitter, no
+//     quantization beyond ~1ns. A file with `birthtimeMs < spawnTimestampMs`
+//     was unambiguously created before this panel spawned and CANNOT be
+//     this panel's rollout. Strict gate is correct.
+//   • Mtime-fallback platforms (rare; some Linux tmpfs): use
+//     `_CODEX_GATE_EPSILON_MS_MTIME_FALLBACK = 5000ms` to absorb FS time
+//     quantization rounding plus any small clock-skew between OS time and
+//     `Date.now()`. mtime can drift in production (active concurrent panel
+//     bumps it), so this epsilon path is intentionally narrower than
+//     birthtime — it's a structural fallback, not a tolerance knob.
+const _CODEX_GATE_EPSILON_MS_BIRTHTIME = 0;
+const _CODEX_GATE_EPSILON_MS_MTIME_FALLBACK = 5000;
+
 async function resolveTranscriptPath(session) {
   const fs = require('fs');
   const path = require('path');
@@ -164,6 +199,15 @@ async function resolveTranscriptPath(session) {
   const createdAtMs = session.meta.createdAt
     ? Date.parse(session.meta.createdAt)
     : 0;
+  // Sprint 64 T2 (carve-out 2.1) — spawnTimestampMs is set in spawnTerminalSession
+  // immediately after `pty.spawn` returns; strictly later than createdAt (which
+  // is set in `sessions.create` BEFORE pty.spawn). Use it when present; fall
+  // back to createdAt for older sessions reloaded from SQLite that pre-date the
+  // field. The `- _CODEX_GATE_EPSILON_MS` accounts for filesystem time-stamp
+  // quantization rounding (worst-case 1s on some platforms).
+  const spawnAtMs = (typeof session.meta.spawnTimestampMs === 'number' && session.meta.spawnTimestampMs > 0)
+    ? session.meta.spawnTimestampMs
+    : createdAtMs;
   const candidates = [];
   for (const dir of _codexCandidateDirs(os.homedir(), Date.now())) {
     let entries;
@@ -174,7 +218,18 @@ async function resolveTranscriptPath(session) {
       const full = path.join(dir, name);
       let st;
       try { st = fs.statSync(full); } catch (_) { continue; }
-      if (createdAtMs && st.mtimeMs < createdAtMs) continue;
+      // Per-file gate: prefer strict birthtime when the platform exposes it;
+      // fall back to epsilon-tolerant mtime only when birthtime is unavailable.
+      // Either signal indicates "this rollout existed before the panel
+      // spawned" → reject the candidate.
+      const hasBirthtime = (typeof st.birthtimeMs === 'number' && st.birthtimeMs > 0);
+      const epsilonForFile = hasBirthtime
+        ? _CODEX_GATE_EPSILON_MS_BIRTHTIME
+        : _CODEX_GATE_EPSILON_MS_MTIME_FALLBACK;
+      const gateMsForFile = spawnAtMs > 0 ? spawnAtMs - epsilonForFile : 0;
+      const fileBirthMs = hasBirthtime ? st.birthtimeMs : st.mtimeMs;
+      const fileMinMs = Math.min(fileBirthMs, st.mtimeMs);
+      if (gateMsForFile && fileMinMs < gateMsForFile) continue;
       candidates.push({ full, mtime: st.mtimeMs });
     }
   }
@@ -264,6 +319,138 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
   ].join('\n');
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// probeCodexVersion — Sprint 64 T2 (carve-out 2.3).
+//
+// Pre-spawn version probe for the Codex CLI auto-update lifecycle hazard
+// documented in Sprint 63 EXIT-CAPTURE-VERIFICATION.md Finding #1. Codex CLI
+// has no `--no-update` flag (verified 2026-05-11 against codex 0.130.0), so a
+// stale codex panel may fire its interactive update picker on spawn, accept
+// "Update now," `npm install -g @openai/codex`, and exit 0 — BEFORE any canary
+// inject lands. Joshua's Sprint 63 T2 lost a codex canary panel to exactly
+// this failure mode at 13:26 ET.
+//
+// Approach (per Sprint 64 ORCH SCOPE 16:14 ET adjudication of T4-CODEX 16:11
+// AUDIT-CONCERN #3 default-install visibility): two complementary WARN paths.
+//
+//   • **Persisted last-seen-version drift.** Read
+//     `~/.termdeck/.last-codex-version`. Absent → write `observed` silently,
+//     no WARN (first run is "baseline," not "drift"). Present and
+//     `observed !== persisted` → log WARN + update persisted to new observed
+//     (self-heals: next spawn is silent on the new version). Catches the
+//     Sprint 63 auto-update hazard for the default operator with no env-var
+//     setup required. Doesn't false-alarm on stable installs (no env, no
+//     persisted file changes once written).
+//
+//   • **`CODEX_PINNED_VERSION` env knob.** Operator-explicit pin retained
+//     as a separate signal — useful in CI / multi-user installs where the
+//     persisted file is per-user but the pin is global. WARN on observed ≠
+//     pinned; independent of the drift path above.
+//
+// Why not a hardcoded "known-good window"? Codex shipped 0.125 → 0.129 →
+// 0.130 in ~10 days; a baked-in version list goes stale in a week. The
+// persisted-self-heal path is the deterministic answer.
+//
+// Why not a wrapper shim (option B) that intercepts the update picker? The
+// picker has already shifted shape across recent codex releases; a shim that
+// answers "n\n" today may answer "yes\n" to a future renamed prompt. Real
+// fix lives upstream — file a `--no-update` flag against the Codex CLI repo.
+// Tracking that filing is cheaper than maintaining a shim.
+//
+// Dependency-injected `spawnSync` + `logger` + `fsApi` keep the fence test
+// free of a live codex binary on PATH or filesystem dependence.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Module-level constants for testability — ORCH SCOPE 16:14 ET. Fence tests
+// override the path by passing `{ persistedVersionPath: '...' }`.
+const _CODEX_PERSISTED_VERSION_FILENAME = '.last-codex-version';
+
+function _defaultPersistedVersionPath() {
+  const os = require('os');
+  const path = require('path');
+  return path.join(os.homedir(), '.termdeck', _CODEX_PERSISTED_VERSION_FILENAME);
+}
+
+function probeCodexVersion({
+  pinnedVersion = process.env.CODEX_PINNED_VERSION,
+  spawnSync = require('child_process').spawnSync,
+  logger = console,
+  fsApi = require('fs'),
+  persistedVersionPath = _defaultPersistedVersionPath(),
+} = {}) {
+  let observed = null;
+  try {
+    const res = spawnSync('codex', ['--version'], { encoding: 'utf8', timeout: 2000 });
+    if (!res || res.status !== 0 || !res.stdout) {
+      return { ok: null, observed: null, reason: 'probe-failed' };
+    }
+    const match = String(res.stdout).match(/(\d+\.\d+\.\d+)/);
+    observed = match ? match[1] : null;
+  } catch (_) {
+    return { ok: null, observed: null, reason: 'probe-error' };
+  }
+  if (!observed) {
+    return { ok: null, observed: null, reason: 'no-version-string' };
+  }
+
+  // Drift path: compare observed against persisted last-seen value.
+  let persisted = null;
+  let driftDetected = false;
+  try {
+    if (fsApi.existsSync(persistedVersionPath)) {
+      const raw = fsApi.readFileSync(persistedVersionPath, 'utf8');
+      const trimmed = String(raw || '').trim();
+      persisted = trimmed.length > 0 ? trimmed : null;
+    }
+  } catch (_) {
+    // Read failure is non-fatal — treat as absent. Persistence is best-effort.
+    persisted = null;
+  }
+  if (persisted === null) {
+    // First-run baseline — write silently, no WARN.
+    _writePersistedVersion(fsApi, persistedVersionPath, observed);
+  } else if (persisted !== observed) {
+    driftDetected = true;
+    if (logger && typeof logger.warn === 'function') {
+      logger.warn(
+        `[codex] version drift detected: observed=${observed} persisted=${persisted} — `
+        + 'codex CLI may have auto-updated since last spawn (Sprint 63 lifecycle hazard).'
+      );
+    }
+    _writePersistedVersion(fsApi, persistedVersionPath, observed);
+  }
+
+  // Pin path: independent of drift. Warns on every spawn where pin ≠ observed.
+  let pinnedMismatch = false;
+  if (pinnedVersion && observed !== pinnedVersion) {
+    pinnedMismatch = true;
+    if (logger && typeof logger.warn === 'function') {
+      logger.warn(
+        `[codex] version pin mismatch: observed=${observed} pinned=${pinnedVersion} — `
+        + 'CODEX_PINNED_VERSION env var requires explicit re-pin (Sprint 63 lifecycle hazard).'
+      );
+    }
+  }
+
+  if (driftDetected || pinnedMismatch) {
+    return { ok: false, observed, persisted, pinned: pinnedVersion || null, driftDetected, pinnedMismatch };
+  }
+  return { ok: true, observed, persisted, pinned: pinnedVersion || null, driftDetected: false, pinnedMismatch: false };
+}
+
+function _writePersistedVersion(fsApi, p, version) {
+  try {
+    const path = require('path');
+    const dir = path.dirname(p);
+    try { fsApi.mkdirSync(dir, { recursive: true }); }
+    catch (_) { /* fail-soft — usually already exists */ }
+    fsApi.writeFileSync(p, `${version}\n`, 'utf8');
+  } catch (_) {
+    // Persistence failure is non-fatal — WARN behavior is unaffected the
+    // next spawn (we'll re-detect drift against whatever is/isn't on disk).
+  }
+}
+
 const codexAdapter = {
   name: 'codex',
   sessionType: 'codex',
@@ -274,6 +461,14 @@ const codexAdapter = {
     binary: 'codex',
     defaultArgs: [],
     env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+    // Sprint 64 T2 (carve-out 2.4) — direct spawn (no `zsh -c` wrapper) when
+    // the launching command is exactly the binary name. Sprint 63
+    // EXIT-CAPTURE-VERIFICATION.md § 6 flagged this as a probable contributor
+    // to codex's fast-death window during the 2026-05-11 13:26 ET update-picker
+    // event — codex spawned through `zsh -c codex` may have lost the
+    // interactive-TTY context the update-picker dialog needed. See claude.js
+    // for the full rationale + fallback semantics.
+    shellWrap: false,
   },
   patterns: {
     prompt: PROMPT,
@@ -328,5 +523,12 @@ const codexAdapter = {
     detectExisting: (text) => /^\s*\[mcp_servers\.mnestra\]\s*$/m.test(text),
   },
 };
+
+// Sprint 64 T2 (carve-out 2.3) — expose probeCodexVersion on the adapter object
+// so call sites can `require('./codex').probeCodexVersion(...)` without
+// threading through the registry. Adapter-shape parity tests (Sprint 45 T4's
+// tests/agent-adapter-parity.test.js) iterate a fixed allowlist of fields and
+// tolerate extra properties — adding this function is safe.
+codexAdapter.probeCodexVersion = probeCodexVersion;
 
 module.exports = codexAdapter;

@@ -202,18 +202,27 @@ if (args.includes('--version') || args.includes('-v')) {
   process.exit(0);
 }
 
-// Subcommand dispatch — handle `termdeck init --mnestra|--rumen` before
-// falling through to the default launcher's flag parsing. The `require` of
-// init-*.js is lazy so users running the normal `termdeck` command never pay
-// the cost of loading pg / supabase helpers at startup.
+// Subcommand dispatch — handle `termdeck init [--mnestra|--rumen|--project|--auto|--mcp-supabase]`
+// before falling through to the default launcher's flag parsing. The `require`
+// of init-*.js is lazy so users running the normal `termdeck` command never
+// pay the cost of loading pg / supabase helpers at startup.
+//
+// Sprint 64 T1: added the no-subflag default (`termdeck init` with no mode
+// argument or with `--auto` / `--mcp-supabase`) routing to the new
+// `init.js` top-level orchestrator. The orchestrator runs init-mnestra
+// then init-rumen with a unified UX. `--auto` drives MCP-mediated
+// auto-provisioning. Existing modes (--mnestra / --rumen / --project)
+// stay callable independently for advanced users + CI fixtures.
 if (args[0] === 'init') {
   const mode = args[1];
   const rest = args.slice(2);
 
-  // Sprint 37 T2: refuse mode-mixing. The dispatch picks args[1] as the
-  // single mode flag, but a user who writes `init --project foo --mnestra`
+  // Sprint 37 T2 + Sprint 64 T1: refuse explicit-mode-mixing. The dispatch picks
+  // args[1] as the single mode flag, but a user who writes `init --project foo --mnestra`
   // probably intended only one of those. Surface the conflict instead of
-  // silently picking the first.
+  // silently picking the first. The `--auto` / `--mcp-supabase` flags are
+  // NOT in this list — they're handled by init.js (the orchestrator) and
+  // can co-exist with init.js's own flag set.
   const MODES = ['--project', '--mnestra', '--rumen'];
   const presentModes = MODES.filter((m) => args.slice(1).includes(m));
   if (presentModes.length > 1) {
@@ -221,19 +230,19 @@ if (args[0] === 'init') {
     process.exit(1);
   }
 
-  const run = (modPath) => {
+  const run = (modPath, argv) => {
     const fn = require(modPath);
-    return fn(rest).then((code) => process.exit(code || 0));
+    return fn(argv).then((code) => process.exit(code || 0));
   };
   if (mode === '--mnestra') {
-    run(path.join(__dirname, 'init-mnestra.js')).catch((err) => {
+    run(path.join(__dirname, 'init-mnestra.js'), rest).catch((err) => {
       console.error('[cli] init --mnestra failed:', err && err.stack || err);
       process.exit(1);
     });
     return;
   }
   if (mode === '--rumen') {
-    run(path.join(__dirname, 'init-rumen.js')).catch((err) => {
+    run(path.join(__dirname, 'init-rumen.js'), rest).catch((err) => {
       console.error('[cli] init --rumen failed:', err && err.stack || err);
       process.exit(1);
     });
@@ -242,16 +251,44 @@ if (args[0] === 'init') {
   if (mode === '--project') {
     // init-project takes the project name as its first positional arg, plus
     // optional --dry-run / --force flags. Pass `rest` straight through.
-    run(path.join(__dirname, 'init-project.js')).catch((err) => {
+    run(path.join(__dirname, 'init-project.js'), rest).catch((err) => {
       console.error('[cli] init --project failed:', err && err.stack || err);
       process.exit(1);
     });
     return;
   }
-  console.error('Usage: termdeck init --mnestra | --rumen | --project <name>');
-  console.error('  termdeck init --mnestra            Configure Tier 2 memory (Supabase + Mnestra)');
-  console.error('  termdeck init --rumen              Deploy Tier 3 async learning (Rumen)');
-  console.error('  termdeck init --project <name>     Scaffold a new project with CLAUDE.md + orchestration docs');
+
+  // Sprint 64 T1: default (no mode) OR `--auto` / `--mcp-supabase` → route to
+  // the unified orchestrator at init.js. It runs init-mnestra + init-rumen +
+  // doctor with a single progress UX. Forward ALL post-`init` args (mode
+  // arg included so init.js parses --auto / --mcp-supabase itself).
+  const orchestratorArgs = args.slice(1);
+  if (mode === undefined || mode === '--auto' || mode === '--mcp-supabase'
+      || (typeof mode === 'string' && mode.startsWith('-') && mode !== '-h')) {
+    // The leading-dash check catches things like `--help`, `--reset`,
+    // `--from-env`, `--dry-run` etc. — those are init.js orchestrator flags,
+    // not unknown sub-modes. Route to init.js with them intact.
+    run(path.join(__dirname, 'init.js'), orchestratorArgs).catch((err) => {
+      console.error('[cli] init failed:', err && err.stack || err);
+      process.exit(1);
+    });
+    return;
+  }
+  // `-h` alone after `init` → orchestrator help
+  if (mode === '-h') {
+    run(path.join(__dirname, 'init.js'), ['--help']).catch((err) => {
+      console.error('[cli] init failed:', err && err.stack || err);
+      process.exit(1);
+    });
+    return;
+  }
+  console.error('Usage: termdeck init [--auto] | --mnestra | --rumen | --project <name>');
+  console.error('  termdeck init                       Unified setup (Mnestra + Rumen + doctor)');
+  console.error('  termdeck init --auto                Auto-provision via Supabase MCP (alias: --mcp-supabase)');
+  console.error('  termdeck init --mnestra             Configure Tier 2 memory (Supabase + Mnestra)');
+  console.error('  termdeck init --rumen               Deploy Tier 3 async learning (Rumen)');
+  console.error('  termdeck init --project <name>      Scaffold a new project with CLAUDE.md + orchestration docs');
+  console.error('  termdeck init --help                Show full flag reference');
   process.exit(1);
 }
 

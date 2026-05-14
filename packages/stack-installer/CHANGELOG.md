@@ -5,6 +5,17 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [1.3.0] — 2026-05-14
+
+### Added
+
+- **`installPreCompactHook`** at `src/index.js` — bundles `assets/hooks/memory-pre-compact.js` (235 LOC, NEW) and wires it into `~/.claude/settings.json` under `hooks.PreCompact` with `matcher: "*"`. Closes Investigation 2 of `docs/CRITICAL-READ-FIRST-2026-05-07.md` (auto-commit on context-compaction-near). Hook is fail-soft (exit 0 on error; never blocks compaction); writes `source_type='pre_compact_snapshot'` rows to Mnestra. Two firing modes: Claude Code `PreCompact` lifecycle event AND TermDeck server-side periodic-capture timer (for Codex/Gemini/Grok panels). Discriminated via `resolveFiringContext`. Refresh path at `packages/cli/src/init-mnestra.js::runHookRefresh` extended with the same version-stamp regex.
+- **Uninstall path** at `src/uninstall.js` — `_isPreCompactHookEntry` + `'PreCompact'` added to the settings.json event-name loop in `_stepSpliceSettingsJson`; new `_stepBackupPreCompactHookFile` step in the orchestrator chain. Round-trips cleanly with install.
+
+### Documentation
+
+- Audit-trail update: validated against `@jhizzard/termdeck@1.3.0`, the Sprint 64 close-out ship. Wave bundles (a) install-polish wizard with `--auto` MCP-mediated Supabase provisioning + 10-phase pipeline + OS-detection (macOS / Ubuntu / Docker fedora / Docker debian / Alpine / Arch / SUSE) + unified `init` orchestrator collapsing the new-user path from 15+ manual steps to "paste 2 credentials, click 3 buttons"; (b) Sprint 63 four carve-outs — codex `resolveTranscriptPath` strict birthtime epsilon + `adapter.spawn` honored by `spawnTerminalSession` + codex auto-update persisted-last-seen-version probe + `MIN_TRANSCRIPT_MESSAGES` env-configurable threshold; (c) Investigation 2 closure — `PreCompact` harness hook for Claude Code panels + server-side `onPanelPeriodicCapture` timer (10 min default, 1 KB throttle) for non-Claude panels; (d) security regression caught pre-merge by T4-CODEX adversarial audit — Supabase PAT was about to broadcast to every spawned PTY env via `secrets.env` merge; fixed with PAT non-persistence + PTY env exclusion list + dual-layer credential redaction (source-side regex + caller-side explicit). 295/295 root `npm test` green; T4-CODEX FINAL-VERDICT GREEN with file:line evidence; ~42 min wall-clock from inject to verdict (fastest 3+1+1 close to date).
+
 ## [1.2.0] — 2026-05-11
 
 ### Documentation

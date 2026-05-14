@@ -546,13 +546,6 @@ test('term.onExit wiring fences onPanelClose for codex panels (production close 
   await withTempHome(async (home) => {
     installFakeHook(home);
     const cwd = '/Users/test/codex-route-fence';
-    // Fixture mtime must be AFTER session.createdAt or the codex resolver's
-    // `mtime >= createdAtMs` filter at agent-adapters/codex.js:177 rejects.
-    // spawnTerminalSession sets createdAt to `new Date()` at POST time, so
-    // pre-stamping the fixture with `Date.now() + 60_000` gives a 60-second
-    // buffer that survives any reasonable test latency.
-    const futureMtime = Date.now() + 60_000;
-    writeCodexRollout(home, { cwd, name: 'rollout-route.jsonl', mtime: futureMtime });
 
     const handle = await bootTestServer(home);
     const { port } = handle;
@@ -576,6 +569,22 @@ test('term.onExit wiring fences onPanelClose for codex panels (production close 
       const term = _fakeTermsByPid.get(created.pid);
       assert.ok(term, 'fake pty.spawn returned a term and createServer captured the pid');
 
+      // Write the rollout fixture AFTER the POST so the file's birthtime is
+      // strictly later than session.meta.spawnTimestampMs (set at pty.spawn
+      // time inside the POST handler). Sprint 64 T2 carve-out 2.1 tightened
+      // the codex resolver to strict birthtime gate (no epsilon on
+      // birthtime-capable platforms — APFS/ext4/NTFS); fixtures created
+      // before POST are now correctly rejected as cross-panel-contamination
+      // candidates. This positive test models the real-world ordering: codex
+      // CLI forks → pty.spawn returns → codex initializes → codex creates
+      // its rollout file (birthtime >= spawnTimestampMs).
+      //
+      // Use a fixed mtime in the FUTURE so the day-dir (computed from mtime)
+      // is deterministic and matches today's UTC date regardless of when
+      // the test runs in the day.
+      const fixtureMtime = Date.now() + 60_000;
+      writeCodexRollout(home, { cwd, name: 'rollout-route.jsonl', mtime: fixtureMtime });
+
       // Drive the onExit pathway directly — same call shape as a real
       // /exit-induced PTY exit. Production index.js:1140 wired this lambda
       // when spawnTerminalSession ran; firing _emitExit invokes that lambda
@@ -594,9 +603,9 @@ test('term.onExit wiring fences onPanelClose for codex panels (production close 
       assert.equal(payload.source_agent, 'codex',
         'source_agent must be set explicitly per adapter — same invariant as the helper-level tests, now proven through the production close path');
       assert.equal(payload.transcript_path, path.join(home, '.codex', 'sessions',
-        String(new Date(futureMtime).getUTCFullYear()),
-        String(new Date(futureMtime).getUTCMonth() + 1).padStart(2, '0'),
-        String(new Date(futureMtime).getUTCDate()).padStart(2, '0'),
+        String(new Date(fixtureMtime).getUTCFullYear()),
+        String(new Date(fixtureMtime).getUTCMonth() + 1).padStart(2, '0'),
+        String(new Date(fixtureMtime).getUTCDate()).padStart(2, '0'),
         'rollout-route.jsonl'));
     } finally {
       _setSpawnSessionEndHookImplForTesting(null);
@@ -610,8 +619,6 @@ test('DELETE /api/sessions/:id drives kill→onExit→onPanelClose (route-level 
   await withTempHome(async (home) => {
     installFakeHook(home);
     const cwd = '/Users/test/codex-route-delete';
-    const futureMtime = Date.now() + 60_000;
-    writeCodexRollout(home, { cwd, name: 'rollout-delete.jsonl', mtime: futureMtime });
 
     const handle = await bootTestServer(home);
     const { port } = handle;
@@ -625,6 +632,12 @@ test('DELETE /api/sessions/:id drives kill→onExit→onPanelClose (route-level 
       });
       assert.equal(createRes.status, 201);
       const created = await createRes.json();
+
+      // Sprint 64 T2 (carve-out 2.1) — see the sibling test above for why
+      // the rollout fixture is created AFTER the POST. Strict birthtime gate
+      // requires file.birthtime >= session.spawnTimestampMs.
+      const fixtureMtime = Date.now() + 60_000;
+      writeCodexRollout(home, { cwd, name: 'rollout-delete.jsonl', mtime: fixtureMtime });
 
       // DELETE drives the production close path: session.pty.kill() at
       // index.js:1360 → fake.kill() → setImmediate(onExit) → onPanelClose.

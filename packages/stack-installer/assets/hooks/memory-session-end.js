@@ -138,6 +138,16 @@ const PROJECT_MAP = [
 ];
 
 const MIN_TRANSCRIPT_BYTES = parseInt(process.env.TERMDECK_HOOK_MIN_BYTES || '5000', 10);
+// Sprint 64 T2 (carve-out 2.2) — Sprint 63 EXIT-CAPTURE-VERIFICATION.md
+// Finding #3 documented Brad's grok-canary panel silent-skipped at 4 msgs /
+// 6,713 bytes of canary content because the legacy hard-coded `< 5 messages`
+// gate fired before the MIN_TRANSCRIPT_BYTES floor could even matter. Codex
+// audit posts are similarly content-rich-but-message-count-poor (one canonical
+// turn). Default lowered to 1 — the 5 KB byte gate at `:140 + :795 + the
+// `MIN_TRANSCRIPT_BYTES`-based skip at line 795` is now the sole primary noise
+// filter; sub-5KB drips still get dropped. Env-configurable for operators who
+// want the legacy permissive-to-zero floor or a higher cutoff than 1.
+const MIN_TRANSCRIPT_MESSAGES = parseInt(process.env.TERMDECK_HOOK_MIN_MESSAGES || '1', 10);
 const DEBUG = process.env.TERMDECK_HOOK_DEBUG === '1';
 
 function log(msg) {
@@ -573,8 +583,10 @@ function buildSummary(transcriptPath, sessionType) {
 
   const messages = parser(raw);
 
-  if (messages.length < 5) {
-    debug(`session-too-short: ${messages.length} messages (parser=${resolvedType}), skipping`);
+  // Sprint 64 T2 (carve-out 2.2) — env-configurable floor, default 1. See
+  // `MIN_TRANSCRIPT_MESSAGES` declaration for the Brad grok-canary rationale.
+  if (messages.length < MIN_TRANSCRIPT_MESSAGES) {
+    debug(`session-too-short: ${messages.length} messages (parser=${resolvedType}), skipping (TERMDECK_HOOK_MIN_MESSAGES=${MIN_TRANSCRIPT_MESSAGES})`);
     return null;
   }
 

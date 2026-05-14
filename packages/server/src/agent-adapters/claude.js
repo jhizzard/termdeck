@@ -221,6 +221,17 @@ const claudeAdapter = {
     binary: 'claude',
     defaultArgs: [],
     env: {},
+    // Sprint 64 T2 (carve-out 2.4) — when shellWrap is `false`, spawnTerminalSession
+    // bypasses the `zsh -c <command>` wrapper and execs `binary` + `defaultArgs`
+    // directly via `pty.spawn`. Preserves the user's PATH lookup of `claude`
+    // while keeping the PTY rooted in an interactive context (zsh -c discards
+    // the TTY-interactive flags Claude Code's input handler needs). Falls back
+    // to the legacy wrapper when the user-supplied `command` carries additional
+    // args (e.g. `claude --resume <uuid>` from a launcher button) so user args
+    // are not silently dropped. See packages/server/src/index.js:1118-1175 for
+    // the dispatch logic and packages/server/tests/adapter-spawn-shell-wrap.test.js
+    // for the fence.
+    shellWrap: false,
   },
   patterns: {
     prompt: PROMPT,

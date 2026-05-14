@@ -53,6 +53,17 @@ const HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-session-end.js');
 const HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-session-end.js');
 const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
 const HOOK_TIMEOUT_SECONDS = 30;
+
+// Sprint 64 T3 — PreCompact hook (Investigation 2 of
+// docs/CRITICAL-READ-FIRST-2026-05-07.md). Fires BEFORE Claude Code compacts
+// context, capturing session state into Mnestra under
+// source_type='pre_compact_snapshot'. Lives alongside the SessionEnd hook in
+// ~/.claude/hooks/ and re-uses memory-session-end.js helpers via the Sprint 38
+// module-export contract.
+const PRECOMPACT_HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-pre-compact.js');
+const PRECOMPACT_HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-pre-compact.js');
+const PRECOMPACT_HOOK_COMMAND = 'node ~/.claude/hooks/memory-pre-compact.js';
+const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
 const SECRETS_PATH = path.join(HOME, '.termdeck', 'secrets.env');
 
 // Read ~/.termdeck/secrets.env into a plain object. Returns {} if the file
@@ -493,6 +504,48 @@ function _mergeSessionEndHookEntry(settings, opts = {}) {
   return { settings, status: migrated ? 'migrated-from-stop' : 'installed' };
 }
 
+// Sprint 64 T3 — PreCompact entry detection + merge. Parallel to the SessionEnd
+// helpers above, with the key difference that PreCompact didn't exist before
+// this sprint so there's no Stop-style migration branch. Idempotent.
+function _isPreCompactHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && entry.command.includes('memory-pre-compact.js');
+}
+
+// Pure: merges our PreCompact entry into the given settings object. Returns
+// { settings, status } where status is 'already-installed' or 'installed'.
+// Mutates the input. matcher='*' is the documented wildcard for PreCompact —
+// fires on both auto-compact (token-limit-driven) AND manual /compact triggers.
+function _mergePreCompactHookEntry(settings, opts = {}) {
+  const command = opts.command || PRECOMPACT_HOOK_COMMAND;
+  const timeout = opts.timeout != null ? opts.timeout : PRECOMPACT_HOOK_TIMEOUT_SECONDS;
+  const entry = { type: 'command', command, timeout };
+
+  if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
+  if (!Array.isArray(settings.hooks.PreCompact)) settings.hooks.PreCompact = [];
+
+  for (const group of settings.hooks.PreCompact) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    if (group.hooks.some(_isPreCompactHookEntry)) {
+      return { settings, status: 'already-installed' };
+    }
+  }
+
+  // Append to a `*`-matcher group if present (covers both auto + manual); else
+  // create one. Hand-edited groups with specific matchers (e.g. matcher: 'auto')
+  // are left intact — a future user-installed hook gating on a specific trigger
+  // coexists with our wildcard group rather than getting overwritten.
+  const wildcardGroup = settings.hooks.PreCompact.find(
+    (g) => g && g.matcher === '*' && Array.isArray(g.hooks)
+  );
+  if (wildcardGroup) {
+    wildcardGroup.hooks.push(entry);
+  } else {
+    settings.hooks.PreCompact.push({ matcher: '*', hooks: [entry] });
+  }
+  return { settings, status: 'installed' };
+}
+
 function _readSettingsJson(filePath) {
   if (!fs.existsSync(filePath)) {
     return { settings: {}, status: 'no-file' };
@@ -707,6 +760,113 @@ async function installSessionEndHook(opts = {}) {
   return { fileStatus, settingsStatus };
 }
 
+// Sprint 64 T3 — install the PreCompact hook. Closes Investigation 2 of
+// docs/CRITICAL-READ-FIRST-2026-05-07.md ("auto-commit on context compaction-
+// near"). Mirrors installSessionEndHook closely but simpler: PreCompact is
+// new in Sprint 64 so there's no Stop→SessionEnd-style legacy migration.
+//
+// File copy and settings.json merge are independent — a file-copy failure
+// doesn't suppress the settings merge, and vice versa. Both errors fail-soft.
+async function installPreCompactHook(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const sourcePath = opts.sourcePath || PRECOMPACT_HOOK_SOURCE;
+  const destPath = opts.destPath || PRECOMPACT_HOOK_DEST;
+  const settingsPath = opts.settingsPath || SETTINGS_JSON;
+  const promptInstall = opts.promptInstall
+    || (() => promptYesNo({ question: "Install TermDeck's PreCompact memory hook? (captures session state before Claude compacts)", defaultYes: true }));
+  const promptOverwrite = opts.promptOverwrite
+    || (() => promptYesNo({
+      question: `Existing pre-compact hook found at ${destPath}. Overwrite?`,
+      defaultYes: false,
+    }));
+
+  rule();
+  process.stdout.write(`${ANSI.bold}PreCompact memory hook${ANSI.reset}\n`);
+  process.stdout.write(`${ANSI.dim}  Fires before Claude Code compacts conversation context, capturing the in-flight session state into Mnestra so long sessions don't leak findings on auto-compact.${ANSI.reset}\n\n`);
+
+  const userWantsInstall = opts.assumeYes ? true
+    : opts.assumeNo ? false
+    : await promptInstall();
+
+  if (!userWantsInstall) {
+    statusLine(`${ANSI.dim}─${ANSI.reset}`, 'pre-compact hook', 'skipped (user declined)');
+    process.stdout.write('\n');
+    return { fileStatus: 'declined', settingsStatus: 'declined' };
+  }
+
+  // 1. File copy. Reuses the version-stamp gate so future bumps of
+  // `@termdeck/stack-installer-hook v<N>` in the bundled file trigger an
+  // overwrite on `--yes` without prompting. A genuinely custom user file
+  // (unsigned, no TermDeck markers) is preserved — but in practice nobody
+  // has one of these on disk pre-Sprint-64 because PreCompact is new.
+  let fileStatus;
+  const cmp = _compareHookFiles(sourcePath, destPath);
+  if (cmp === 'missing-dest') {
+    if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would copy pre-compact hook to ${destPath}`);
+      fileStatus = 'would-copy';
+    } else {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.copyFileSync(sourcePath, destPath);
+      fs.chmodSync(destPath, 0o644);
+      statusLine(`${ANSI.green}+${ANSI.reset}`, 'pre-compact hook file', `copied to ${destPath}`);
+      fileStatus = 'copied';
+    }
+  } else if (cmp === 'identical') {
+    statusLine(`${ANSI.dim}=${ANSI.reset}`, 'pre-compact hook file', 'already present, identical contents');
+    fileStatus = 'already-current';
+  } else {
+    const overwrite = opts.assumeYes
+      ? _hookSignatureUpgradeAvailable(sourcePath, destPath)
+      : opts.forceOverwrite ? true
+      : await promptOverwrite();
+    if (!overwrite) {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'pre-compact hook file', `existing kept (differs from vendored copy)`);
+      fileStatus = 'kept-existing';
+    } else if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would overwrite ${destPath}`);
+      fileStatus = 'would-overwrite';
+    } else {
+      const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      try { fs.copyFileSync(destPath, `${destPath}.bak.${stamp}`); } catch (_) { /* best-effort */ }
+      fs.copyFileSync(sourcePath, destPath);
+      fs.chmodSync(destPath, 0o644);
+      statusLine(`${ANSI.green}↻${ANSI.reset}`, 'pre-compact hook file', `overwrote ${destPath}`);
+      fileStatus = 'overwritten';
+    }
+  }
+
+  // 2. Settings.json merge.
+  const read = _readSettingsJson(settingsPath);
+  let settingsStatus;
+  if (read.status === 'malformed') {
+    statusLine(`${ANSI.red}✗${ANSI.reset}`, 'settings.json', `malformed (${read.error}); not modified`);
+    settingsStatus = 'malformed';
+  } else {
+    const merged = _mergePreCompactHookEntry(read.settings);
+    if (merged.status === 'already-installed') {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json PreCompact hook', 'already installed');
+      settingsStatus = 'already-installed';
+    } else if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would merge PreCompact hook into ${settingsPath}`);
+      settingsStatus = 'would-install';
+    } else {
+      _writeSettingsJson(settingsPath, merged.settings);
+      statusLine(`${ANSI.green}+${ANSI.reset}`, 'settings.json PreCompact hook', 'merged');
+      settingsStatus = 'installed';
+    }
+  }
+
+  process.stdout.write('\n');
+  if (!dryRun && (fileStatus === 'copied' || settingsStatus === 'installed')) {
+    process.stdout.write(`  ${ANSI.dim}PreCompact hook installed at ${destPath}.${ANSI.reset}\n`);
+    process.stdout.write(`  ${ANSI.dim}It runs before Claude Code compacts context, writing a pre_compact_snapshot row to Mnestra.${ANSI.reset}\n`);
+    process.stdout.write(`  ${ANSI.dim}Sprint 64 / Investigation 2 / docs/CRITICAL-READ-FIRST-2026-05-07.md.${ANSI.reset}\n\n`);
+  }
+
+  return { fileStatus, settingsStatus };
+}
+
 // ── Next steps ──────────────────────────────────────────────────────
 
 function printNextSteps(plan, opts) {
@@ -838,6 +998,15 @@ async function main(argv) {
     assumeYes: args.yes,
   });
 
+  // Sprint 64 T3 — bundle the PreCompact memory hook (Investigation 2 closure).
+  // Same prompt UX as SessionEnd: default-on, opt-out via prompt; --yes
+  // accepts the install. The two hooks coexist — SessionEnd captures on
+  // /exit, PreCompact captures before context compaction.
+  await installPreCompactHook({
+    dryRun: args.dryRun,
+    assumeYes: args.yes,
+  });
+
   printNextSteps(wantedLayers, { dryRun: args.dryRun });
 
   if (failures > 0) {
@@ -872,6 +1041,14 @@ module.exports.HOOK_SOURCE = HOOK_SOURCE;
 module.exports.HOOK_DEST = HOOK_DEST;
 module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;
 module.exports.HOOK_SOURCE = HOOK_SOURCE;
+// Sprint 64 T3 — PreCompact hook (Investigation 2 closure) exports.
+module.exports.installPreCompactHook = installPreCompactHook;
+module.exports._isPreCompactHookEntry = _isPreCompactHookEntry;
+module.exports._mergePreCompactHookEntry = _mergePreCompactHookEntry;
+module.exports.PRECOMPACT_HOOK_COMMAND = PRECOMPACT_HOOK_COMMAND;
+module.exports.PRECOMPACT_HOOK_SOURCE = PRECOMPACT_HOOK_SOURCE;
+module.exports.PRECOMPACT_HOOK_DEST = PRECOMPACT_HOOK_DEST;
+module.exports.PRECOMPACT_HOOK_TIMEOUT_SECONDS = PRECOMPACT_HOOK_TIMEOUT_SECONDS;
 module.exports._mcpInternals = _mcpInternals;
 module.exports.MCP_CONFIG_PATH = MCP_CONFIG;
 module.exports.CLAUDE_MCP_PATH_CANONICAL = CLAUDE_MCP_PATH_CANONICAL;

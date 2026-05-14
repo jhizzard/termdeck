@@ -17,6 +17,34 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const PACKAGE_SPEC = '@supabase/mcp-server-supabase';
 const BINARY_NAME = 'mcp-server-supabase';
 
+// Sprint 64 T1 — source-side credential redaction per ORCH SCOPE 16:14 ET.
+//
+// JSON-RPC error messages and child stderr tails from the MCP server may
+// echo back the JWT (anon/service_role keys) or the Supabase PAT that the
+// caller passed in. Wrapping every error string with `redactSecrets()`
+// before throwing prevents accidental leakage into stderr / logs at the
+// source — defense-in-depth complementing caller-side
+// `sanitizeErrorForLogs()` in `packages/cli/src/mcp-supabase-provision.js`.
+//
+// Patterns (greedy match — longest token wins):
+//   • JWT-shaped (anon / service_role keys) — `eyJ<>.<>.<>` triple-base64
+//     with `[A-Za-z0-9_-]{10,}` per segment. Lower bound at 10 chars per
+//     segment avoids false-positive matches on three-part JSON identifiers.
+//   • PAT-shaped (`sbp_...`) — Supabase Personal Access Tokens start with
+//     `sbp_` and carry 40+ URL-safe characters.
+//
+// Output replaces matches with `[REDACTED:JWT]` / `[REDACTED:PAT]` so a
+// downstream caller can see WHAT shape was redacted without seeing the value.
+const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
+const PAT_PATTERN = /sbp_[A-Za-z0-9]{40,}/g;
+
+function redactSecrets(message) {
+  if (typeof message !== 'string' || message.length === 0) return message;
+  return message
+    .replace(JWT_PATTERN, '[REDACTED:JWT]')
+    .replace(PAT_PATTERN, '[REDACTED:PAT]');
+}
+
 // Detect whether @supabase/mcp-server-supabase can be invoked on this host.
 // Resolution order:
 //   1. A globally installed `mcp-server-supabase` binary on PATH.
@@ -167,8 +195,12 @@ async function callTool(pat, method, params, opts) {
         }
         if (msg && msg.id === id) {
           if (msg.error) {
+            // Sprint 64 T1 (ORCH SCOPE 16:14 ET): redact JWT / PAT-shaped
+            // substrings from the propagated error message before throwing.
+            // Source-side defense; complements caller-side
+            // `sanitizeErrorForLogs()` in mcp-supabase-provision.js.
             const detail = msg.error.message || JSON.stringify(msg.error);
-            settle(reject, new Error(detail));
+            settle(reject, new Error(redactSecrets(detail)));
           } else {
             settle(resolve, msg.result);
           }
@@ -179,7 +211,11 @@ async function callTool(pat, method, params, opts) {
 
     child.on('exit', (code, signal) => {
       if (settled) return;
-      const tail = stderrBuf.slice(-512).trim();
+      // Sprint 64 T1 (ORCH SCOPE 16:14 ET): redact JWT / PAT-shaped
+      // substrings from the stderr tail before throwing. A misbehaving
+      // MCP child could echo back the SUPABASE_ACCESS_TOKEN env or one of
+      // the keys we passed in via params; the redact pass scrubs them.
+      const tail = redactSecrets(stderrBuf.slice(-512).trim());
       const why = signal ? `signal=${signal}` : `code=${code}`;
       settle(reject, new Error(`mcp exited (${why})${tail ? ': ' + tail : ''}`));
     });
@@ -192,4 +228,7 @@ async function callTool(pat, method, params, opts) {
   });
 }
 
-module.exports = { callTool, detectMcp };
+module.exports = { callTool, detectMcp, redactSecrets };
+// Sprint 64 T1 — exposed for fence tests in packages/cli/tests/mcp-supabase-provision.test.js.
+module.exports.JWT_PATTERN = JWT_PATTERN;
+module.exports.PAT_PATTERN = PAT_PATTERN;

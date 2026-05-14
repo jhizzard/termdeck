@@ -446,6 +446,10 @@ const grokAdapter = {
     env: {
       GROK_MODEL: chooseModel(),
     },
+    // Sprint 64 T2 (carve-out 2.4) — direct spawn (no `zsh -c` wrapper) when
+    // the launching command is exactly the binary name. See claude.js for the
+    // full rationale + fallback semantics.
+    shellWrap: false,
   },
   patterns: {
     prompt: PROMPT,

@@ -120,6 +120,36 @@ const { resolveSpawnShell } = require('./spawn-shell');
 // Code does not shell-expand MCP env values; same trap applies anywhere the
 // secrets file flows through a non-shell consumer).
 let _termdeckSecretsCache = null;
+
+// Sprint 64 T1 (ORCH SCOPE 16:29 ET item 4) — management-grade tokens that
+// MUST NEVER be merged from ~/.termdeck/secrets.env into a spawned child's
+// env. The wizard's --auto path now explicitly avoids persisting the
+// Supabase PAT here (see packages/cli/src/init.js Phase 3 + the AUDIT-RED
+// resolution comment), but a user might still paste one manually via
+// `vi ~/.termdeck/secrets.env` — defense-in-depth at the reader caps that
+// failure mode. Keys hold:
+//   • SUPABASE_ACCESS_TOKEN: Supabase PAT — org-wide management privileges
+//     (can create/delete projects, set vault secrets, deploy functions
+//     against every project in the org). Highest blast-radius credential
+//     in the standard TermDeck stack. The Mnestra hook does NOT need it
+//     (per-project SUPABASE_SERVICE_ROLE_KEY is what the hook uses), so
+//     dropping it from the PTY merge is loss-free for the running stack.
+//   • GITHUB_TOKEN / GITHUB_PAT: Personal Access Tokens for GitHub —
+//     repo write access at minimum, often org-wide. Brad's R730 likely
+//     doesn't carry one but Joshua's daily-driver does (publish wave
+//     workflow). Preventive.
+//   • OPENAI_ADMIN_KEY: OpenAI Admin key — billing/org-management.
+//     Distinct from OPENAI_API_KEY which is the per-project usage key
+//     that Mnestra DOES need. Preventive.
+//   • NPM_TOKEN: registry publish token. Preventive.
+const SECRETS_EXCLUDED_FROM_PTY = new Set([
+  'SUPABASE_ACCESS_TOKEN',
+  'GITHUB_TOKEN',
+  'GITHUB_PAT',
+  'OPENAI_ADMIN_KEY',
+  'NPM_TOKEN',
+]);
+
 function readTermdeckSecretsForPty() {
   if (_termdeckSecretsCache !== null) return _termdeckSecretsCache;
   const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
@@ -137,6 +167,10 @@ function readTermdeckSecretsForPty() {
       }
       if (v.startsWith('${') && v.endsWith('}')) continue;
       if (v === '') continue;
+      // Sprint 64 T1 (ORCH SCOPE 16:29 ET item 4): EXCLUDE management-grade
+      // tokens from the PTY/child-process env merge. See
+      // SECRETS_EXCLUDED_FROM_PTY constant above for the rationale per key.
+      if (SECRETS_EXCLUDED_FROM_PTY.has(m[1])) continue;
       out[m[1]] = v;
     }
   } catch (_err) {
@@ -181,6 +215,19 @@ function _defaultSpawnSessionEndHookImpl(hookPath, payload, env) {
 let _spawnSessionEndHookImpl = _defaultSpawnSessionEndHookImpl;
 function _setSpawnSessionEndHookImplForTesting(fn) {
   _spawnSessionEndHookImpl = typeof fn === 'function' ? fn : _defaultSpawnSessionEndHookImpl;
+}
+
+// Sprint 64 T3 — periodic-capture spawn (Investigation 2 of
+// docs/CRITICAL-READ-FIRST-2026-05-07.md). Parallel to _spawnSessionEndHookImpl
+// but targets memory-pre-compact.js. Same indirection rationale: tests stub
+// this to capture the payload deterministically without running detached
+// children inside the test runner.
+function _defaultSpawnPeriodicCaptureHookImpl(hookPath, payload, env) {
+  return _defaultSpawnSessionEndHookImpl(hookPath, payload, env);
+}
+let _spawnPeriodicCaptureHookImpl = _defaultSpawnPeriodicCaptureHookImpl;
+function _setSpawnPeriodicCaptureHookImplForTesting(fn) {
+  _spawnPeriodicCaptureHookImpl = typeof fn === 'function' ? fn : _defaultSpawnPeriodicCaptureHookImpl;
 }
 
 // Fires when a panel's PTY exits. Routes through the adapter registry's
@@ -238,6 +285,92 @@ async function onPanelClose(session) {
   } catch (err) {
     console.error('[onPanelClose] error:', err && err.message ? err.message : err);
   }
+}
+
+// Sprint 64 T3.4 — periodic-capture timer for non-Claude panels.
+//
+// PreCompact only fires inside Claude Code. Codex/Gemini/Grok don't have a
+// PreCompact-equivalent — verified 2026-05-11, see docs/RESTART-PROMPT-
+// 2026-05-11.md § Sprint 64 candidates ("Codex CLI specifically lacks a pre-
+// compact hook surface — `codex --help` exposes no hooks subcommand").
+// Long sessions on those agents grow their transcripts indefinitely; without
+// a periodic snapshot to Mnestra, all of that context evaporates if the
+// process crashes BEFORE the SessionEnd hook can fire on /exit.
+//
+// Strategy: every N minutes (default 10 min, override via
+// `TERMDECK_PERIODIC_CAPTURE_INTERVAL_MS`) the timer resolves the panel's
+// on-disk transcript via the same `adapter.resolveTranscriptPath` path
+// `onPanelClose` uses, then spawns memory-pre-compact.js with
+// `mode: 'periodic_checkpoint'`. The hook handles parsing + embed + POST.
+//
+// Throttle (per the T3 brief): skip if the transcript hasn't grown by
+// >= 1 KB since the last fire. Stop firing once `meta.status === 'exited'`
+// (close-out capture covers that path).
+//
+// Skip rules mirror onPanelClose (Claude has its own PreCompact hook,
+// missing adapter / resolveTranscriptPath / hook file → no-op).
+async function onPanelPeriodicCapture(session) {
+  try {
+    if (!session || !session.meta) return;
+    if (session.meta.status === 'exited') return;
+    const adapter = AGENT_ADAPTERS[session.meta.type]
+      || Object.values(AGENT_ADAPTERS).find((a) => a.sessionType === session.meta.type);
+    if (!adapter) return;
+    if (adapter.sessionType === 'claude-code') return;
+    if (typeof adapter.resolveTranscriptPath !== 'function') return;
+
+    const transcriptPath = await adapter.resolveTranscriptPath(session);
+    if (!transcriptPath) return;
+
+    // Throttle: compare current transcript size against last-fire bookmark.
+    // 1 KB minimum delta keeps the bill bounded on quiet panels (a panel
+    // sitting idle at the prompt produces ~0 new bytes per interval).
+    let stat;
+    try { stat = fs.statSync(transcriptPath); }
+    catch (_e) { return; }
+    if (!session._periodicCapture) session._periodicCapture = { lastSize: 0, lastFireMs: 0 };
+    const grew = stat.size - session._periodicCapture.lastSize;
+    if (grew < 1024) return;
+
+    const hookPath = path.join(os.homedir(), '.claude', 'hooks', 'memory-pre-compact.js');
+    if (!fs.existsSync(hookPath)) return;
+
+    const payload = {
+      transcript_path: transcriptPath,
+      cwd: session.meta.cwd,
+      session_id: session.id,
+      sessionType: adapter.sessionType,
+      source_agent: adapter.name,
+      // Mode discriminator the hook reads in resolveFiringContext —
+      // distinguishes "TermDeck server periodic capture" from "Claude Code
+      // PreCompact harness fire."
+      mode: 'periodic_checkpoint',
+    };
+
+    _spawnPeriodicCaptureHookImpl(hookPath, payload, {
+      ...process.env,
+      ...readTermdeckSecretsForPty(),
+    });
+
+    // Update bookmark immediately — even if the spawn fails downstream we
+    // don't want to retry the same byte range on the next tick. Worst case
+    // we lose one tick; the next 1 KB of growth fires again.
+    session._periodicCapture.lastSize = stat.size;
+    session._periodicCapture.lastFireMs = Date.now();
+  } catch (err) {
+    console.error('[onPanelPeriodicCapture] error:', err && err.message ? err.message : err);
+  }
+}
+
+// Default interval (10 min). Override via env var; setting to 0 disables the
+// timer entirely. Tests pass a much smaller value (e.g. 100ms) via the env
+// var to exercise the timer path without waiting.
+function _resolvePeriodicCaptureIntervalMs() {
+  const raw = process.env.TERMDECK_PERIODIC_CAPTURE_INTERVAL_MS;
+  if (!raw) return 10 * 60 * 1000;
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) return 10 * 60 * 1000;
+  return n;
 }
 
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
@@ -1130,25 +1263,77 @@ function createServer(config) {
     });
 
     if (pty) {
-      // Three launch shapes:
+      // Four launch shapes (Sprint 64 T2 carve-out 2.4 extends the original three):
       //   (1) no command            → spawn the default shell interactively
       //   (2) command is a plain shell name (zsh, bash, fish, ...)
       //                             → spawn THAT shell interactively, no -c wrapper
       //                               (otherwise `zsh -c zsh` exits immediately)
-      //   (3) command is a real command string
+      //   (3) command exactly matches a known agent-adapter binary AND that
+      //       adapter declares `spawn.shellWrap === false`
+      //                             → spawn the adapter's binary directly with
+      //                               its declared defaultArgs + env merge, no
+      //                               shell wrapper. Closes Sprint 63
+      //                               EXIT-CAPTURE-VERIFICATION.md § 6 (the
+      //                               `zsh -c codex` wrap that likely cost the
+      //                               codex canary panel its interactive-TTY
+      //                               context during the 2026-05-11 update-picker
+      //                               event). The exact-binary gate preserves
+      //                               user-supplied flags like `claude --resume
+      //                               <uuid>` — those still fall through to (4).
+      //   (4) command is a real command string
       //                             → spawn default shell with -c <command>
       const cmdTrim = (command || '').trim();
       const PLAIN_SHELLS = /^(zsh|bash|fish|sh|dash|tcsh|ksh|csh|pwsh|powershell)$/i;
       const isPlainShell = PLAIN_SHELLS.test(cmdTrim);
 
+      // Sprint 64 T2 (carve-out 2.4) — resolve the matching agent adapter from
+      // the command string. Walk the registry in declaration order; the first
+      // adapter whose `matches(command)` returns true claims the spawn. We
+      // honor `adapter.spawn.shellWrap === false` ONLY when the trimmed command
+      // is exactly the adapter's binary name (no extra args). User-supplied
+      // flags like `codex resume <id>` keep the legacy `zsh -c <command>` path
+      // so we don't silently drop their args.
+      let directSpawnAdapter = null;
+      if (cmdTrim && !isPlainShell) {
+        for (const adapter of Object.values(AGENT_ADAPTERS)) {
+          if (!adapter || typeof adapter.matches !== 'function') continue;
+          if (!adapter.matches(cmdTrim)) continue;
+          const spawnDecl = adapter.spawn;
+          if (!spawnDecl || spawnDecl.shellWrap !== false) continue;
+          const binary = spawnDecl.binary;
+          if (typeof binary !== 'string' || binary.length === 0) continue;
+          // Exact-binary gate: only switch to direct-spawn for bare-binary
+          // launches. `codex --resume xyz` falls through to the shell-wrap path.
+          if (cmdTrim !== binary) continue;
+          directSpawnAdapter = adapter;
+          break;
+        }
+      }
+
       // Sprint 59 T2 — Brad #5: resolveSpawnShell chains config.shell →
       // $SHELL → /bin/sh so a host without zsh (Alpine, minimal Ubuntu after
       // `apt remove zsh`) still spawns a working interactive shell instead of
       // failing silently from execvp(/bin/zsh).
-      const spawnShell = isPlainShell
-        ? cmdTrim
-        : resolveSpawnShell('', config.shell, process.env.SHELL);
-      const args = (cmdTrim && !isPlainShell) ? ['-c', cmdTrim] : [];
+      let spawnShell;
+      let args;
+      let adapterSpawnEnv = {};
+      if (directSpawnAdapter) {
+        const decl = directSpawnAdapter.spawn;
+        spawnShell = decl.binary;
+        args = Array.isArray(decl.defaultArgs) ? decl.defaultArgs.slice() : [];
+        // Adapter-declared env overlays (e.g. grok's GROK_MODEL). Empty/`undefined`
+        // values are filtered so they don't shadow process.env.
+        if (decl.env && typeof decl.env === 'object') {
+          for (const [k, v] of Object.entries(decl.env)) {
+            if (typeof v === 'string' && v.length > 0) adapterSpawnEnv[k] = v;
+          }
+        }
+      } else {
+        spawnShell = isPlainShell
+          ? cmdTrim
+          : resolveSpawnShell('', config.shell, process.env.SHELL);
+        args = (cmdTrim && !isPlainShell) ? ['-c', cmdTrim] : [];
+      }
 
       try {
         // Sprint 48 T4: merge ~/.termdeck/secrets.env into the PTY env so
@@ -1163,6 +1348,17 @@ function createServer(config) {
             secretFallback[k] = v;
           }
         }
+        // Sprint 64 T2 (carve-out 2.3) — codex pre-spawn version probe.
+        // Fire-and-forget; never blocks spawn. WARN-only when
+        // CODEX_PINNED_VERSION drifts from observed (default install: no probe
+        // comparison, no warning). See codex.js `probeCodexVersion` for full
+        // rationale.
+        if (directSpawnAdapter && directSpawnAdapter.name === 'codex'
+            && typeof directSpawnAdapter.probeCodexVersion === 'function') {
+          try {
+            directSpawnAdapter.probeCodexVersion();
+          } catch (_probeErr) { /* fail-soft */ }
+        }
         const term = pty.spawn(spawnShell, args, {
           name: 'xterm-256color',
           cols: 120,
@@ -1171,6 +1367,12 @@ function createServer(config) {
           env: {
             ...process.env,
             ...secretFallback,
+            // Sprint 64 T2 (carve-out 2.4) — adapter-declared env overlays
+            // (e.g. grok's `GROK_MODEL`, codex's `OPENAI_API_KEY` pass-through)
+            // land last so they win over process.env defaults on direct-spawn.
+            // For shell-wrap launches `adapterSpawnEnv` is empty; this is a
+            // no-op spread.
+            ...adapterSpawnEnv,
             TERMDECK_SESSION: session.id,
             TERMDECK_PROJECT: project || '',
             TERM: 'xterm-256color',
@@ -1188,6 +1390,61 @@ function createServer(config) {
         session.pty = term;
         session.pid = term.pid;
         session.meta.status = 'active';
+        // Sprint 64 T2 (carve-out 2.4 closure) — when direct-spawn matched
+        // a known adapter, promote `session.meta.type` from its `'shell'`
+        // default to the adapter's canonical `sessionType` immediately. Two
+        // downstream paths benefit:
+        //   • T3's periodic-capture timer (Sprint 64) looks up
+        //     `getAdapterForSessionType(session.meta.type)` at session-create
+        //     time — without this promotion, a bare `command:'codex'` launch
+        //     stays as `meta.type='shell'` until adapter output triggers
+        //     auto-detect, and the periodic timer never registers
+        //     (T4-CODEX 2026-05-14 16:25/16:31 AUDIT-CONCERN).
+        //   • `getAdapterForSessionType` callers in session.js' output
+        //     analyzer (`_updateStatus`) get the right pattern set on the
+        //     very first PTY chunk instead of waiting for the auto-detect
+        //     branch.
+        // Only promotes when the caller didn't already specify a concrete
+        // type (i.e., `meta.type === 'shell'`) so explicit requests are
+        // never overridden.
+        if (directSpawnAdapter && session.meta.type === 'shell') {
+          session.meta.type = directSpawnAdapter.sessionType;
+        }
+        // Sprint 64 T2 (carve-out 2.1) — strict spawn timestamp consumed by
+        // codex.js `resolveTranscriptPath` to gate rollout-file candidates
+        // against cross-panel contamination. `session.meta.createdAt` is set
+        // earlier in `sessions.create()` and predates `pty.spawn` by O(ms);
+        // `spawnTimestampMs` captures the actual fork-time so we can reject
+        // pre-spawn rollout files even when another panel's mtime briefly
+        // races past createdAt. See `packages/server/src/agent-adapters/codex.js`
+        // header for the bug shape.
+        session.meta.spawnTimestampMs = Date.now();
+
+        // Sprint 64 T3.4 — register the periodic-capture timer for non-Claude
+        // panels. Claude Code uses the PreCompact hook (Investigation 2
+        // primary signal) — the timer below is the orthogonal fallback for
+        // Codex/Gemini/Grok which have no equivalent harness hook. Cleared
+        // in term.onExit below. Disabled when the interval env var is set
+        // to 0.
+        try {
+          const adapter = AGENT_ADAPTERS[session.meta.type]
+            || Object.values(AGENT_ADAPTERS).find((a) => a.sessionType === session.meta.type);
+          const isNonClaudeAdapter = adapter
+            && adapter.sessionType !== 'claude-code'
+            && typeof adapter.resolveTranscriptPath === 'function';
+          const intervalMs = _resolvePeriodicCaptureIntervalMs();
+          if (isNonClaudeAdapter && intervalMs > 0) {
+            session._periodicCapture = { lastSize: 0, lastFireMs: 0, timer: null };
+            session._periodicCapture.timer = setInterval(() => {
+              onPanelPeriodicCapture(session).catch((err) => {
+                console.error('[onPanelPeriodicCapture] async error:', err && err.message ? err.message : err);
+              });
+            }, intervalMs);
+            // Don't keep the event loop alive solely for this timer — the PTY
+            // / WS / HTTP listeners are the real lifetime anchors.
+            if (session._periodicCapture.timer.unref) session._periodicCapture.timer.unref();
+          }
+        } catch (_periodicErr) { /* fail-soft */ }
 
         // PTY output → analyze + broadcast to WebSocket + transcript archive
         term.onData((data) => {
@@ -1225,6 +1482,16 @@ function createServer(config) {
 
           // Fire-and-forget session log (T2.5)
           writeSessionLog({ session, config, db, getSessionHistory });
+
+          // Sprint 64 T3.4 — clear the periodic-capture timer first so a
+          // tick mid-teardown doesn't race onPanelClose. The bookmark stays
+          // on `session._periodicCapture.lastSize` for any future inspection
+          // (test fixtures consult it post-exit).
+          if (session._periodicCapture && session._periodicCapture.timer) {
+            try { clearInterval(session._periodicCapture.timer); }
+            catch (_clrErr) { /* fail-soft */ }
+            session._periodicCapture.timer = null;
+          }
 
           // Sprint 50 T1 — fire the bundled SessionEnd hook for non-Claude
           // panels so Codex / Gemini / Grok /exits write to Mnestra the way
@@ -2702,9 +2969,16 @@ module.exports = {
   // Sprint 48 T4 — exported for unit testing the secrets.env → PTY env merge.
   readTermdeckSecretsForPty,
   _resetTermdeckSecretsCache,
+  // Sprint 64 T1 (ORCH SCOPE 16:29 item 4) — management-token exclusion list.
+  // Exported for `packages/cli/tests/spawn-env-exclusion.test.js` fence.
+  SECRETS_EXCLUDED_FROM_PTY,
   // Sprint 50 T1 — exported for unit testing the per-agent SessionEnd
   // hook trigger (skip-claude, no-transcript, no-hook-installed,
   // payload shape, fire-and-forget).
   onPanelClose,
   _setSpawnSessionEndHookImplForTesting,
+  // Sprint 64 T3.4 — periodic-capture surface (Investigation 2 closure).
+  onPanelPeriodicCapture,
+  _setSpawnPeriodicCaptureHookImplForTesting,
+  _resolvePeriodicCaptureIntervalMs,
 };

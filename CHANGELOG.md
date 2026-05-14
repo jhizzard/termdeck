@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-14
+
+> **Sprint 64 — Install-polish convergence + Sprint 63 carve-outs + Investigation 2 closure.** 3+1+1 with Codex auditor; ~42 min wall-clock from inject (16:05 ET) to T4-CODEX FINAL-VERDICT GREEN (16:47 ET). **Closes the still-open P0 from `docs/CRITICAL-READ-FIRST-2026-05-07.md` Investigation 2** (auto-commit on context-compaction-near). Ships the install-polish wizard convergence keystone (final convergence sprint before MacBook Air dogfood per `docs/CONVERGENCE-PLAN.md`). **Wave: `@jhizzard/termdeck@1.2.0 → 1.3.0` + `@jhizzard/termdeck-stack@1.2.0 → 1.3.0` (audit-trail aligned); `@jhizzard/mnestra` unchanged at 0.4.9** (companion patch — log rotation + singleton probe + pidfile — deferred; attach-to-existing already shipping in 0.4.9 per multi-port verification 2026-05-14 15:28 ET). 295/295 root `npm test` green. T4-CODEX caught 10+ AUDIT-CONCERNs including 1 AUDIT-RED (PAT broadcast to every spawned PTY env) — pre-FIX-LANDED, never shipped.
+
+### Added — Install-polish wizard (T1 lane: `--auto` MCP-mediated provisioning + OS-detection + unified `init` orchestrator)
+
+Closes the convergence keystone gap per `docs/CONVERGENCE-PLAN.md`. New-user install path collapses from 15+ manual steps to "paste 2 credentials, click 3 buttons."
+
+- **`packages/cli/src/os-detect.js`** (297 LOC) — `detectOS(deps)` returns `{family, distro, version, isAppleSilicon, inDocker, defaultShell, rebuildHint, paths, autostartUnit}`. Branches: macOS (zsh + launchd plist stub) / Linux (ubuntu/debian/fedora/alpine/arch/suse — bash/sh + apt/dnf/apk/pacman/zypper rebuild hints + systemd user-unit stub) / Docker (multi-signal detection via `/.dockerenv` + `/run/.containerenv` + cgroups + mountinfo + `container` env) / unknown. Fully dep-injectable for fixture testing without touching the host. Autostart stubs emit `TODO(sprint-65)` markers for multi-instance / per-port wiring deferred to Path B per BACKLOG § D.5.
+- **`packages/cli/src/mcp-supabase-provision.js`** (685 LOC) — `provisionViaSupabaseMcp({pat, projectName, dbPassword, orgId, region, rumenVersion, homedir, dryRun, onPhase, deps})`. 10-phase pipeline: preflight → list-orgs → create-project → wait-ready (5min poll) → fetch-access → apply-migrations (mnestra 001-022 + rumen 001) → create-vault-secrets (`rumen_service_role_key` + `graph_inference_service_role_key` via `execute_sql/vault.create_secret`) → deploy-functions (rumen-tick + graph-inference with `__RUMEN_VERSION__` substitution) → apply-cron (rumen 002+003 with `<project-ref>` templating) → run-advisors (RLS + function-search-path lint) → done. Eight structured error codes carry actionable context. Mid-migration failure writes `~/.termdeck/.partial-install` marker for resume. Idempotent. Uses Sprint 25 T1's existing `packages/server/src/setup/supabase-mcp.js` callTool primitive.
+- **`packages/cli/src/init.js`** (588 LOC) — unified `termdeck init` orchestrator. Manual path = existing `init-mnestra` interactive → `init-rumen` → `doctor`. Auto path (`--auto` or `--mcp-supabase`) = `collectAutoInputs` → `provisionViaSupabaseMcp` with on-phase progress UX → write per-project secrets to `~/.termdeck/secrets.env` (PAT explicitly NOT persisted) → load secrets into `process.env` → `init-mnestra --yes` → best-effort `init-rumen` → `doctor` → ready message. Honors `--reset`, `--from-env`, `--dry-run`, `--skip-rumen`, `--skip-doctor`, `--pat`/`--org-id`/`--project-name`/`--region`/`--db-password` (env equivalents too). MCP_UNAVAILABLE auto-falls-through to manual path with clear log.
+- **`packages/cli/src/index.js:209-303`** — `init` dispatch extended: no-subflag default + `--auto`/`--mcp-supabase` route to new `init.js`; existing `--mnestra`/`--rumen`/`--project` modes preserved verbatim. Backward-compat verified.
+
+### Added — Sprint 63 carve-outs (T2 lane: 4 adapter-surface bugs deferred from Sprint 63 EXIT-CAPTURE-VERIFICATION)
+
+- **`packages/server/src/agent-adapters/codex.js`** carve-out 2.1 — codex `resolveTranscriptPath` cross-panel contamination fixed via strict `0ms` birthtime epsilon for birthtime-capable files; narrower fallback-only mtime epsilon. Closes the Sprint 63 cross-panel hook-attribution gap.
+- **`packages/server/src/agent-adapters/{claude,codex,gemini,grok}.js`** + **`packages/server/src/index.js`** carve-out 2.4 — `adapter.spawn` field added to each agent-adapter declaration; `spawnTerminalSession` reads `adapter.spawn` and respects `{command, args, env, shellWrap: false}` (direct spawn) vs the legacy `zsh -c <cmd>` wrap. Likely contributor to Sprint 63 codex/gemini/grok canary fast-deaths now resolved.
+- **`packages/server/src/agent-adapters/codex.js`** carve-out 2.3 — `probeCodexVersion` pre-spawn helper with **persisted-last-seen-version** approach. Reads `~/.termdeck/.last-codex-version` on every spawn; silent baseline write on first run; WARN log + file update on version drift. `CODEX_PINNED_VERSION` env knob retained as additional explicit-pin path. Catches the Sprint 63 auto-update lifecycle hazard for default installs without false-alarming on stable installs.
+- **`packages/stack-installer/assets/hooks/memory-session-end.js`** carve-out 2.2 — `MIN_TRANSCRIPT_MESSAGES` env-configurable threshold (`TERMDECK_HOOK_MIN_MESSAGES`, default `1`). Mirrors the existing `MIN_TRANSCRIPT_BYTES` shape at `:140`. Brad's Sprint 63 grok canary (4 msgs, 6,713 bytes content, silent-skipped under `<5` floor) now lands.
+
+### Added — Investigation 2 closure (T3 lane: PreCompact hook for Claude + periodic-capture timer for non-Claude panels)
+
+**The still-open P0 from `docs/CRITICAL-READ-FIRST-2026-05-07.md` is closed.** Long sessions no longer leak state on auto-compact.
+
+- **`packages/stack-installer/assets/hooks/memory-pre-compact.js`** (235 LOC, NEW) — fail-soft bundled hook stamped `@termdeck/stack-installer-hook v1`. Two firing modes: Claude Code `PreCompact` lifecycle hook AND TermDeck server-side periodic-capture timer. Both write `source_type='pre_compact_snapshot'` with a `[CHECKPOINT mode=... trigger=...]` header. Reuses memory-session-end.js helpers via `loadHelpers()` per Sprint 38 module-export contract; zero parser duplication.
+- **`packages/stack-installer/src/index.js::installPreCompactHook`** — installer wiring (~120 LOC), invoked from `main()` after `installSessionEndHook`. Default-on; `--yes` auto-accepts.
+- **`packages/cli/src/init-mnestra.js::runHookRefresh`** — refresh path extended for PreCompact hook; both hooks carry the same version-stamp regex for unified upgrade behavior.
+- **`packages/stack-installer/src/uninstall.js`** — `_isPreCompactHookEntry` + `'PreCompact'` added to settings.json splice loop; new `_stepBackupPreCompactHookFile` step.
+- **`packages/server/src/index.js::onPanelPeriodicCapture`** (~70 LOC) — server-side timer for non-Claude panels (Codex/Gemini/Grok). Default 10 min interval (`TERMDECK_PERIODIC_CAPTURE_INTERVAL_MS` override). Throttle skips ticks where transcript hasn't grown ≥ 1 KB. Adapter-type promoted from `meta.type="shell"` to declared `sessionType` BEFORE timer registration so direct-spawn (`POST /api/sessions {command:"codex"}`) sessions register correctly.
+- **`~/.claude/CLAUDE.md` § Before Context Gets Long** promoted from advisory to enforcement (orchestrator-committed at sprint close). Hooks are the load-bearing mechanism; manual `memory_remember` calls are belt-and-suspenders.
+- **TermDeck `CLAUDE.md`** P0 banner updated to "both investigations closed as of Sprint 64"; new hard rule § "Auto-commit on context-compaction-near is enforced, not advisory" with implementation file:line map.
+- **Acceptance evidence**: `docs/sprint-64-install-polish-and-carveouts/INVESTIGATION-2-ACCEPTANCE.md` with fence-test evidence + operator-grade canary procedure (Test A: live PreCompact fire; Test B: periodic-capture on Codex panel; Test C: fail-soft never-blocks invariant).
+
+### Security — T4-CODEX 16:26 ET AUDIT-RED resolution (PAT broadcast pre-FIX-LANDED catch)
+
+T4's most-load-bearing catch of the sprint. Pre-merge fix, never shipped.
+
+- **`packages/cli/src/init.js:409-417`** — auto path now persists ONLY per-project credentials (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `OPENAI_API_KEY`, `DATABASE_URL`) to `~/.termdeck/secrets.env`. **`SUPABASE_ACCESS_TOKEN` (the Supabase PAT — org-wide management credential) is explicitly OMITTED** from the persisted bag. PAT is wizard-scoped only, used in-memory for MCP-mediated provisioning, then discarded.
+- **`packages/server/src/index.js:123-147`** — `~/.termdeck/secrets.env` loader gains a `PTY_ENV_EXCLUSION_LIST` (defense-in-depth). Known admin-grade credentials (`SUPABASE_ACCESS_TOKEN`, `GITHUB_TOKEN`, `OPENAI_ADMIN_KEY`) are filtered from the merge into every child PTY's env at `spawnTerminalSession`. Even if a future user manually pastes a PAT into secrets.env, the server doesn't broadcast it.
+- **`packages/server/src/setup/supabase-mcp.js:20-45` + `:197-220`** — source-side `redactSecrets(message)` regex masks JWT-shaped (`eyJ...`) and PAT-shaped (`sbp_...`) substrings to `[REDACTED:JWT]` / `[REDACTED:PAT]` at the propagation boundary — `:170-171` (msg.error path) and `:182-184` (stderr-tail path). Catches future callers that forget to wrap.
+- **`packages/cli/src/mcp-supabase-provision.js:73-101`** — caller-side `sanitizeErrorForLogs(err, redactList)` wraps every `callTool()` exception path. `redactList` includes PAT + dbPassword + project_ref + service_role_key + anon_key. Preserves `Error.code` for structured-error branching. <8-char-value guard prevents false-positive redaction of short legitimate substrings. **Dual-layer redaction** (caller-side explicit + source-side regex) is the durable defense.
+- **`packages/cli/src/init.js:427-445`** — auto-path chained call switched from `init-mnestra --from-env` to `init-mnestra --yes` (avoids the broken `--from-env` env-loading boundary; loads secrets.env into `process.env` before invoking).
+
+### Added — Test coverage delta + tooling
+
+- **`package.json` test glob** updated to cover all three package test dirs: `node --test packages/server/tests/**/*.test.js packages/cli/tests/**/*.test.js packages/stack-installer/tests/**/*.test.js`. New `packages/cli/tests/` dir houses the wizard fence tests.
+- **Test count**: 153 baseline → 295 pass / 0 fail / 0 cancelled / 0 skipped at FINAL-VERDICT (~12s). +142 new tests across all four lanes:
+  - **T1**: `os-detect.test.js` (27) + `mcp-supabase-provision.test.js` (28) + `init-flow.test.js` (25) + `spawn-env-exclusion.test.js` (PTY exclusion fence) + redaction fence tests = 80+
+  - **T2**: `codex-resolve-transcript-spawn-time.test.js` (4) + `adapter-spawn-shell-wrap.test.js` (8) + `codex-version-probe.test.js` + `hook-min-messages-threshold.test.js` = ~24
+  - **T3**: `pre-compact-hook.test.js` (5) + `periodic-capture.test.js` (5) = 10
+- **`gitleaks` clean** on all Sprint-64-owned surfaces. Fence-test canaries reworked from real-secret-shape strings to runtime-built/low-entropy fixtures that match the redaction regex shape without tripping gitleaks pre-commit.
+
+### Verification
+
+- 295/295 root `npm test` green
+- `gitleaks detect --source . --redact --no-git --verbose` clean on diff surfaces (3 pre-existing unrelated findings remain in scope only of their own respective surfaces)
+- T4-CODEX FINAL-VERDICT GREEN 2026-05-14 16:47 ET with file:line evidence for all three lanes
+- Investigation 2 acceptance evidence at `docs/sprint-64-install-polish-and-carveouts/INVESTIGATION-2-ACCEPTANCE.md`
+
 ### Planned (post-v1.0.0)
 - **Sprint 51 — Cost-monitoring expandable dashboard panel.** Per-agent subscription-vs-per-token billing exposure. Reads each adapter's `costBand` field (declared on all 4 adapters since Sprint 45, populated since v1.0.0) and surfaces it in an expandable drawer: agent name + cost-band badge + session token count + running cost estimate (per-token agents) + "what's included" tooltip per agent. Optional non-blocking threshold toast when a per-token agent crosses a user-configurable spend threshold (default $5/session — Joshua to decide at scoping). Why: outside users running mixed 4+1 may not realize swapping a Claude lane for a Codex/Gemini/Grok lane shifts billing from "included in $X/mo subscription" to "$Y per million tokens" — long sprints with thinking + tool calls can rack up hundreds before the user notices. Same pattern (`costBand` + dashboard surface) extends naturally to rumen-tick (Edge Function billing) and mnestra (embedding cost per `memory_remember`). The v1.0.0 `source_agent` column is the natural foundation for "your last 30 days of memory spend, broken down by source LLM."
 - **Grok 16-sub-agent observability.** Per the Sprint 47 Grok smoke-test self-report: Grok's `task` tool emits parseable stdout patterns (`"Delegating to [agent] sub-agent: ..."`, `"[sub-agent complete]"`). TermDeck's `session.js` analyzer can pick these up; UX could be a collapsible tree / side-metadata pane showing agent pills. Carried forward from Sprint 49 deferral.

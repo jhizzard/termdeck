@@ -208,14 +208,20 @@ by T1's FINDING are NOT in Sprint 62 scope — Sprint 63 candidate.
 deliberately deferred from Sprint 62 (per its PLANNING.md §6 "Out of scope").
 Sprint 63 candidate.
 
-## Resolution — Investigation 2 — STILL OPEN as of 2026-05-08
+## Resolution — Investigation 2 — 2026-05-14
 
-**Investigation 2 (auto-commit on context compaction-near) remains open.**
-Sprint 64 (or 63) candidate. The gap surfaced again during Sprint 62 itself —
-T4-CODEX checkpoint discipline mitigated the worst of compaction-near data
-loss within the sprint substrate (STATUS.md as durable storage), but the
-broader rule from this doc — "every agent MUST auto-commit memories on
-compaction-near" — has no enforcement mechanism yet.
+**Investigation 2 closed by Sprint 64 (`docs/sprint-64-install-polish-and-carveouts/`).**
 
-Until Sprint 64 ships, the ~/.claude/CLAUDE.md "Before Context Gets Long"
-rule remains advisory. Long sessions still leak state on compact.
+The gap closed via two orthogonal mechanisms shipping in `@jhizzard/termdeck-stack@1.3.0`:
+
+1. **Claude Code panels — `PreCompact` harness hook.** Claude Code 2.x exposes a first-class `PreCompact` lifecycle hook (verified from official docs at `https://code.claude.com/docs/en/hooks`; matchers `manual` / `auto` / wildcard `*`; supports `decision:"block"` to abort compaction and `exit-2` for the same effect — neither path used here). Sprint 64 T3 ships `packages/stack-installer/assets/hooks/memory-pre-compact.js` (235 LOC, fail-soft: errors exit 0 and never block compaction). Wired in `~/.claude/settings.json` under `hooks.PreCompact` with `matcher: "*"`. Each fire writes one `source_type='pre_compact_snapshot'` row to Mnestra with a `[CHECKPOINT mode=pre_compact trigger=...]` header. Installer wiring at `packages/stack-installer/src/index.js::installPreCompactHook`; refresh path at `packages/cli/src/init-mnestra.js::runHookRefresh`; uninstall path at `packages/stack-installer/src/uninstall.js::_stepBackupPreCompactHookFile`.
+
+2. **Non-Claude panels (Codex/Gemini/Grok) inside TermDeck — server-side periodic-capture timer.** Those CLIs have no PreCompact equivalent (verified 2026-05-11 — `codex --help` exposes no hooks subcommand). TermDeck's server runs `onPanelPeriodicCapture` at `packages/server/src/index.js` (~70 LOC) per active non-Claude panel. Default interval 10 minutes; override via `TERMDECK_PERIODIC_CAPTURE_INTERVAL_MS`. Throttle: skips ticks where the transcript hasn't grown ≥ 1 KB since the last fire (cost-aware; doesn't write noise). The timer drains the rolling buffer to the same bundled `memory-pre-compact.js` hook in `mode: 'periodic_checkpoint'`. Adapter-type promoted from `meta.type="shell"` to declared `sessionType` BEFORE timer registration so direct-spawn (`POST /api/sessions {command:"codex"}`) sessions register correctly (T4-CODEX 16:25/16:31 catches resolved).
+
+**Acceptance evidence** at `docs/sprint-64-install-polish-and-carveouts/INVESTIGATION-2-ACCEPTANCE.md` — Test A (real Claude Code PreCompact fire), Test B (periodic-capture on Codex panel), Test C (fail-soft never-blocks invariant). Fence tests at `packages/server/tests/pre-compact-hook.test.js` (×5) + `periodic-capture.test.js` (×5) — green. T4-CODEX cross-verified docs independently at 16:12 ET (Phase 3 audit) + 16:43 ET (hook implementation specifics — wildcard matcher valid, `timeout:30` supported, fail-soft posture correct).
+
+**Enforcement mechanism, not advisory.** The `~/.claude/CLAUDE.md` § "Before Context Gets Long" rule was promoted from advisory to MANDATORY at sprint close (orchestrator-committed edit). The hooks are the load-bearing mechanism; manual `memory_remember` calls remain as belt-and-suspenders only. TermDeck `CLAUDE.md` mirrors the rule under § Hard rules. See § Auto-commit on context-compaction-near in both files for the file:line map to the implementation.
+
+**Standalone Codex/Gemini/Grok shells (outside TermDeck) — still uncovered.** Sprint 65+ candidate (mentioned at the bottom of T3's brief out-of-scope section). Until then, manual `memory_remember` calls remain the only safety net for those panels. Crash-near scenarios (process killed before compaction completes) also remain out of scope — durable substrates (`STATUS.md` in active sprints, prior `memory_remember` rows, JSONL transcripts on disk) are the only recovery path.
+
+**Both Investigations 1 + 2 are now closed.** Investigation 1 closed Sprint 62 (code/test grounds) + Sprint 63 (acceptance grounds, 4/4 panels wrote `session_summary` on real `/exit`). Investigation 2 closed Sprint 64 (above). This file is preserved as the historical P0 record — do not delete; future sessions may want the backstory.

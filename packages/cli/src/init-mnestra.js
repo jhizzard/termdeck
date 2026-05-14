@@ -684,6 +684,12 @@ const SETTINGS_JSON_PATH = path.join(require('os').homedir(), '.claude', 'settin
 const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
 const HOOK_TIMEOUT_SECONDS = 30;
 
+// Sprint 64 T3 — PreCompact hook (Investigation 2 of CRITICAL-READ-FIRST-
+// 2026-05-07.md). Lives alongside the SessionEnd hook; refreshes via the
+// same Sprint 51.6 T3 version-stamp gate.
+const PRECOMPACT_HOOK_COMMAND = 'node ~/.claude/hooks/memory-pre-compact.js';
+const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
+
 function _isSessionEndHookEntry(entry) {
   return entry && typeof entry.command === 'string'
     && entry.command.includes('memory-session-end.js');
@@ -737,6 +743,42 @@ function _mergeSessionEndHookEntry(settings, opts = {}) {
     settings.hooks.SessionEnd.push({ matcher: '', hooks: [entry] });
   }
   return { settings, status: migrated ? 'migrated-from-stop' : 'installed' };
+}
+
+// Sprint 64 T3 — PreCompact entry detection + merge. Hoisted mirror of
+// `_isPreCompactHookEntry` / `_mergePreCompactHookEntry` in
+// `packages/stack-installer/src/index.js` (same reasoning as the SessionEnd
+// duplication above: the published @jhizzard/termdeck tarball ships only
+// `packages/stack-installer/assets/hooks/**`, not `.../src/**`).
+function _isPreCompactHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && entry.command.includes('memory-pre-compact.js');
+}
+
+function _mergePreCompactHookEntry(settings, opts = {}) {
+  const command = opts.command || PRECOMPACT_HOOK_COMMAND;
+  const timeout = opts.timeout != null ? opts.timeout : PRECOMPACT_HOOK_TIMEOUT_SECONDS;
+  const entry = { type: 'command', command, timeout };
+
+  if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
+  if (!Array.isArray(settings.hooks.PreCompact)) settings.hooks.PreCompact = [];
+
+  for (const group of settings.hooks.PreCompact) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    if (group.hooks.some(_isPreCompactHookEntry)) {
+      return { settings, status: 'already-installed' };
+    }
+  }
+
+  const wildcardGroup = settings.hooks.PreCompact.find(
+    (g) => g && g.matcher === '*' && Array.isArray(g.hooks)
+  );
+  if (wildcardGroup) {
+    wildcardGroup.hooks.push(entry);
+  } else {
+    settings.hooks.PreCompact.push({ matcher: '*', hooks: [entry] });
+  }
+  return { settings, status: 'installed' };
 }
 
 function _readSettingsJson(filePath) {
@@ -808,6 +850,43 @@ function migrateSettingsJsonHookEntry(opts = {}) {
   return { status: merge.status, settingsPath, backup };
 }
 
+// Sprint 64 T3 — settings.json wiring for the PreCompact hook. Parallel to
+// migrateSettingsJsonHookEntry above but simpler (no Stop→event migration
+// branch; PreCompact didn't exist pre-Sprint-64).
+function migrateSettingsJsonPreCompactEntry(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const settingsPath = opts.settingsPath || SETTINGS_JSON_PATH;
+
+  const read = _readSettingsJson(settingsPath);
+  if (read.status === 'malformed') {
+    return { status: 'malformed', error: read.error, settingsPath };
+  }
+
+  const before = JSON.stringify(read.settings);
+  const merge = _mergePreCompactHookEntry(read.settings);
+  const after = JSON.stringify(merge.settings);
+  const noChange = before === after;
+
+  if (merge.status === 'already-installed' || noChange) {
+    return { status: 'already-installed', settingsPath };
+  }
+
+  if (dryRun) {
+    return { status: 'would-' + merge.status, settingsPath };
+  }
+
+  let backup = null;
+  if (read.status === 'ok' || read.status === 'empty') {
+    const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+    backup = `${settingsPath}.bak.${stamp}`;
+    try { fs.copyFileSync(settingsPath, backup); }
+    catch (_) { backup = null; }
+  }
+
+  _writeSettingsJson(settingsPath, merge.settings);
+  return { status: merge.status, settingsPath, backup };
+}
+
 function runSettingsJsonMigration({ dryRun = false } = {}) {
   const debug = !!process.env.TERMDECK_DEBUG_WIREUP;
   step('Reconciling ~/.claude/settings.json hook event mapping (Stop → SessionEnd)...');
@@ -840,6 +919,29 @@ function runSettingsJsonMigration({ dryRun = false } = {}) {
     // should still finish the DB work.
     process.stdout.write(`    ! settings.json migration failed: ${err.message} (continuing)\n`);
     if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration threw: ${err && err.stack || err}\n`);
+  }
+
+  // Sprint 64 T3 — wire the PreCompact hook into settings.json. Brand new in
+  // Sprint 64 (no legacy migration), so the merge either creates the entry or
+  // reports already-installed; nothing else to do.
+  step('Reconciling ~/.claude/settings.json PreCompact wiring...');
+  try {
+    const r = migrateSettingsJsonPreCompactEntry({ dryRun });
+    if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration pre-compact return: ${JSON.stringify(r)}\n`);
+    if (r.status === 'already-installed') {
+      ok('already wired (PreCompact)');
+    } else if (r.status === 'installed') {
+      ok(r.backup ? `installed (PreCompact; backup: ${path.basename(r.backup)})` : 'installed (PreCompact)');
+    } else if (r.status === 'would-installed') {
+      ok('would install (PreCompact) (dry-run)');
+    } else if (r.status === 'malformed') {
+      ok(`(skipped: settings.json malformed: ${r.error})`);
+    } else {
+      ok(`(${r.status})`);
+    }
+  } catch (err) {
+    process.stdout.write(`    ! PreCompact wiring failed: ${err.message} (continuing)\n`);
+    if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration pre-compact threw: ${err && err.stack || err}\n`);
   }
 }
 
@@ -875,6 +977,35 @@ function runHookRefresh({ dryRun = false } = {}) {
     // should continue to do the DB work.
     process.stdout.write(`    ! hook refresh failed: ${err.message} (continuing)\n`);
     if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh threw: ${err && err.stack || err}\n`);
+  }
+
+  // Sprint 64 T3 — also refresh the PreCompact hook. Re-uses the same
+  // version-stamp gate (refreshBundledHookIfNewer is parameterized by
+  // destPath + sourcePath; both hooks carry the `@termdeck/stack-installer-
+  // hook v<N>` marker the gate reads).
+  step('Refreshing ~/.claude/hooks/memory-pre-compact.js (if bundled is newer)...');
+  try {
+    const HOME = require('os').homedir();
+    const PRE_DEST = path.join(HOME, '.claude', 'hooks', 'memory-pre-compact.js');
+    const PRE_SOURCE = path.join(__dirname, '..', '..', 'stack-installer', 'assets', 'hooks', 'memory-pre-compact.js');
+    const r = refreshBundledHookIfNewer({ dryRun, destPath: PRE_DEST, sourcePath: PRE_SOURCE });
+    if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh pre-compact return: ${JSON.stringify(r)}\n`);
+    if (r.status === 'refreshed') {
+      ok(`refreshed v${r.from ?? 0} → v${r.to} (backup: ${path.basename(r.backup)})`);
+    } else if (r.status === 'would-refresh') {
+      ok(`would-refresh v${r.from ?? 0} → v${r.to} (dry-run)`);
+    } else if (r.status === 'installed') {
+      ok(`installed v${r.bundled} (no prior copy)`);
+    } else if (r.status === 'would-install') {
+      ok(`would-install v${r.bundled} (dry-run, no prior copy)`);
+    } else if (r.status === 'up-to-date') {
+      ok(`up-to-date (v${r.installed})`);
+    } else {
+      ok(`(${r.status}${r.message ? ': ' + r.message : ''})`);
+    }
+  } catch (err) {
+    process.stdout.write(`    ! pre-compact hook refresh failed: ${err.message} (continuing)\n`);
+    if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh pre-compact threw: ${err && err.stack || err}\n`);
   }
 }
 

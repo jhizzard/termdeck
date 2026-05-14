@@ -60,6 +60,17 @@ function _isSessionEndHookEntry(entry) {
     && entry.command.includes('memory-session-end.js');
 }
 
+// Sprint 64 T3 — PreCompact entry predicate (Investigation 2 closure). Used
+// alongside _isSessionEndHookEntry to splice both hook kinds during uninstall.
+function _isPreCompactHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && entry.command.includes('memory-pre-compact.js');
+}
+
+function _isAnyTermdeckHookEntry(entry) {
+  return _isSessionEndHookEntry(entry) || _isPreCompactHookEntry(entry);
+}
+
 // ── Args ────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
@@ -217,6 +228,8 @@ function _resolvePaths(home, platform) {
     claudeJson: path.join(home, '.claude.json'),
     settingsJson: path.join(home, '.claude', 'settings.json'),
     hookFile: path.join(home, '.claude', 'hooks', 'memory-session-end.js'),
+    // Sprint 64 T3 — PreCompact hook destination (Investigation 2 closure).
+    preCompactHookFile: path.join(home, '.claude', 'hooks', 'memory-pre-compact.js'),
     launchAgentsDir: path.join(home, 'Library', 'LaunchAgents'),
     launchAgentGlob: 'com.jhizzard.termdeck.', // prefix match against .plist files
     systemdUnit: path.join(home, '.config', 'systemd', 'user', 'termdeck.service'),
@@ -237,17 +250,18 @@ function _settingsJsonHasOurHook(_fs, settingsJson) {
   try { parsed = JSON.parse(_fs.readFileSync(settingsJson, 'utf8') || '{}'); }
   catch (_) { return false; }
   if (!parsed || !parsed.hooks) return false;
-  for (const event of ['Stop', 'SessionEnd']) {
+  // Sprint 64 T3 — also probe PreCompact wiring (Investigation 2 closure).
+  for (const event of ['Stop', 'SessionEnd', 'PreCompact']) {
     const arr = parsed.hooks[event];
     if (!Array.isArray(arr)) continue;
     for (const elem of arr) {
       if (!elem) continue;
       // Canonical Claude-Code group shape: { matcher, hooks: [{ type, command }] }
-      if (Array.isArray(elem.hooks) && elem.hooks.some(_isSessionEndHookEntry)) return true;
+      if (Array.isArray(elem.hooks) && elem.hooks.some(_isAnyTermdeckHookEntry)) return true;
       // Legacy / hand-edited flat shape: { type, command } directly in array.
       // T3 (Sprint 61 18:50 ET) found that real-world fixtures use this
       // alternative shape, and our uninstall must handle both.
-      if (_isSessionEndHookEntry(elem)) return true;
+      if (_isAnyTermdeckHookEntry(elem)) return true;
     }
   }
   return false;
@@ -288,6 +302,9 @@ function _detectInstallState(_fs, paths) {
     hasOurHookInSettings: _settingsJsonHasOurHook(_fs, paths.settingsJson),
     hasHookFile: _fs.existsSync(paths.hookFile),
     hookBakFiles: _findHookBakFiles(_fs, paths.hookFile),
+    // Sprint 64 T3 — PreCompact hook file detection (Investigation 2 closure).
+    hasPreCompactHookFile: _fs.existsSync(paths.preCompactHookFile),
+    preCompactHookBakFiles: _findHookBakFiles(_fs, paths.preCompactHookFile),
     launchAgents,
     systemdActive,
   };
@@ -336,6 +353,8 @@ function _isFullyClean(state) {
     && !state.hasMnestraMcpEntry
     && !state.hasOurHookInSettings
     && !state.hasHookFile
+    // Sprint 64 T3 — fully-clean predicate now also covers the PreCompact hook.
+    && !state.hasPreCompactHookFile
     && state.launchAgents.length === 0
     && !state.systemdActive;
 }
@@ -468,7 +487,10 @@ function _stepSpliceSettingsJson(_fs, paths, opts) {
     return out;
   }
   let removedCount = 0;
-  for (const event of ['Stop', 'SessionEnd']) {
+  // Sprint 64 T3 — added 'PreCompact' to the event-name list and switched the
+  // predicate to `_isAnyTermdeckHookEntry` so a single splice pass also strips
+  // PreCompact wirings (Investigation 2 closure).
+  for (const event of ['Stop', 'SessionEnd', 'PreCompact']) {
     const arr = parsed.hooks[event];
     if (!Array.isArray(arr)) continue;
     // Two shapes coexist in the wild (T3 finding 2026-05-07 18:50 ET):
@@ -480,7 +502,7 @@ function _stepSpliceSettingsJson(_fs, paths, opts) {
     for (const elem of arr) {
       if (elem && Array.isArray(elem.hooks)) {
         const before = elem.hooks.length;
-        elem.hooks = elem.hooks.filter((e) => !_isSessionEndHookEntry(e));
+        elem.hooks = elem.hooks.filter((e) => !_isAnyTermdeckHookEntry(e));
         removedCount += before - elem.hooks.length;
       }
     }
@@ -488,7 +510,7 @@ function _stepSpliceSettingsJson(_fs, paths, opts) {
     for (const elem of arr) {
       if (!elem) continue;
       // Drop flat entries that match our hook.
-      if (_isSessionEndHookEntry(elem) && !Array.isArray(elem.hooks)) {
+      if (_isAnyTermdeckHookEntry(elem) && !Array.isArray(elem.hooks)) {
         removedCount += 1;
         continue;
       }
@@ -538,6 +560,33 @@ function _stepBackupHookFile(_fs, paths, opts) {
     _fs.renameSync(paths.hookFile, bakPath);
     out.status = 'renamed';
     out.detail = `${paths.hookFile} → ${bakPath}`;
+  } catch (e) {
+    out.status = 'error'; out.detail = `rename failed: ${e.message}`;
+  }
+  return out;
+}
+
+// Sprint 64 T3 — same shape as _stepBackupHookFile but targets the PreCompact
+// hook file (Investigation 2 closure). Independent of the SessionEnd backup —
+// either file's absence/presence is OK; both are renamed-not-deleted so user
+// customizations are recoverable.
+function _stepBackupPreCompactHookFile(_fs, paths, opts) {
+  const out = { name: 'pre-compact-hook-file-backup', status: 'pending', detail: '' };
+  if (!_fs.existsSync(paths.preCompactHookFile)) {
+    out.status = 'skipped'; out.detail = 'not present';
+    return out;
+  }
+  const stamp = _isoStamp(opts._now);
+  const bakPath = `${paths.preCompactHookFile}.bak.${stamp}`;
+  if (opts.dryRun) {
+    out.status = 'would-rename';
+    out.detail = `would rename ${paths.preCompactHookFile} → ${bakPath}`;
+    return out;
+  }
+  try {
+    _fs.renameSync(paths.preCompactHookFile, bakPath);
+    out.status = 'renamed';
+    out.detail = `${paths.preCompactHookFile} → ${bakPath}`;
   } catch (e) {
     out.status = 'error'; out.detail = `rename failed: ${e.message}`;
   }
@@ -759,6 +808,7 @@ function _printPreflight(out, state, paths, opts) {
   if (state.hasMnestraMcpEntry) lines.push(`  ${ANSI.cyan}•${ANSI.reset} mcpServers.mnestra in ${paths.claudeJson} ${ANSI.dim}(surgical splice — other entries preserved)${ANSI.reset}`);
   if (state.hasOurHookInSettings) lines.push(`  ${ANSI.cyan}•${ANSI.reset} hooks.{Stop,SessionEnd} entries in ${paths.settingsJson} ${ANSI.dim}(surgical splice — other entries preserved)${ANSI.reset}`);
   if (state.hasHookFile) lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${paths.hookFile} ${ANSI.dim}(renamed to .bak.<timestamp>, not deleted)${ANSI.reset}`);
+  if (state.hasPreCompactHookFile) lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${paths.preCompactHookFile} ${ANSI.dim}(renamed to .bak.<timestamp>, not deleted)${ANSI.reset}`);
   for (const p of state.launchAgents) lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${p} ${ANSI.dim}(launchctl unload + rm)${ANSI.reset}`);
   if (state.systemdActive) lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${paths.systemdUnit} ${ANSI.dim}(systemctl --user disable --now + rm)${ANSI.reset}`);
   if (opts.purgeSupabase) lines.push(`  ${ANSI.red}•${ANSI.reset} ${ANSI.bold}--purge-supabase: will DROP Mnestra/Rumen tables in your Supabase project${ANSI.reset}`);
@@ -869,6 +919,10 @@ async function uninstall(opts = {}) {
     (o) => _stepSpliceClaudeJson(_fs, paths, o),
     (o) => _stepSpliceSettingsJson(_fs, paths, o),
     (o) => _stepBackupHookFile(_fs, paths, o),
+    // Sprint 64 T3 — PreCompact hook backup step (Investigation 2 closure).
+    // Runs after the SessionEnd backup so a clean install with both hooks
+    // present produces .bak siblings for both files with a consistent stamp.
+    (o) => _stepBackupPreCompactHookFile(_fs, paths, o),
     (o) => _stepRemoveLaunchAgents(_fs, _spawnSync, paths, o),
     (o) => _stepRemoveSystemdUnit(_fs, _spawnSync, paths, o),
   ]) {
@@ -921,6 +975,10 @@ module.exports = {
   parseArgs,
   // Test hooks — exposed so unit tests can drive primitives without a full run.
   _isSessionEndHookEntry,
+  // Sprint 64 T3 — PreCompact uninstall surface (Investigation 2 closure).
+  _isPreCompactHookEntry,
+  _isAnyTermdeckHookEntry,
+  _stepBackupPreCompactHookFile,
   _resolvePaths,
   _detectInstallState,
   _isFullyClean,
