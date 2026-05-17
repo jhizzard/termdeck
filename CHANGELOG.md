@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-16
+
+> **Sprint 65 — Dashboard reliability + orch-panel awareness wave.** 3+1+1 with Codex auditor; ~65 min wall-clock from inject to T4-CODEX FINAL-VERDICT GREEN (20:43 ET). Bundles Brad's 2026-05-12 + 2026-05-13 v2 dashboard feedback (project-filter chips + always-visible orchestrator panel + dead-panel cleanup) and folds in Joshua's 2026-05-16 layout asks. **Wave: `@jhizzard/termdeck@1.3.0 → 1.4.0` + `@jhizzard/termdeck-stack@1.3.0 → 1.4.0` (audit-trail aligned); `@jhizzard/mnestra` unchanged at 0.4.9.** Minor bump — the new optional `meta.role` field on `POST /api/sessions` is an additive public-API surface change, no breaking changes. `npm test` 295 (v1.3.0) → 375 pass / 0 fail / 0 skipped. T4-CODEX caught 2 AUDIT-REDs + multiple AUDIT-CONCERNs, all resolved pre-FIX-LANDED.
+
+### Added — Dashboard project-filter chips + orchestrator-panel pin (T1 lane: `packages/client/public/`)
+
+Brad's 2026-05-13 v2 spec. Multi-project operators can filter the panel grid by project and keep the orchestrator panel always in view.
+
+- **Project-filter chips** — a horizontal chip row above the panel grid, auto-discovered from `meta.project` across active sessions, each chip carrying a live panel count (`[ All (12) ] [ aetheria (3) ] …`). Single-select; clicking a chip hides non-matching tiles via the `panel--filtered-out` class (`display:none` — PTYs are never torn down). The selected filter persists in `localStorage` (`termdeck.dashboard.projectFilter`); a stale/unknown saved filter falls back to "All". Helpers `discoverPanelProjects` / `renderProjectChips` / `applyProjectFilter` / `onProjectChipClick` in `app.js`; `#project-chips` in `index.html`; `.project-chips-row` / `.project-chip` CSS.
+- **Orchestrator panel pin** — panels spawned with `meta.role === 'orchestrator'` render in a dedicated pinned row (`#orch-pin-row`) above the filtered grid, always visible regardless of chip selection, with a gold/amber border (`#d4a017` — 7.45:1 contrast on the dark chrome) and an `ORCH` title-bar badge. `placePanel` routes by role; `reconcileOrchRow` is the idempotent defensive recheck; the empty row collapses.
+- **Born-hidden-spawn guard** — a panel spawned while a non-"All" chip is active would otherwise be born `display:none`. `revealNewPanelIfFiltered` auto-switches the active chip to a newly-spawned panel's project (untagged → "All"; ORCH panels exempt; reload/restore honors the saved filter). Closes the fresh "opens invisible" the chip filter itself would have introduced.
+- **Tile auto-removal on panel exit** — a new `panel_exited` WS frame removes the dead tile and closes its xterm viewport after a 3 s grace period; `reconcileExitedPanels` is the belt-and-suspenders sweep (orphaned-from-broadcast 5 s / stale-exited 60 s).
+- **Path A grid layouts** — new presets `1x2`, `2x5`, `5x2`, `4x3`, `3x4`, `4x4` (up to 16-panel grids) with topbar buttons and `Ctrl/Cmd+Shift+8/9/0` bindings.
+- **Global terminal font-size control** — a topbar `A−/A+` stepper adjusts xterm `fontSize` (clamped to [8,22]) across all panels with explicit refit; persists in `localStorage`; new and restored panels inherit it.
+
+### Added — `meta.role` panel-role field + dead-panel lifecycle (T2 lane: `packages/server/src/`)
+
+- **`meta.role`** — new optional field on the `POST /api/sessions` body: `orchestrator | worker | reviewer | auditor | null` (default `null`). Whitelist-validated — unknown values rejected with `400 invalid_role`. Persisted on `Session.meta`, in SQLite (`role TEXT` column on fresh installs + a PRAGMA-guarded `ALTER TABLE` migration for existing installs), and flows through the `status_broadcast` WS frame. Dashboard-only for v1.4.0 — not persisted into session-summary rows.
+- **Exited-session filtering** — `GET /api/sessions` excludes `status: 'exited'` sessions by default; `?includeExited=true` restores the legacy full list. `SessionManager.getAll()` default stays legacy (include-all) so `status_broadcast` keeps carrying exited sessions for client-side reconciliation.
+- **`410 Gone` on dead-panel input** — `POST /api/sessions/:id/input` to an exited / no-PTY panel returns `410 {ok:false, code:'panel_exited', error, message, exitCode, exitedAt}` (was a silent `404`). The body carries both `error` (backward-compat) and `code` (programmatic discriminator). A never-existed session still returns `404`.
+- **`panel_exited` WS frame** — `term.onExit` stamps `meta.exitedAt` and broadcasts `{type:'panel_exited', sessionId, exitCode, signal, exitedAt}` to all connected clients.
+
+### Changed
+
+- **410-trap dual-layer client fix** — the dashboard `api()` helper now preserves HTTP status: a non-2xx response synthesizes an `error` field + `_httpStatus`, so `sendReply()` correctly treats a dead-panel send as a failure instead of silently reporting success.
+- **Client test fence in-glob** — `dashboard-panels-client.test.js` (39 tests) moved into `packages/server/tests/` so it runs under the root `npm test` glob.
+
+### Fixed
+
+- **`periodic-capture.test.js` date-rot** (test-only; pre-existing Sprint-64 bug, not a Sprint 65 regression) — the test hardcoded a Codex fixture dir `~/.codex/sessions/2026/05/14/` while the codex adapter scans only today + yesterday UTC, so the fixture aged out on 2026-05-16 and 2 tests began failing the root close gate. A new `codexTodayDir()` helper derives the fixture day-dir from the runtime clock. Pre-existing origin confirmed by `git stash`ing only the sprint's edits and reproducing on the clean v1.3.0 tree.
+
+### Notes
+
+- **Per-adapter idle/parked detection (T2 sub-task 2.5) shipped in Sprint 60 v1.0.14** — verified, not re-implemented; pinned with 7 new regression tests. The BACKLOG § P0 idle/parked item is closed (BACKLOG was never updated when Sprint 60 shipped it).
+- **`npm test` 375 / 0 / 0** — T4-CODEX independently re-verified the root close gate at FINAL-VERDICT.
+- **Deferred to Sprint 66** — draggable grid row/column resizing (Joshua 2026-05-16 ask; ~200–350 LOC, own scoping pass); legacy `orch` grid layout vs the new ORCH-pin row (cosmetic, non-blocking); `meta.role` persistence into `session_summary` rows (no analytics consumer yet); consolidation of the repo-root `tests/` glob gap.
+- **Deferred pending Brad's repro** — "CLI windows open invisible" (2026-05-12 item 2a) hypotheses A (off-screen grid slot), C (dark-veil modal), D (WS spawn race); hypothesis B (born-hidden under filter) was fixed in-sprint. Analysis at `docs/sprint-65-dashboard-reliability/2A-OPENS-INVISIBLE-ANALYSIS.md`.
+- **3+1+1 wall-clock**: ~65 min inject → FINAL-VERDICT GREEN, Codex auditor lane.
+
 ## [1.3.0] - 2026-05-14
 
 > **Sprint 64 — Install-polish convergence + Sprint 63 carve-outs + Investigation 2 closure.** 3+1+1 with Codex auditor; ~42 min wall-clock from inject (16:05 ET) to T4-CODEX FINAL-VERDICT GREEN (16:47 ET). **Closes the still-open P0 from `docs/CRITICAL-READ-FIRST-2026-05-07.md` Investigation 2** (auto-commit on context-compaction-near). Ships the install-polish wizard convergence keystone (final convergence sprint before MacBook Air dogfood per `docs/CONVERGENCE-PLAN.md`). **Wave: `@jhizzard/termdeck@1.2.0 → 1.3.0` + `@jhizzard/termdeck-stack@1.2.0 → 1.3.0` (audit-trail aligned); `@jhizzard/mnestra` unchanged at 0.4.9** (companion patch — log rotation + singleton probe + pidfile — deferred; attach-to-existing already shipping in 0.4.9 per multi-port verification 2026-05-14 15:28 ET). 295/295 root `npm test` green. T4-CODEX caught 10+ AUDIT-CONCERNs including 1 AUDIT-RED (PAT broadcast to every spawned PTY env) — pre-FIX-LANDED, never shipped.

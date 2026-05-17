@@ -10,6 +10,9 @@
       --tg-text-bright: #eef1ff;
       --tg-accent: #7aa2f7;
       --tg-accent-dim: #3d5a9e;
+      /* Sprint 65 T1 — orchestrator-panel accent (gold/amber). A theme can
+         override this var; the ORCH-pin CSS falls back to #d4a017 if unset. */
+      --tg-accent-orch: #d4a017;
       --tg-green: #9ece6a;
       --tg-amber: #e0af68;
       --tg-red: #f7768e;
@@ -317,6 +320,14 @@
     .grid-container.layout-3x2 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
     .grid-container.layout-4x2 { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
     .grid-container.layout-2x4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr 1fr; }
+    /* Sprint 65 T1 (1.4 / Path A) — denser presets for many-parallel-projects
+       work. layout-1x2 already exists above; these cover 10 / 12 / 16-panel
+       grids. WxH = columns × rows, consistent with the presets above. */
+    .grid-container.layout-2x5 { grid-template-columns: 1fr 1fr; grid-template-rows: repeat(5, 1fr); }
+    .grid-container.layout-5x2 { grid-template-columns: repeat(5, 1fr); grid-template-rows: 1fr 1fr; }
+    .grid-container.layout-4x3 { grid-template-columns: repeat(4, 1fr); grid-template-rows: 1fr 1fr 1fr; }
+    .grid-container.layout-3x4 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: repeat(4, 1fr); }
+    .grid-container.layout-4x4 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); }
 
     /* Orchestrator: workers across the top (60%), one full-width orchestrator
        panel across the bottom (40%). The last panel is always the orchestrator.
@@ -369,6 +380,122 @@
     .term-panel.active-input { border-color: var(--tg-accent-dim); }
     .term-panel.exited { opacity: 0.55; }
     .term-panel.exited .panel-terminal { pointer-events: none; }
+
+    /* ===== Sprint 65 T1: project-filter chips + ORCH pin + tile lifecycle =====
+       Brad's 2026-05-13 v2 spec (BACKLOG § D.5). Placed after the .term-panel
+       base + variants so .term-panel.panel--role-orch wins the cascade against
+       .term-panel:hover / .term-panel.exited (equal specificity → source order). */
+
+    /* 1.1 — project-filter chip row, above the grid. app.js leaves it empty
+       when there is only one project bucket (nothing worth filtering). */
+    .project-chips-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 38px 0 6px;
+      flex-shrink: 0;
+    }
+    .project-chips-row:empty { display: none; }
+
+    .project-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--tg-mono);
+      font-size: 11px;
+      color: var(--tg-text-dim);
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-border);
+      border-radius: 999px;
+      padding: 3px 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.1s, background 0.1s, border-color 0.1s;
+    }
+    .project-chip:hover {
+      color: var(--tg-text);
+      background: var(--tg-surface-hover);
+      border-color: var(--tg-border-active);
+    }
+    .project-chip.active {
+      color: var(--tg-accent);
+      border-color: var(--tg-accent);
+    }
+    .project-chip-count { font-size: 10px; opacity: 0.7; }
+
+    /* 1.1 — a tile hidden by the chip filter. display:none keeps the PTY +
+       xterm.js instance alive (no teardown); fitAll() / verifyLayoutHealth()
+       already skip display:none panels. Two classes → beats base .term-panel. */
+    .term-panel.panel--filtered-out { display: none; }
+
+    /* 1.2 — orchestrator pin row: above the chip row + grid. The orch tile is
+       always grid-column 1 for muscle-memory consistency; the row collapses to
+       zero height when no orchestrator panel exists. Right padding mirrors the
+       grid's 38px guide-rail reservation. */
+    .orch-pin-row {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) 2fr;
+      gap: 6px;
+      height: clamp(180px, 24vh, 280px);
+      padding: 6px 38px 0 6px;
+      flex-shrink: 0;
+      box-sizing: border-box;
+    }
+    .orch-pin-row:empty { display: none; }
+
+    /* 1.2 — orchestrator panel: gold/amber border so the operator's primary
+       control surface is distinguishable at a glance (Brad's "from 6+ feet"
+       acceptance bar). */
+    .term-panel.panel--role-orch {
+      border: 2px solid var(--tg-accent-orch, #d4a017);
+      box-shadow: 0 0 0 1px rgba(212, 160, 23, 0.3);
+    }
+    .term-panel.panel--role-orch:hover {
+      border-color: var(--tg-accent-orch, #d4a017);
+    }
+    /* The ORCH text badge — prepended to the .panel-type slot so the header
+       reads "ORCH <type>". ORCH always wins the slot over the project label. */
+    .term-panel.panel--role-orch .panel-type::before {
+      content: "ORCH ";
+      font-weight: 700;
+      color: var(--tg-accent-orch, #d4a017);
+      margin-right: 4px;
+    }
+
+    /* 1.3 — a tile dimming out during the grace window before auto-removal. */
+    .term-panel.panel--exiting {
+      opacity: 0.5;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    /* (c) — topbar terminal font-size stepper (Joshua's 2026-05-16 ask). */
+    .topbar-fontsize {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      margin-right: 4px;
+    }
+    .font-step-btn {
+      background: var(--tg-surface);
+      border: 1px solid var(--tg-border);
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: var(--tg-radius-sm);
+      cursor: pointer;
+      transition: color 0.1s, border-color 0.1s;
+    }
+    .font-step-btn:hover { color: var(--tg-text); border-color: var(--tg-border-active); }
+    .font-size-label {
+      font-family: var(--tg-mono);
+      font-size: 10px;
+      color: var(--tg-text-dim);
+      min-width: 14px;
+      text-align: center;
+    }
 
     /* --- Panel Header (metadata bar) --- */
     .panel-header {

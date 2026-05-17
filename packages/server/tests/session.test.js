@@ -326,3 +326,145 @@ test('Session.toJSON returns id + meta + pid', () => {
   assert.equal(json.meta.project, 'termdeck');
   assert.ok('pid' in json);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sprint 65 T2 (2.1) — meta.role: explicit operator-role flag (Approach A).
+// Route-level validation (400 on unknown values) is fenced in
+// session-lifecycle-api.test.js; these cover the Session/SessionManager layer.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Session: meta.role defaults to null when not supplied', () => {
+  const s = new Session({ id: 't-role-default', type: 'shell' });
+  assert.equal(s.meta.role, null);
+});
+
+test('Session: meta.role is preserved verbatim from constructor options', () => {
+  for (const role of ['orchestrator', 'worker', 'reviewer', 'auditor']) {
+    const s = new Session({ id: `t-role-${role}`, type: 'shell', role });
+    assert.equal(s.meta.role, role);
+  }
+});
+
+test('Session: explicit role:null stays null', () => {
+  const s = new Session({ id: 't-role-null', type: 'shell', role: null });
+  assert.equal(s.meta.role, null);
+});
+
+test('Session.toJSON carries meta.role through serialization (status_broadcast path)', () => {
+  const s = new Session({ id: 't-role-json', type: 'shell', role: 'orchestrator' });
+  assert.equal(s.toJSON().meta.role, 'orchestrator');
+});
+
+test('SessionManager.create persists role into the in-memory session', () => {
+  const mgr = new SessionManager(null);
+  const s = mgr.create({ id: 't-role-mgr', type: 'shell', role: 'auditor' });
+  assert.equal(s.meta.role, 'auditor');
+  assert.equal(mgr.get('t-role-mgr').meta.role, 'auditor');
+});
+
+test('SessionManager.updateMeta does NOT allow role mutation (role is spawn-time only)', () => {
+  // role is a spawn-time identity attribute — Brad's 2026-05-13 spec tags
+  // panels at creation, not via PATCH. role is intentionally absent from
+  // PATCHABLE_META_FIELDS, so a PATCH attempt to change it is a silent no-op.
+  const mgr = new SessionManager(null);
+  mgr.create({ id: 't-role-patch', type: 'shell', role: 'worker' });
+  mgr.updateMeta('t-role-patch', { role: 'orchestrator' });
+  assert.equal(mgr.get('t-role-patch').meta.role, 'worker', 'role must not change via PATCH');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sprint 65 T2 (2.2) — SessionManager.getAll({ includeExited }). The route
+// wiring (?includeExited query param) is fenced in session-lifecycle-api.test.js.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('SessionManager.getAll() includes exited sessions by default (status_broadcast relies on this)', () => {
+  const mgr = new SessionManager(null);
+  mgr.create({ id: 't-ga-live', type: 'shell' });
+  const dead = mgr.create({ id: 't-ga-dead', type: 'shell' });
+  dead.meta.status = 'exited';
+  const ids = mgr.getAll().map((s) => s.id);
+  assert.ok(ids.includes('t-ga-live'));
+  assert.ok(ids.includes('t-ga-dead'), 'bare getAll() must still carry exited sessions (legacy default)');
+});
+
+test('SessionManager.getAll({ includeExited: false }) excludes exited sessions', () => {
+  const mgr = new SessionManager(null);
+  mgr.create({ id: 't-gf-live', type: 'shell' });
+  const dead = mgr.create({ id: 't-gf-dead', type: 'shell' });
+  dead.meta.status = 'exited';
+  const ids = mgr.getAll({ includeExited: false }).map((s) => s.id);
+  assert.ok(ids.includes('t-gf-live'));
+  assert.ok(!ids.includes('t-gf-dead'), 'includeExited:false must drop exited sessions');
+});
+
+test('SessionManager.getAll({ includeExited: true }) is the legacy full shape', () => {
+  const mgr = new SessionManager(null);
+  mgr.create({ id: 't-gt-live', type: 'shell' });
+  const dead = mgr.create({ id: 't-gt-dead', type: 'shell' });
+  dead.meta.status = 'exited';
+  assert.equal(mgr.getAll({ includeExited: true }).length, 2);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sprint 65 T2 (2.5) — per-adapter idle/parked detection. NO new production
+// code: the mechanism shipped in Sprint 60 v1.0.14 (codex END_OF_TURN
+// terminator + every adapter's statusFor idle branch + the toJSON stale-status
+// guard). These tests pin the shipped behavior against regression — see
+// [T2] FINDING 2026-05-16 20:00 ET in the Sprint 65 STATUS.md for why 2.5
+// reduces to verify+fence rather than adding a redundant `idlePattern` field.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('idle detection: Codex "Worked for" end-of-turn terminator parks status at idle', () => {
+  const s = new Session({ id: 't-idle-codex-eot', type: 'codex' });
+  // The box-drawing terminator the Codex TUI renders when a turn closes.
+  s.analyzeOutput('─ Worked for 2m 50s ──────────────────────');
+  assert.equal(s.meta.status, 'idle', 'Codex Worked-for terminator must park the panel at idle');
+});
+
+test('idle detection: Codex end-of-turn wins even when the chunk also carries a Working spinner', () => {
+  // The exact Sprint 59 false-positive shape — a final spinner line plus the
+  // closing terminator in one chunk. statusFor checks END_OF_TURN first so it
+  // does not stick on thinking.
+  const s = new Session({ id: 't-idle-codex-mixed', type: 'codex' });
+  s.analyzeOutput('Working (12s)\n─ Worked for 1m 4s ─────────');
+  assert.equal(s.meta.status, 'idle');
+});
+
+test('idle detection: Claude idle-prompt cursor parks status at idle', () => {
+  const s = new Session({ id: 't-idle-claude', type: 'claude-code' });
+  s.analyzeOutput('\n> ');
+  assert.equal(s.meta.status, 'idle');
+});
+
+test('idle detection: Gemini prompt parks status at idle', () => {
+  const s = new Session({ id: 't-idle-gemini', type: 'gemini' });
+  s.analyzeOutput('gemini> ');
+  assert.equal(s.meta.status, 'idle');
+});
+
+test('idle detection: Grok empty-state placeholder parks status at idle', () => {
+  const s = new Session({ id: 't-idle-grok', type: 'grok' });
+  s.analyzeOutput('Message Grok…\n');
+  assert.equal(s.meta.status, 'idle');
+});
+
+test('stale-status guard: a parked thinking panel serializes to idle past the staleness threshold', () => {
+  // toJSON()'s Sprint-60 v1.0.14 guard: STICKY_STATUSES={thinking,editing}
+  // older than STALE_STATUS_THRESHOLD_MS report 'idle'. This IS the
+  // belt-and-suspenders for a terminator chunk split across PTY reads — no
+  // separate 60s broadcast-layer heuristic is added (it would duplicate this).
+  const s = new Session({ id: 't-stale-thinking', type: 'codex' });
+  s.meta.status = 'thinking';
+  s.meta.statusDetail = 'Codex is reasoning...';
+  s.meta.lastActivity = new Date(Date.now() - Session.STALE_STATUS_THRESHOLD_MS - 5000).toISOString();
+  const json = s.toJSON();
+  assert.equal(json.meta.status, 'idle', 'a stale parked thinking panel must serialize as idle');
+  assert.equal(json.meta.statusDetail, '');
+});
+
+test('stale-status guard: a fresh thinking panel is NOT downgraded', () => {
+  const s = new Session({ id: 't-fresh-thinking', type: 'codex' });
+  s.meta.status = 'thinking';
+  s.meta.lastActivity = new Date().toISOString();
+  assert.equal(s.toJSON().meta.status, 'thinking', 'a genuinely active thinking panel must stay thinking');
+});

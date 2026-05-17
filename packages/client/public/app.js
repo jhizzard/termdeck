@@ -25,7 +25,14 @@
       // works if the endpoint 404s on an older server during a rolling
       // upgrade — Claude only, anchored binary match.
       agentAdapters: [{ name: 'claude', sessionType: 'claude-code', binary: 'claude', costBand: 'pay-per-token' }],
-      focusedId: null
+      focusedId: null,
+      // Sprint 65 T1 — selected project-filter chip ('' = All). Hydrated from
+      // localStorage in init(); a TDZ on PROJECT_FILTER_KEY prevents reading
+      // it here in the state literal.
+      projectFilter: '',
+      // Sprint 65 T1 (c) — global terminal font size (xterm.js default 13).
+      // Hydrated from localStorage in init() (same TDZ reason as projectFilter).
+      fontSize: 13
     };
 
     // ===== API helpers =====
@@ -33,11 +40,25 @@
       const opts = { method, headers: { 'Content-Type': 'application/json' } };
       if (body) opts.body = JSON.stringify(body);
       const res = await fetch(`${API}${path}`, opts);
-      return res.json();
+      // Success path: unchanged — return the parsed JSON body verbatim.
+      if (res.ok) return res.json();
+      // Sprint 65 T1 (1.3b) — non-2xx: many callers gate on `.error` and
+      // otherwise treat the body as success. A 4xx/5xx body without an
+      // `error` key (e.g. the dead-panel shape 410 {ok:false,code,message})
+      // would be misreported as delivered. annotateApiFailure() synthesizes a
+      // uniform `error` field and surfaces `_httpStatus` for precise callers.
+      let data = null;
+      try { data = await res.json(); } catch (err) { /* non-JSON error body */ }
+      return annotateApiFailure(data, res.status);
     }
 
     // ===== Initialize =====
     async function init() {
+      // Sprint 65 T1 — hydrate saved client prefs before any panel mounts: the
+      // project-filter chip (so a new tile filters right from frame 1) and the
+      // terminal font size (so restored panels open at the operator's size).
+      state.projectFilter = loadProjectFilter();
+      state.fontSize = loadFontSize();
       // Load config
       state.config = await api('GET', '/api/config');
       updateRagIndicator();
@@ -104,6 +125,14 @@
       }
 
       updateEmptyState();
+
+      // Sprint 65 T1 — initial restore complete: subsequent createTerminalPanel
+      // calls are user-initiated launches, so arm the born-hidden chip guard.
+      _initialLoadComplete = true;
+      // Render chips + route the ORCH row now that the restored panels exist.
+      refreshDashboardChrome();
+      // Sprint 65 T1 (c) — sync the topbar font-size label to the saved size.
+      applyFontSizeToAll();
 
       // Rumen insights badge + briefing (no-op when server reports enabled:false)
       setupRumen();
@@ -433,7 +462,9 @@
         </div>
       `;
 
-      document.getElementById('termGrid').appendChild(panel);
+      // Sprint 65 T1 (1.2) — orchestrator panels render in the pinned ORCH
+      // row above the grid; everything else goes in the grid.
+      placePanel(panel, meta);
 
       // Sprint 42 T4: drag/drop reorder. Inject identifier is the session
       // UUID, so DOM reorder is purely visual — Alt+1…9 (creation-order),
@@ -443,7 +474,7 @@
       // Create xterm.js instance
       const terminal = new Terminal({
         fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace",
-        fontSize: 13,
+        fontSize: state.fontSize,
         lineHeight: 1.3,
         cursorBlink: true,
         cursorStyle: 'bar',
@@ -498,6 +529,11 @@
               refreshAllReplyFormsFor(id);
               refreshPanelIndices();
               renderSwitcher();
+              break;
+            case 'panel_exited':
+              // Sprint 65 T1 (1.3) — T2 broadcasts this when a PTY exits.
+              // Primary path for auto-removing the dead tile from the grid.
+              handlePanelExited(msg.sessionId, msg.exitCode);
               break;
             case 'status_broadcast':
               updateGlobalStats(msg.sessions);
@@ -592,6 +628,11 @@
       if (replyBtn) replyBtn.disabled = state.sessions.size < 2;
       refreshAllReplyFormsFor(id);
       refreshPanelIndices();
+      // Sprint 65 T1 — a user-launched panel must never be born hidden behind a
+      // stale chip filter (T3 20:10 / T4 20:11): switch the filter to its
+      // project first, then refresh chrome so the new tile is visible.
+      revealNewPanelIfFiltered(meta);
+      refreshDashboardChrome();
 
       // Handle window resize
       const resizeObserver = new ResizeObserver(() => {
@@ -609,6 +650,486 @@
       resizeObserver.observe(container);
 
       return { terminal, ws, fitAddon };
+    }
+
+    // ===== Sprint 65: project-filter chips + ORCH-panel pin + tile lifecycle =====
+    // Brad's 2026-05-13 v2 spec (BACKLOG § D.5) — three dashboard-reliability
+    // surfaces sharing one client-side lane:
+    //   1.1  project-filter chips — a per-project visibility filter above the grid
+    //   1.2  ORCH pin — panels with meta.role==='orchestrator' get a dedicated
+    //        always-visible row + gold/amber treatment, outside the chip filter
+    //   1.3  tile auto-removal — dead PTY panels leave the grid instead of
+    //        lingering as "dead" tiles (Brad's "18 windows, 10 dead codex cli")
+    //
+    // Design note: TermDeck panels are persistent DOM + live xterm.js + a
+    // per-panel WebSocket. They are created once (createTerminalPanel) and
+    // never re-rendered per frame — status_broadcast only mutates meta. So the
+    // chip row and filter work by toggling classes on existing tiles, never by
+    // tearing panels down; ORCH routing is decided at panel-create time and
+    // re-checked cheaply on each broadcast.
+
+    const PROJECT_FILTER_KEY = 'termdeck.dashboard.projectFilter';
+    // Belt-and-suspenders thresholds for tile reconciliation (reconcileExitedPanels).
+    // ORPHAN_GRACE_MS > the tile-exit grace so the primary panel_exited path
+    // always wins when the WS frame is delivered.
+    const ORPHAN_GRACE_MS = 5000;
+    const STALE_EXITED_MS = 60000;
+    let _chromeRefreshScheduled = false;
+    // false during init()'s panel-restore loop, true afterward. Gates the
+    // born-hidden chip guard so a saved filter is honored on reload but a
+    // user-launched panel is always revealed.
+    let _initialLoadComplete = false;
+
+    // --- Pure helpers (no DOM, no globals — unit-tested in
+    //     tests/dashboard-panels-client.test.js via the vm-extract pattern) ---
+
+    // Distinct non-null project tags across the given session-meta list, plus
+    // whether any panel carries no project at all. `metas` is an array of
+    // session.meta objects. Exited panels are excluded — chips count live work.
+    function discoverPanelProjects(metas) {
+      const projects = [];
+      const seen = Object.create(null);
+      let hasNullProject = false;
+      for (const m of (metas || [])) {
+        if (!m || m.status === 'exited') continue;
+        const p = m.project;
+        if (p === null || p === undefined || p === '') {
+          hasNullProject = true;
+          continue;
+        }
+        if (!seen[p]) {
+          seen[p] = true;
+          projects.push(p);
+        }
+      }
+      projects.sort();
+      return { projects: projects, hasNullProject: hasNullProject };
+    }
+
+    // Count of live (non-exited) panels for one chip. The "All" chip passes
+    // project==='' and counts every live panel; a project chip counts only its
+    // own. Orchestrator panels are counted under their project too — the ORCH
+    // pin is a placement, not an exclusion from the totals.
+    function countPanelsForProject(metas, project) {
+      let n = 0;
+      for (const m of (metas || [])) {
+        if (!m || m.status === 'exited') continue;
+        if (project === '' || project === null || project === undefined) { n++; continue; }
+        if (m.project === project) n++;
+      }
+      return n;
+    }
+
+    // Whether a grid tile with the given project should be visible under the
+    // current chip selection. The "All" selection ('') shows everything; a
+    // project selection shows only exact matches (null-project panels are
+    // hidden under any specific-project filter — they surface only under All).
+    function isPanelVisibleUnderFilter(panelProject, selectedFilter) {
+      if (selectedFilter === '' || selectedFilter === null || selectedFilter === undefined) return true;
+      return panelProject === selectedFilter;
+    }
+
+    // The chip row is only worth showing when there is real filtering to do:
+    // at least two project buckets, or one project plus some untagged panels.
+    function shouldShowChipRow(projects, hasNullProject) {
+      const n = (projects || []).length;
+      return n >= 2 || (n >= 1 && hasNullProject === true);
+    }
+
+    // Approach A (Brad's 2026-05-13 spec): orchestrator identity is the
+    // explicit meta.role flag, never inferred from cwd.
+    function isOrchestratorRole(role) {
+      return role === 'orchestrator';
+    }
+
+    // Belt-and-suspenders for missed panel_exited frames: panel ids the
+    // dashboard still has a tile for, but which no longer appear in the
+    // server's broadcast session list. Works whether or not T2 filters exited
+    // sessions out of status_broadcast.
+    function findOrphanedPanelIds(knownPanelIds, broadcastSessionIds) {
+      const live = Object.create(null);
+      for (const id of (broadcastSessionIds || [])) live[id] = true;
+      const orphaned = [];
+      for (const id of (knownPanelIds || [])) {
+        if (!live[id]) orphaned.push(id);
+      }
+      return orphaned;
+    }
+
+    // 1.3b — give a non-2xx API body a uniform failure signal. Many callers
+    // gate on `.error`; a 4xx/5xx body that lacks it (e.g. the Sprint 65
+    // dead-panel shape 410 {ok:false,code:'panel_exited',message}) would
+    // otherwise be misread as success. Pure: takes the parsed body + status,
+    // returns the body annotated with `error` + `_httpStatus`.
+    function annotateApiFailure(body, httpStatus) {
+      const out = (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+      if (out.error === undefined || out.error === null) {
+        out.error = out.message || out.code || ('HTTP ' + httpStatus);
+      }
+      out._httpStatus = httpStatus;
+      return out;
+    }
+
+    // 1.1 born-hidden guard (T3 20:10 / T4 20:11) — a panel the operator just
+    // launched must never be hidden by a stale chip filter. Given the active
+    // filter and a newly-created panel, returns the filter value that keeps the
+    // panel visible, or null when no switch is needed. Pure.
+    function filterValueRevealingPanel(currentFilter, panelProject, isOrchPanel, initialLoadComplete) {
+      if (initialLoadComplete !== true) return null;  // initial restore — honor the saved filter
+      if (isOrchPanel === true) return null;          // ORCH panels bypass the chip filter
+      const proj = panelProject || '';
+      if (!currentFilter) return null;                // "All" already shows everything
+      if (currentFilter === proj) return null;        // already visible under this filter
+      return proj;                                    // switch the filter to the new panel's project
+    }
+
+    // --- localStorage-backed filter persistence (origin-scoped, per-tab) ---
+    function loadProjectFilter() {
+      try {
+        const v = localStorage.getItem(PROJECT_FILTER_KEY);
+        return typeof v === 'string' ? v : '';
+      } catch (err) {
+        console.warn('[client] projectFilter load failed:', err);
+        return '';
+      }
+    }
+    function saveProjectFilter(value) {
+      try {
+        localStorage.setItem(PROJECT_FILTER_KEY, value || '');
+      } catch (err) {
+        console.warn('[client] projectFilter save failed:', err);
+      }
+    }
+
+    // session.meta for every panel currently mounted on THIS dashboard. Skips
+    // the _mounting placeholder createTerminalPanel reserves at function entry
+    // before the real entry is written.
+    function dashboardPanelMetas() {
+      const metas = [];
+      for (const entry of state.sessions.values()) {
+        if (!entry || entry._mounting || !entry.session || !entry.session.meta) continue;
+        metas.push(entry.session.meta);
+      }
+      return metas;
+    }
+
+    // 1.1 — (re)render the project-filter chip row from the live panel set.
+    // Chips are built with createElement (not innerHTML) so project names need
+    // no attribute escaping and cannot inject markup.
+    function renderProjectChips() {
+      const row = document.getElementById('project-chips');
+      if (!row) return;
+      const metas = dashboardPanelMetas();
+      const discovered = discoverPanelProjects(metas);
+      const projects = discovered.projects;
+
+      if (!shouldShowChipRow(projects, discovered.hasNullProject)) {
+        row.replaceChildren();
+        return;
+      }
+
+      // If the selected project no longer has any live panels, fall back to
+      // "All" so the grid never strands empty behind a dead chip.
+      if (state.projectFilter && projects.indexOf(state.projectFilter) === -1) {
+        state.projectFilter = '';
+        saveProjectFilter('');
+      }
+
+      const chips = [{ project: '', label: 'All' }];
+      for (const p of projects) chips.push({ project: p, label: p });
+
+      const frag = document.createDocumentFragment();
+      for (const c of chips) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'project-chip' + (((state.projectFilter || '') === c.project) ? ' active' : '');
+        btn.dataset.project = c.project;
+        const label = document.createElement('span');
+        label.className = 'project-chip-label';
+        label.textContent = c.label;
+        const count = document.createElement('span');
+        count.className = 'project-chip-count';
+        count.textContent = '(' + countPanelsForProject(metas, c.project) + ')';
+        btn.appendChild(label);
+        btn.appendChild(count);
+        frag.appendChild(btn);
+      }
+      row.replaceChildren(frag);
+    }
+
+    // 1.1 — apply the current chip selection to the grid by toggling
+    // .panel--filtered-out (display:none) on tiles. PTYs are never torn down —
+    // a filtered panel keeps running, just hidden. Orchestrator tiles live
+    // outside the grid and are never filtered.
+    function applyProjectFilter() {
+      for (const entry of state.sessions.values()) {
+        if (!entry || entry._mounting || !entry.el || !entry.session) continue;
+        if (isOrchestratorRole(entry.session.meta && entry.session.meta.role)) {
+          entry.el.classList.remove('panel--filtered-out');
+          continue;
+        }
+        const project = entry.session.meta ? entry.session.meta.project : null;
+        const visible = isPanelVisibleUnderFilter(project, state.projectFilter || '');
+        entry.el.classList.toggle('panel--filtered-out', !visible);
+      }
+    }
+
+    // 1.1 — chip click: single-select, persist, re-render + re-filter + refit.
+    function onProjectChipClick(e) {
+      const chip = e.target && e.target.closest ? e.target.closest('.project-chip') : null;
+      if (!chip) return;
+      const project = chip.getAttribute('data-project') || '';
+      state.projectFilter = project;
+      saveProjectFilter(project);
+      renderProjectChips();
+      applyProjectFilter();
+      requestAnimationFrame(function () { fitAll(); });
+    }
+
+    // 1.1 — born-hidden guard for a freshly-created panel: if an active chip
+    // filter would hide it, switch the filter to the panel's project so the
+    // operator sees what they just launched. No-op during the initial restore.
+    function revealNewPanelIfFiltered(meta) {
+      const next = filterValueRevealingPanel(
+        state.projectFilter,
+        meta && meta.project,
+        isOrchestratorRole(meta && meta.role),
+        _initialLoadComplete
+      );
+      if (next === null) return;
+      state.projectFilter = next;
+      saveProjectFilter(next);
+    }
+
+    // 1.2 — route a freshly-built panel into the ORCH pin row or the grid.
+    function placePanel(panel, meta) {
+      const orchRow = document.getElementById('orch-pin-row');
+      if (orchRow && isOrchestratorRole(meta && meta.role)) {
+        panel.classList.add('panel--role-orch');
+        orchRow.appendChild(panel);
+      } else {
+        document.getElementById('termGrid').appendChild(panel);
+      }
+    }
+
+    // 1.2 — defensive reconcile: keep every tile in the container its role
+    // dictates. meta.role is immutable post-spawn so this is a no-op after a
+    // panel's first placement; it only acts if a panel was somehow built
+    // before its role was known. Returns true if any tile moved.
+    function reconcileOrchRow() {
+      const orchRow = document.getElementById('orch-pin-row');
+      const grid = document.getElementById('termGrid');
+      if (!orchRow || !grid) return false;
+      let moved = false;
+      for (const entry of state.sessions.values()) {
+        if (!entry || entry._mounting || !entry.el || !entry.session) continue;
+        const isOrch = isOrchestratorRole(entry.session.meta && entry.session.meta.role);
+        const inOrchRow = entry.el.parentElement === orchRow;
+        if (isOrch && !inOrchRow) {
+          entry.el.classList.add('panel--role-orch');
+          entry.el.classList.remove('panel--filtered-out');
+          orchRow.appendChild(entry.el);
+          moved = true;
+        } else if (!isOrch && inOrchRow) {
+          entry.el.classList.remove('panel--role-orch');
+          grid.appendChild(entry.el);
+          moved = true;
+        }
+      }
+      return moved;
+    }
+
+    // Single entry point for keeping the dashboard chrome (ORCH row + chips +
+    // filter) in sync with the live panel set. Cheap — class toggles and a
+    // small chip-row rebuild.
+    function refreshDashboardChrome() {
+      const moved = reconcileOrchRow();
+      renderProjectChips();
+      applyProjectFilter();
+      if (moved) requestAnimationFrame(function () { fitAll(); });
+    }
+
+    // status_broadcast fires once per panel WebSocket; coalesce the resulting
+    // chrome refreshes into one per animation frame so an 18-panel dashboard
+    // doesn't rebuild the chip row 18× per 2s tick (T4's count-thrash concern).
+    function scheduleChromeRefresh() {
+      if (_chromeRefreshScheduled) return;
+      _chromeRefreshScheduled = true;
+      requestAnimationFrame(function () {
+        _chromeRefreshScheduled = false;
+        refreshDashboardChrome();
+      });
+    }
+
+    // --- 1.3: tile auto-removal on PTY exit ---
+
+    // Grace window before a dead tile is pulled, so the operator sees the
+    // final post-exit lines. Overridable via <body data-tile-exit-grace-ms>
+    // for deterministic tests.
+    function tileExitGraceMs() {
+      try {
+        const attr = document.body && document.body.getAttribute('data-tile-exit-grace-ms');
+        const n = attr != null ? parseInt(attr, 10) : NaN;
+        if (Number.isFinite(n) && n >= 0) return n;
+      } catch (err) {
+        console.warn('[client] tile-exit-grace read failed:', err);
+      }
+      return 3000;
+    }
+
+    // Tear down a panel's DOM + xterm + WebSocket and drop it from state.
+    // Idempotent: a second call for an already-removed id is a no-op. Shared
+    // by handlePanelExited (primary) and reconcileExitedPanels (fallback).
+    function removePanelTile(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      try { if (entry.terminal) entry.terminal.dispose(); } catch (err) { console.warn('[client] terminal dispose failed:', err); }
+      try { if (entry.ws) entry.ws.close(); } catch (err) { console.warn('[client] ws close failed:', err); }
+      try { if (entry.el) entry.el.remove(); } catch (err) { console.warn('[client] tile remove failed:', err); }
+      state.sessions.delete(id);
+      updateEmptyState();
+      renderSwitcher();
+      refreshAllReplyFormsFor(id);
+      refreshPanelIndices();
+      refreshDashboardChrome();
+    }
+
+    // 1.3 primary path — the server broadcast a panel_exited frame (T2 sub-task
+    // 2.4). Dim the tile for a grace window, then remove it. Guarded with
+    // _exitScheduled because panel_exited arrives on every panel's WebSocket.
+    function handlePanelExited(sessionId, exitCode) {
+      const entry = state.sessions.get(sessionId);
+      if (!entry || !entry.el) return;
+      if (entry._exitScheduled) return;
+      entry._exitScheduled = true;
+      entry.el.classList.add('panel--exiting');
+      const statusEl = document.getElementById('status-' + sessionId);
+      if (statusEl && exitCode !== undefined && exitCode !== null) {
+        statusEl.textContent = 'Exited (' + exitCode + ')';
+      }
+      setTimeout(function () { removePanelTile(sessionId); }, tileExitGraceMs());
+    }
+
+    // 1.3 belt-and-suspenders — covers a missed panel_exited frame. Two
+    // independent checks so the dashboard cannot strand a dead tile forever
+    // regardless of how T2 implements exited-session filtering:
+    //   (a) orphaned — a tile whose session id has dropped out of the
+    //       broadcast entirely (fires when T2 filters exited from the
+    //       broadcast); removed after ORPHAN_GRACE_MS.
+    //   (b) stale-exited — a tile still in the broadcast with status 'exited'
+    //       and lastActivity older than STALE_EXITED_MS (fires when T2 keeps
+    //       exited sessions in the broadcast).
+    function reconcileExitedPanels(broadcastSessions) {
+      const list = Array.isArray(broadcastSessions) ? broadcastSessions : [];
+      const broadcastIds = [];
+      const metaById = Object.create(null);
+      for (const s of list) {
+        if (s && s.id) { broadcastIds.push(s.id); metaById[s.id] = s.meta || {}; }
+      }
+      const knownIds = [];
+      for (const [id, entry] of state.sessions) {
+        if (entry && !entry._mounting && entry.el) knownIds.push(id);
+      }
+      const now = Date.now();
+
+      // (a) orphaned-from-broadcast
+      const orphaned = findOrphanedPanelIds(knownIds, broadcastIds);
+      const orphanSet = Object.create(null);
+      for (const id of orphaned) {
+        orphanSet[id] = true;
+        const entry = state.sessions.get(id);
+        if (!entry) continue;
+        if (!entry._orphanedSince) entry._orphanedSince = now;
+        if (now - entry._orphanedSince >= ORPHAN_GRACE_MS && !entry._exitScheduled) {
+          removePanelTile(id);
+        }
+      }
+      // clear the stamp for any panel that is back in the broadcast
+      for (const id of knownIds) {
+        const entry = state.sessions.get(id);
+        if (entry && entry._orphanedSince && !orphanSet[id]) entry._orphanedSince = null;
+      }
+
+      // (b) stale-exited still present in the broadcast
+      for (const id of knownIds) {
+        const meta = metaById[id];
+        if (!meta || meta.status !== 'exited') continue;
+        const entry = state.sessions.get(id);
+        if (!entry || entry._exitScheduled) continue;
+        const last = meta.lastActivity ? new Date(meta.lastActivity).getTime() : 0;
+        if (last && now - last >= STALE_EXITED_MS) {
+          removePanelTile(id);
+        }
+      }
+    }
+
+    // ===== Sprint 65 T1 (Joshua's 2026-05-16 ask c): terminal font size =====
+    // A single global xterm.js font size, adjusted from the topbar A-/A+
+    // stepper and persisted in localStorage. Applies to every panel (existing
+    // + future) — operators running dense CLI output wanted smaller text. The
+    // BACKLOG 2026-05-16 entry sanctions "per-panel OR global"; global is the
+    // simpler, lower-risk option for this contingent sub-task.
+
+    const FONT_SIZE_KEY = 'termdeck.dashboard.fontSize';
+
+    // Clamp a requested font size to the supported range, coercing non-numbers
+    // to the xterm.js default (13). Pure — unit-tested via the vm-extract path.
+    function clampFontSize(n) {
+      const v = Math.round(Number(n));
+      if (!Number.isFinite(v)) return 13;
+      if (v < 8) return 8;
+      if (v > 22) return 22;
+      return v;
+    }
+
+    function loadFontSize() {
+      try {
+        const raw = localStorage.getItem(FONT_SIZE_KEY);
+        return raw != null ? clampFontSize(raw) : 13;
+      } catch (err) {
+        console.warn('[client] fontSize load failed:', err);
+        return 13;
+      }
+    }
+    function saveFontSize(n) {
+      try {
+        localStorage.setItem(FONT_SIZE_KEY, String(n));
+      } catch (err) {
+        console.warn('[client] fontSize save failed:', err);
+      }
+    }
+
+    // Apply the global font size to every live terminal. Changing fontSize
+    // resizes the character cell but NOT the container, so the per-panel
+    // ResizeObserver does not fire — refit + push the new cols/rows explicitly.
+    function applyFontSizeToAll() {
+      for (const entry of state.sessions.values()) {
+        if (!entry || entry._mounting || !entry.terminal) continue;
+        try {
+          entry.terminal.options.fontSize = state.fontSize;
+          if (entry.fitAddon) entry.fitAddon.fit();
+          if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
+            entry.ws.send(JSON.stringify({
+              type: 'resize',
+              cols: entry.terminal.cols,
+              rows: entry.terminal.rows,
+            }));
+          }
+        } catch (err) {
+          console.warn('[client] fontSize apply failed for a panel:', err);
+        }
+      }
+      const label = document.getElementById('fontSizeLabel');
+      if (label) label.textContent = String(state.fontSize);
+    }
+
+    // Topbar A-/A+ stepper handler. delta is +1 or -1.
+    function stepFontSize(delta) {
+      const next = clampFontSize(state.fontSize + delta);
+      if (next === state.fontSize) return;
+      state.fontSize = next;
+      saveFontSize(next);
+      applyFontSizeToAll();
     }
 
     // ===== Control dashboard (T1.6) =====
@@ -1536,6 +2057,11 @@
               const p = document.getElementById(`panel-${id}`);
               if (p) p.classList.add('exited');
               break;
+            case 'panel_exited':
+              // Sprint 65 T1 (1.3) — parity with the main WS handler so the
+              // dead-tile removal still fires for reconnected panels.
+              handlePanelExited(msg.sessionId, msg.exitCode);
+              break;
             case 'status_broadcast':
               updateGlobalStats(msg.sessions);
               break;
@@ -1621,6 +2147,8 @@
       renderSwitcher();
       refreshAllReplyFormsFor(id);
       refreshPanelIndices();
+      // Sprint 65 T1 — closing a panel changes chip counts / may empty a chip.
+      refreshDashboardChrome();
     }
 
     function changeTheme(id, themeId) {
@@ -2954,6 +3482,10 @@
       document.getElementById('stat-thinking').textContent = thinking;
       document.getElementById('stat-idle').textContent = idle;
       renderSwitcher();
+      // Sprint 65 T1 — reconcile dead tiles against this broadcast, then
+      // refresh chips + ORCH-row chrome (coalesced to one rebuild per frame).
+      reconcileExitedPanels(sessions);
+      scheduleChromeRefresh();
     }
 
     function updateEmptyState() {
@@ -4246,6 +4778,17 @@
       btn.addEventListener('click', () => setLayout(btn.dataset.layout));
     });
 
+    // Sprint 65 T1 (1.1) — project-filter chip clicks (delegated; chips are
+    // rebuilt on every status_broadcast so a per-chip listener would go stale).
+    const projectChipsRow = document.getElementById('project-chips');
+    if (projectChipsRow) projectChipsRow.addEventListener('click', onProjectChipClick);
+
+    // Sprint 65 T1 (c) — topbar terminal font-size stepper.
+    const fontDecBtn = document.getElementById('btn-font-dec');
+    const fontIncBtn = document.getElementById('btn-font-inc');
+    if (fontDecBtn) fontDecBtn.addEventListener('click', () => stepFontSize(-1));
+    if (fontIncBtn) fontIncBtn.addEventListener('click', () => stepFontSize(1));
+
     document.getElementById('promptLaunch').addEventListener('click', launchTerminal);
     document.getElementById('promptInput').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') launchTerminal();
@@ -4362,11 +4905,15 @@
           document.getElementById('promptInput').focus();
         }
       }
-      // Ctrl+Shift+1-7 OR Cmd+Shift+1-7 → layout switch (Mac friendly)
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '1' && e.key <= '7') {
+      // Ctrl+Shift+1-9,0 OR Cmd+Shift+1-9,0 → layout switch (Mac friendly).
+      // Sprint 65 T1 (1.4) — keys 1-9 map to indices 0-8, key 0 maps to index
+      // 9. Keys 1-7 keep their pre-Sprint-65 layouts (muscle memory); 8/9/0 are
+      // the new dense presets. Topbar buttons cover every preset incl. 2x5/5x2/3x4.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '0' && e.key <= '9') {
         e.preventDefault();
-        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2', 'orch'];
-        setLayout(layouts[parseInt(e.key) - 1]);
+        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2', 'orch', '1x2', '4x3', '4x4'];
+        const idx = e.key === '0' ? 9 : parseInt(e.key, 10) - 1;
+        if (layouts[idx]) setLayout(layouts[idx]);
       }
       // Ctrl+Shift+] / [ → cycle between terminals
       if (e.ctrlKey && e.shiftKey && (e.key === ']' || e.key === '[')) {

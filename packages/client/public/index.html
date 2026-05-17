@@ -35,12 +35,18 @@
       </div>
 
       <div class="topbar-center">
-        <button class="layout-btn" data-layout="1x1">1x1</button>
-        <button class="layout-btn active" data-layout="2x1">2x1</button>
-        <button class="layout-btn" data-layout="2x2">2x2</button>
-        <button class="layout-btn" data-layout="3x2">3x2</button>
-        <button class="layout-btn" data-layout="2x4">2x4</button>
-        <button class="layout-btn" data-layout="4x2">4x2</button>
+        <button class="layout-btn" data-layout="1x1" title="1 panel">1x1</button>
+        <button class="layout-btn active" data-layout="2x1" title="2 panels — side by side">2x1</button>
+        <button class="layout-btn" data-layout="1x2" title="2 panels — stacked vertically">1x2</button>
+        <button class="layout-btn" data-layout="2x2" title="4 panels">2x2</button>
+        <button class="layout-btn" data-layout="3x2" title="6 panels">3x2</button>
+        <button class="layout-btn" data-layout="2x4" title="8 panels — 2 cols × 4 rows">2x4</button>
+        <button class="layout-btn" data-layout="4x2" title="8 panels — 4 cols × 2 rows">4x2</button>
+        <button class="layout-btn" data-layout="2x5" title="10 panels — 2 cols × 5 rows">2x5</button>
+        <button class="layout-btn" data-layout="5x2" title="10 panels — 5 cols × 2 rows">5x2</button>
+        <button class="layout-btn" data-layout="4x3" title="12 panels — 4 cols × 3 rows">4x3</button>
+        <button class="layout-btn" data-layout="3x4" title="12 panels — 3 cols × 4 rows">3x4</button>
+        <button class="layout-btn" data-layout="4x4" title="16 panels">4x4</button>
         <button class="layout-btn" data-layout="orch" title="Orchestrator: 4 workers across top, 1 full-width orchestrator across bottom">orch</button>
         <button class="layout-btn control-btn" data-layout="control" title="Aggregate activity feed">control</button>
       </div>
@@ -58,6 +64,13 @@
         <button class="topbar-ql-btn" onclick="quickLaunch('python3 -m http.server 8080')" title="Open a Python HTTP server on :8080">python</button>
       </div>
       <div class="topbar-row-2-spacer"></div>
+      <!-- TERMINAL FONT-SIZE STEPPER (Sprint 65 T1): global xterm.js font size,
+           persisted in localStorage, applied to every panel. -->
+      <div class="topbar-fontsize" title="Terminal font size (applies to all panels)">
+        <button type="button" id="btn-font-dec" class="font-step-btn" aria-label="Decrease terminal font size">A−</button>
+        <span id="fontSizeLabel" class="font-size-label">13</span>
+        <button type="button" id="btn-font-inc" class="font-step-btn" aria-label="Increase terminal font size">A+</button>
+      </div>
       <button id="btn-status" title="Global metrics: session counts, RAG mode, and memory bridge status">status</button>
       <button id="btn-config" title="Configuration: project list, theme defaults, and live RAG-mode toggle">config</button>      <button id="btn-sprint" title="Define and kick off a 4+1 sprint">sprint</button>
       <button id="btn-graph" title="Open the knowledge-graph view (memory_items + memory_relationships, force-directed)" onclick="window.open('/graph.html','_blank','noopener')">graph</button>
@@ -66,6 +79,15 @@
       <button id="btn-help" title="Open the TermDeck documentation" onclick="window.open('https://termdeck-docs.vercel.app','_blank','noopener')">help</button>
     </div>
   </div>
+
+  <!-- ORCHESTRATOR PIN ROW (Sprint 65 T1): panels with meta.role==='orchestrator'
+       render here — pinned, always visible, outside the chip filter. The row
+       collapses to zero height when no orchestrator panel exists. -->
+  <div class="orch-pin-row" id="orch-pin-row"></div>
+
+  <!-- PROJECT FILTER CHIPS (Sprint 65 T1): per-project visibility filter,
+       auto-discovered from meta.project and populated by app.js. -->
+  <div class="project-chips-row" id="project-chips"></div>
 
   <!-- TERMINAL GRID -->
   <div class="grid-container layout-2x1" id="termGrid">

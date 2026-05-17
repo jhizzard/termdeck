@@ -150,6 +150,15 @@ const SECRETS_EXCLUDED_FROM_PTY = new Set([
   'NPM_TOKEN',
 ]);
 
+// Sprint 65 T2 (2.1) — explicit operator-role whitelist for the optional
+// `role` field on POST /api/sessions (Brad's 2026-05-13 v2 dashboard spec,
+// Approach A). `null` is the valid "unroled" value; an absent field also
+// defaults to null. The dashboard renders the ORCH pin when
+// `meta.role === 'orchestrator'`; worker/reviewer/auditor are accepted now
+// for forward-compat with the canonical 3+1+1 role taxonomy. Unknown values
+// are rejected with 400 at the route. Exported for the route-fence test.
+const ALLOWED_SESSION_ROLES = ['orchestrator', 'worker', 'reviewer', 'auditor', null];
+
 function readTermdeckSecretsForPty() {
   if (_termdeckSecretsCache !== null) return _termdeckSecretsCache;
   const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
@@ -1240,7 +1249,15 @@ function createServer(config) {
 
   // GET /api/sessions - list all active sessions
   app.get('/api/sessions', (req, res) => {
-    res.json(sessions.getAll());
+    // Sprint 65 T2 (2.2) — exited (dead-PTY) sessions are excluded by default
+    // so an orchestrator polling this endpoint doesn't see dead panels as
+    // live (Brad's "18 windows open, 10 were dead codex cli" — BACKLOG § D.5).
+    // `?includeExited=true` returns the legacy full shape for `termdeck
+    // doctor` + debug tooling. The 2s status_broadcast is intentionally NOT
+    // filtered (it calls bare getAll()) so the dashboard's missed-exit
+    // reconciliation still has exited sessions to work from.
+    const includeExited = req.query.includeExited === 'true';
+    res.json(sessions.getAll({ includeExited }));
   });
 
   // Reusable PTY spawn + wire helper. Used by POST /api/sessions and the
@@ -1248,7 +1265,7 @@ function createServer(config) {
   // the same wiring (transcripts, RAG, Mnestra flashback) without copy-paste.
   // Returns the Session object regardless of PTY success — status will be
   // 'errored' if pty.spawn threw.
-  function spawnTerminalSession({ command, cwd, project, label, type, theme, reason }) {
+  function spawnTerminalSession({ command, cwd, project, label, type, theme, reason, role }) {
     const rawCwd = cwd || config.projects?.[project]?.path || os.homedir();
     const resolvedCwd = path.resolve(rawCwd.replace(/^~/, os.homedir()));
 
@@ -1259,7 +1276,10 @@ function createServer(config) {
       command: command || config.shell,
       cwd: resolvedCwd,
       theme: theme || config.projects?.[project]?.defaultTheme || config.defaultTheme,
-      reason: reason || 'launched via API'
+      reason: reason || 'launched via API',
+      // Sprint 65 T2 (2.1) — explicit operator role. Route validation has
+      // already rejected unknown values; here `undefined`/`null` → null.
+      role: role || null,
     });
 
     if (pty) {
@@ -1468,6 +1488,10 @@ function createServer(config) {
         term.onExit(({ exitCode, signal }) => {
           session.meta.status = 'exited';
           session.meta.exitCode = exitCode;
+          // Sprint 65 T2 (2.4) — stamp the exit timestamp so the panel_exited
+          // WS frame (below) and the 410 body on POST .../input can both
+          // report when the panel died.
+          session.meta.exitedAt = new Date().toISOString();
           session.meta.statusDetail = `Exited (${exitCode})${signal ? `, signal ${signal}` : ''}`;
 
           if (session.ws && session.ws.readyState === 1) {
@@ -1476,6 +1500,32 @@ function createServer(config) {
               exitCode,
               signal
             }));
+          }
+
+          // Sprint 65 T2 (2.4) — broadcast panel_exited to ALL dashboard WS
+          // clients so the grid can auto-remove the dead tile (Brad's
+          // 2026-05-12 item 2b — CLI panels must auto-close on PTY exit).
+          // Distinct from the `exit` frame above, which targets ONLY this
+          // panel's own socket; panel_exited goes to every connected client
+          // because any of them may be rendering this tile in its grid.
+          // Inlined wss.clients broadcast — same idiom as status_broadcast /
+          // config_changed / projects_changed elsewhere in this file.
+          try {
+            const exitPayload = JSON.stringify({
+              type: 'panel_exited',
+              sessionId: session.id,
+              exitCode,
+              signal: signal || null,
+              exitedAt: session.meta.exitedAt,
+            });
+            wss.clients.forEach((client) => {
+              if (client.readyState === 1) {
+                try { client.send(exitPayload); }
+                catch (err) { console.error('[ws] panel_exited send failed:', err); }
+              }
+            });
+          } catch (err) {
+            console.error('[ws] panel_exited broadcast failed:', err);
           }
 
           rag.onSessionEnded(session);
@@ -1663,8 +1713,17 @@ function createServer(config) {
 
   // POST /api/sessions - create a new terminal session
   app.post('/api/sessions', (req, res) => {
-    const { command, cwd, project, label, type, theme, reason } = req.body || {};
-    const session = spawnTerminalSession({ command, cwd, project, label, type, theme, reason });
+    const { command, cwd, project, label, type, theme, reason, role } = req.body || {};
+    // Sprint 65 T2 (2.1) — validate the optional explicit operator-role flag
+    // (Approach A). An absent field (`undefined`) is fine — it defaults to
+    // null in spawnTerminalSession. Any present value must be in the
+    // whitelist (case-sensitive exact match; `null` is allowed). Unknown
+    // values are a 400 so a typo'd role surfaces immediately rather than
+    // silently rendering as an unroled panel.
+    if (role !== undefined && !ALLOWED_SESSION_ROLES.includes(role)) {
+      return res.status(400).json({ ok: false, code: 'invalid_role', allowed: ALLOWED_SESSION_ROLES });
+    }
+    const session = spawnTerminalSession({ command, cwd, project, label, type, theme, reason, role });
     res.status(201).json(session.toJSON());
   });
 
@@ -1729,8 +1788,25 @@ function createServer(config) {
   app.post('/api/sessions/:id/input', (req, res) => {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    // Sprint 65 T2 (2.3) — inject to a dead panel returns 410 Gone, not the
+    // pre-Sprint-65 silent 404. The orchestrator POSTing to an exited panel
+    // (Brad's D.5 item 3 — "10 dead codex cli") got a 404 that reads as
+    // "session never existed"; 410 = "the resource was here, has been
+    // intentionally removed" — the semantically correct + debuggable signal.
+    // Mirrors POST /api/sessions/:id/resize (Sprint 63). The body carries
+    // `error` (backward-compat with the client api()/sendReply() path that
+    // treats a missing `.error` as success — T4-CODEX 19:44) AND `code`
+    // (programmatic discriminator) AND `ok:false`.
     if (session.meta.status === 'exited' || !session.pty) {
-      return res.status(404).json({ error: 'Session is exited' });
+      const msg = `Panel ${req.params.id} has exited`;
+      return res.status(410).json({
+        ok: false,
+        code: 'panel_exited',
+        error: msg,
+        message: msg,
+        exitCode: session.meta.exitCode ?? null,
+        exitedAt: session.meta.exitedAt || null,
+      });
     }
 
     const { text, source, fromSessionId } = req.body || {};
@@ -2972,6 +3048,8 @@ module.exports = {
   // Sprint 64 T1 (ORCH SCOPE 16:29 item 4) — management-token exclusion list.
   // Exported for `packages/cli/tests/spawn-env-exclusion.test.js` fence.
   SECRETS_EXCLUDED_FROM_PTY,
+  // Sprint 65 T2 (2.1) — operator-role whitelist, exported for the route fence.
+  ALLOWED_SESSION_ROLES,
   // Sprint 50 T1 — exported for unit testing the per-agent SessionEnd
   // hook trigger (skip-claude, no-transcript, no-hook-installed,
   // payload shape, fire-and-forget).

@@ -584,6 +584,8 @@ T1 lane handed off to ORCH for sprint close-out. Ready for SHIP gate alongside T
 
 ### [T1] WRAPPED 2026-05-14 18:02 ET — 3 kitchen-level memories landed (titles: dual-layer credential redaction, test canary entropy vs gitleaks, management-token blast-radius)
 
+### [T3] WRAPPED 2026-05-14 18:32 ET — 3 kitchen-level memories landed (titles: orthogonal harness-hook + server-side substrate for cross-CLI lifecycle coverage; fail-soft over fail-hard for observational lifecycle hooks; cost-aware periodic-capture via delta-throttling against source-of-truth)
+
 ### Example shape (do not edit; reference only)
 
 ```

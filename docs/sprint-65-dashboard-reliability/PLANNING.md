@@ -231,4 +231,15 @@ Same two-stage submit pattern as Sprint 64 (per `~/.claude/CLAUDE.md` § 3+1+1 s
 
 ## Resolution
 
-_(filled at sprint close)_
+**Sprint 65 closed GREEN — 2026-05-16 20:43 ET.** `### [T4-CODEX] FINAL-VERDICT GREEN`; ~65 min wall-clock inject → verdict. Wave: `@jhizzard/termdeck@1.3.0 → 1.4.0` + `@jhizzard/termdeck-stack@1.3.0 → 1.4.0` (audit-trail aligned); `@jhizzard/mnestra` unchanged at 0.4.9.
+
+**Shipped — all four lanes DONE / GREEN:**
+
+- **T1 client** — project-filter chips (auto-discovered, live counts, `localStorage`) + ORCH-pin row (`meta.role`-routed, gold border + ORCH badge) + tile auto-removal on `panel_exited` (3 s grace + reconcile sweep) + 1.3b status-aware `api()` (410-trap client layer) + born-hidden auto-switch (ruling F) + Path A layouts incl. `1×2`/`2x5`/`5x2`/`4x3`/`3x4`/`4x4` + global font-size stepper. `app.js +549 / index.html +34 / style.css +127`; client fence `dashboard-panels-client.test.js` (39 tests, moved in-glob).
+- **T2 server** — `meta.role` field (whitelist-validated → `400 invalid_role`, SQLite-persisted with PRAGMA-guarded migration, `status_broadcast` flow-through) + exited-session filtering (`?includeExited=true` legacy restore) + `410 Gone` on dead-panel inject + `panel_exited` WS frame + per-adapter idle/parked detection verified (Sprint 60 mechanism, 7 regression tests). 29 fence tests.
+- **T3 verification** — `sprint-65-acceptance.test.js` (11/11, Brad 18-panel-2-project repro) + `ACCEPTANCE-CHECKLIST.md` + `2A-OPENS-INVISIBLE-ANALYSIS.md` + `periodic-capture.test.js` date-rot fix. Root `npm test` 375/375, 0 skipped.
+- **T4 Codex auditor** — 2 AUDIT-REDs (role-in-summary scope; SQLite-install migration gap) + multiple AUDIT-CONCERNs, all resolved pre-FIX-LANDED; FINAL-VERDICT GREEN with file:line evidence for all three worker lanes.
+
+**ORCH SCOPE rulings (full text in STATUS.md):** SCOPE-1 (A–E) — Path A YES incl `1×2`, grid-resize DEFER → S66, font-size YES, dual-410 keep-both layers, 2.5 verify-only, `meta.role` dashboard-only, `:3001` stale-host do-not-restart. SCOPE-2 (F–G) — born-hidden gap in-scope → auto-switch, `periodic-capture` date-rot → T3. SCOPE-3 (H–I) — client test moved in-glob, legacy `orch` layout accepted-deferred.
+
+**Deferred → Sprint 66** (all logged in `docs/BACKLOG.md` § D.5): draggable grid row/column resizing; 2a "opens invisible" hypotheses A/C/D (pending Brad's repro; B fixed in-sprint); `meta.role` persistence into `session_summary` rows; legacy `orch` layout gate/retire; repo-root `tests/` glob consolidation.

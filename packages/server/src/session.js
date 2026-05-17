@@ -162,6 +162,13 @@ class Session {
     this.meta = {
       type: options.type || 'shell',        // shell, claude-code, gemini, python-server, one-shot
       project: options.project || null,
+      // Sprint 65 T2 (2.1) — explicit operator role (Approach A). One of
+      // orchestrator / worker / reviewer / auditor / null. Set at spawn time
+      // via POST /api/sessions (route-validated against ALLOWED_SESSION_ROLES);
+      // flows through status_broadcast unchanged so the dashboard can pin the
+      // ORCH panel. Distinct from `type` (the agent CLI) — role is operator
+      // intent, type is the running program.
+      role: options.role || null,
       label: options.label || '',
       command: options.command || '',
       cwd: options.cwd || os.homedir(),
@@ -575,8 +582,8 @@ class SessionManager {
     //                     a PATCH from the dropdown sets it (see updateMeta).
     if (this.db) {
       this.db.prepare(`
-        INSERT INTO sessions (id, type, project, label, command, cwd, created_at, reason, theme, theme_override)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (id, type, project, label, command, cwd, created_at, reason, theme, theme_override, role)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         session.id,
         session.meta.type,
@@ -587,7 +594,8 @@ class SessionManager {
         session.meta.createdAt,
         session.meta.reason,
         session.meta.theme,           // resolved snapshot, legacy column
-        session.theme_override        // NULL by default
+        session.theme_override,       // NULL by default
+        session.meta.role             // Sprint 65 T2 — operator role, NULL by default
       );
     }
 
@@ -599,8 +607,20 @@ class SessionManager {
     return this.sessions.get(id);
   }
 
-  getAll() {
-    return Array.from(this.sessions.values()).map(s => s.toJSON());
+  // Sprint 65 T2 (2.2) — `opts.includeExited` controls whether PTY-exited
+  // sessions appear in the listing. Default is legacy (include everything):
+  // the 2s status_broadcast (index.js:2675) and the projects-route live-PTY
+  // guard both call bare getAll() and must keep seeing the full set. Only
+  // GET /api/sessions opts into the filtered view (default on at the route).
+  // Brad's "18 windows open, 10 were dead codex cli" report (BACKLOG § D.5)
+  // is the orchestrator polling /api/sessions and seeing dead panels as live.
+  getAll(opts = {}) {
+    const all = Array.from(this.sessions.values());
+    const includeExited = opts.includeExited !== false;
+    const visible = includeExited
+      ? all
+      : all.filter((s) => s.meta.status !== 'exited');
+    return visible.map((s) => s.toJSON());
   }
 
   // Fields a client is allowed to modify via PATCH /api/sessions/:id.

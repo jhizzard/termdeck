@@ -79,6 +79,24 @@ function installFakePreCompactHook(home) {
   return hookPath;
 }
 
+// Codex's resolveTranscriptPath only scans TODAY's and YESTERDAY's UTC
+// rollout directories (`_codexCandidateDirs` in agent-adapters/codex.js,
+// called with `Date.now()`). The fixture rollout must therefore live in a
+// directory inside that 2-day window. Sprint 65 T3 regression-sweep fix: the
+// original fixtures hardcoded `'2026','05','14'`, which only matched on the
+// day this suite was authored (Sprint 64, 2026-05-14) — the resolver returned
+// null on every later day, so `onPanelPeriodicCapture` no-op'd and the two
+// spawn-expecting tests below failed `npm test` from 2026-05-16 onward.
+// Deriving the dir from the current date keeps the fixture inside the window
+// on every run.
+function codexTodayDir(home) {
+  const d = new Date();
+  const Y = String(d.getUTCFullYear());
+  const M = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const D = String(d.getUTCDate()).padStart(2, '0');
+  return path.join(home, '.codex', 'sessions', Y, M, D);
+}
+
 // Build a fixture session shape mirroring what spawnTerminalSession sets up.
 // The fake adapter mounted via `session.meta.type` resolves through the
 // existing AGENT_ADAPTERS registry — we use a real adapter that ships in the
@@ -129,7 +147,7 @@ test('onPanelPeriodicCapture skips when meta.status === "exited"', async () => {
     });
     try {
       const session = makeFakeCodexSession(home, {
-        transcriptPath: path.join(home, '.codex', 'sessions', '2026', '05', '14', 'rollout-x.jsonl'),
+        transcriptPath: path.join(codexTodayDir(home), 'rollout-x.jsonl'),
         transcriptBytes: 6 * 1024,
       });
       session.meta.status = 'exited';
@@ -178,7 +196,7 @@ test('onPanelPeriodicCapture throttle: < 1 KB growth between fires is suppressed
       return { unref() {} };
     });
     try {
-      const transcriptPath = path.join(home, '.codex', 'sessions', '2026', '05', '14', 'rollout-y.jsonl');
+      const transcriptPath = path.join(codexTodayDir(home), 'rollout-y.jsonl');
       // First fire: 6 KB transcript with a session_meta header so codex's
       // resolveTranscriptPath returns it. The codex adapter requires the
       // first line to be a session_meta record whose payload.cwd matches
@@ -227,7 +245,7 @@ test('onPanelPeriodicCapture payload carries mode=periodic_checkpoint + source_a
     });
     try {
       const cwd = '/tmp/payload-fixture-cwd';
-      const transcriptPath = path.join(home, '.codex', 'sessions', '2026', '05', '14', 'rollout-z.jsonl');
+      const transcriptPath = path.join(codexTodayDir(home), 'rollout-z.jsonl');
       fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
       const header = JSON.stringify({ type: 'session_meta', payload: { cwd } }) + '\n';
       fs.writeFileSync(transcriptPath, header + 'x'.repeat(6 * 1024), 'utf8');

@@ -66,7 +66,8 @@ function initDatabase(Database) {
       exit_code INTEGER,
       reason TEXT,
       theme TEXT DEFAULT 'tokyo-night',
-      theme_override TEXT
+      theme_override TEXT,
+      role TEXT
     );
 
     CREATE TABLE IF NOT EXISTS command_history (
@@ -135,6 +136,24 @@ function initDatabase(Database) {
     }
   } catch (err) {
     console.warn('[db] sessions.theme_override migration failed:', err.message);
+  }
+
+  // Migration (Sprint 65 T2): add sessions.role for the explicit
+  // orchestrator/worker/reviewer/auditor panel-role flag (Brad's 2026-05-13
+  // v2 dashboard spec — Approach A). SQLite has no `ADD COLUMN IF NOT EXISTS`,
+  // so PRAGMA-check first — same pattern as the command_history.source and
+  // sessions.theme_override migrations above. No backfill: pre-Sprint-65 rows
+  // stay role=NULL (unroled), which is the correct default for sessions that
+  // pre-date the feature.
+  try {
+    const cols = db.prepare(`PRAGMA table_info(sessions)`).all();
+    const hasRole = cols.some((c) => c.name === 'role');
+    if (!hasRole) {
+      db.exec(`ALTER TABLE sessions ADD COLUMN role TEXT`);
+      console.log("[db] Migrated sessions: added 'role' column");
+    }
+  } catch (err) {
+    console.warn('[db] sessions.role migration failed:', err.message);
   }
 
   // Migration (v0.7.0): drop the dead projects.default_theme column. It was
