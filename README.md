@@ -1,6 +1,6 @@
 # TermDeck
 
-[![Install Smoke](https://github.com/jhizzard/termdeck/workflows/install-smoke/badge.svg)](https://github.com/jhizzard/termdeck/actions/workflows/install-smoke.yml)
+[![CI](https://github.com/jhizzard/termdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/jhizzard/termdeck/actions/workflows/ci.yml)
 
 > **The terminal that remembers what you fixed last month.**
 

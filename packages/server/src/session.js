@@ -10,7 +10,7 @@
 // metadata broadcast in index.js untouched — `s.meta.theme` already returns
 // the right thing whenever index.js dereferences it.
 
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
 const os = require('os');
 const path = require('path');
 const { resolveTheme } = require('./theme-resolver');
@@ -135,7 +135,7 @@ const PATTERNS = {
 
 class Session {
   constructor(options) {
-    this.id = options.id || uuidv4();
+    this.id = options.id || randomUUID();
     this.pid = null;
     this.pty = null;
     this.ws = null;
@@ -634,7 +634,15 @@ class SessionManager {
     'label',
     'project',
     'ragEnabled',
-    'flashbackEnabled'
+    'flashbackEnabled',
+    // Sprint 66 T1 (Task 1.2) — `role` is now PATCH-mutable so an operator can
+    // tag a live panel as orchestrator in place (Brad's existing orch panel
+    // was spawned with no role and had no way to set one short of a raw-API
+    // destroy + recreate). The PATCH /api/sessions/:id route validates the
+    // value against ALLOWED_SESSION_ROLES before this whitelist is consulted —
+    // the same "route validates, model trusts" boundary as POST /api/sessions
+    // and the Session constructor.
+    'role'
   ]);
 
   updateMeta(id, updates) {
@@ -655,6 +663,16 @@ class SessionManager {
     if ('theme' in applied && this.db) {
       this.db.prepare('UPDATE sessions SET theme_override = ? WHERE id = ?')
         .run(applied.theme == null ? null : applied.theme, id);
+    }
+
+    // Sprint 66 T1 (Task 1.2) — persist a role change to SQLite so a panel
+    // tagged orchestrator via PATCH keeps the role across a server restart /
+    // dashboard reload, exactly as a spawn-time role does. create() writes the
+    // `role` column on INSERT; this is its UPDATE counterpart. The column was
+    // added by Sprint 65 T2 (CREATE TABLE + a PRAGMA-guarded ALTER migration).
+    if ('role' in applied && this.db) {
+      this.db.prepare('UPDATE sessions SET role = ? WHERE id = ?')
+        .run(applied.role == null ? null : applied.role, id);
     }
 
     this._emit('session:updated', session);

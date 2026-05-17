@@ -694,6 +694,15 @@
     .ctrl-btn:hover { color: var(--tg-text); border-color: var(--tg-border-active); }
     .ctrl-btn.active { color: var(--tg-accent); border-color: var(--tg-accent-dim); }
 
+    /* Sprint 66 T1 (Task 1.3) — the "mark / unmark orchestrator" toggle in the
+       Overview controls. When the panel IS the orchestrator the button takes
+       the gold/amber accent — the same hue as the ORCH-pin border + badge — so
+       the control and the panel treatment read as one feature. */
+    .ctrl-btn.orch-toggle.is-orch {
+      color: var(--tg-accent-orch, #d4a017);
+      border-color: var(--tg-accent-orch, #d4a017);
+    }
+
     .theme-select {
       background: var(--tg-bg);
       border: 1px solid var(--tg-border);

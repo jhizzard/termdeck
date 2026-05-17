@@ -233,7 +233,7 @@ async function injectSprintPrompts({
           } else {
             anyPending = true;
           }
-        } catch {
+        } catch (_err) {
           anyPending = true;
         }
       }
@@ -257,7 +257,7 @@ async function injectSprintPrompts({
         const s = await getStatus(lane.sessionId);
         lane.finalStatus = s && s.status ? s.status : lane.finalStatus;
         if (lane.finalStatus === 'thinking') lane.verified = true;
-      } catch {
+      } catch (_err) {
         // ignore
       }
     }

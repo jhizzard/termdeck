@@ -10,7 +10,6 @@ const os = require('os');
 const fs = require('fs');
 const dns = require('dns');
 const { spawn: spawnChild } = require('child_process');
-const { v4: uuidv4 } = require('uuid');
 const { createCachedLookup, createFailureLogger } = require('./rumen-pool-resilience');
 
 // Conditional imports (graceful fallback if not installed yet)
@@ -29,7 +28,7 @@ try {
     console.error('[db] better-sqlite3 native ABI mismatch (Node was upgraded after install).');
     console.error('[db] TermDeck cannot serve memory features without a working SQLite.');
     console.error('[db] Fix:');
-    console.error('       cd "$(npm root -g)/@jhizzard/termdeck" && npm rebuild better-sqlite3');
+    process.stderr.write('       cd "$(npm root -g)/@jhizzard/termdeck" && npm rebuild better-sqlite3\n');
     console.error('[db] Then restart TermDeck. Aborting.');
     process.exit(1);
   }
@@ -210,13 +209,13 @@ function _defaultSpawnSessionEndHookImpl(hookPath, payload, env) {
     env,
   });
   child.on('error', (err) => {
-    console.error('[onPanelClose] hook spawn error:', err && err.message ? err.message : err);
+    console.error('[panel-close] hook spawn error:', err && err.message ? err.message : err);
   });
   try {
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
   } catch (err) {
-    console.error('[onPanelClose] hook stdin write failed:', err && err.message ? err.message : err);
+    console.error('[panel-close] hook stdin write failed:', err && err.message ? err.message : err);
   }
   child.unref();
   return child;
@@ -292,7 +291,7 @@ async function onPanelClose(session) {
       ...readTermdeckSecretsForPty(),
     });
   } catch (err) {
-    console.error('[onPanelClose] error:', err && err.message ? err.message : err);
+    console.error('[panel-close] error:', err && err.message ? err.message : err);
   }
 }
 
@@ -367,7 +366,7 @@ async function onPanelPeriodicCapture(session) {
     session._periodicCapture.lastSize = stat.size;
     session._periodicCapture.lastFireMs = Date.now();
   } catch (err) {
-    console.error('[onPanelPeriodicCapture] error:', err && err.message ? err.message : err);
+    console.error('[periodic-capture] error:', err && err.message ? err.message : err);
   }
 }
 
@@ -424,7 +423,7 @@ function _getT2DestFor() {
 
 function _termdeckVersion() {
   try { return require('../../../package.json').version; }
-  catch { return '0.0.0'; }
+  catch (err) { console.error('[version] package.json read failed:', err); return '0.0.0'; }
 }
 
 // Sprint 60 v1.0.14 (Item 3) — safe PTY resize. Brad's 2026-05-07 r730 crash
@@ -432,7 +431,7 @@ function _termdeckVersion() {
 // EBADF/ENOTTY` per 13h uptime. Race: WS `resize` message arrives for a PTY
 // that pty-reaper has already closed (or the child has exited), and
 // `pty.resize()` ioctls a stale fd. The error is race-expected, not a bug,
-// but the noisy console.error trace pollutes diagnostics and obscures real
+// but the noisy stderr trace pollutes diagnostics and obscures real
 // errors. This helper guards against the race and downgrades the known
 // race-class errors (EBADF, ENOTTY) to a silent return. Set
 // TERMDECK_DEBUG_PTY_RACES=1 to log to console.debug for diagnostics.
@@ -1457,7 +1456,7 @@ function createServer(config) {
             session._periodicCapture = { lastSize: 0, lastFireMs: 0, timer: null };
             session._periodicCapture.timer = setInterval(() => {
               onPanelPeriodicCapture(session).catch((err) => {
-                console.error('[onPanelPeriodicCapture] async error:', err && err.message ? err.message : err);
+                console.error('[periodic-capture] async error:', err && err.message ? err.message : err);
               });
             }, intervalMs);
             // Don't keep the event loop alive solely for this timer — the PTY
@@ -1549,7 +1548,7 @@ function createServer(config) {
           // skip-claude + skip-when-no-transcript. Fire-and-forget; any
           // error logs and never blocks teardown.
           onPanelClose(session).catch((err) => {
-            console.error('[onPanelClose] async error:', err && err.message ? err.message : err);
+            console.error('[panel-close] async error:', err && err.message ? err.message : err);
           });
 
           // Sprint 59 T4-CODEX UPLOAD-AUDIT-CONCERN closure: blow away the
@@ -1754,7 +1753,19 @@ function createServer(config) {
 
   // PATCH /api/sessions/:id - update session metadata
   app.patch('/api/sessions/:id', (req, res) => {
-    const session = sessions.updateMeta(req.params.id, req.body);
+    // Sprint 66 T1 (Task 1.2) — `role` is PATCH-mutable so an operator can tag
+    // a live panel as orchestrator in place. Validate it exactly as POST
+    // /api/sessions does (index.js — the `invalid_role` 400 above): an absent
+    // field is fine, any present value must be in ALLOWED_SESSION_ROLES
+    // (orchestrator/worker/reviewer/auditor/null) — an unknown value is a 400
+    // so a typo surfaces immediately rather than silently mis-tagging the
+    // panel. Validation runs BEFORE updateMeta so a bad role never reaches the
+    // whitelist apply or the SQLite write.
+    const body = req.body || {};
+    if (body.role !== undefined && !ALLOWED_SESSION_ROLES.includes(body.role)) {
+      return res.status(400).json({ ok: false, code: 'invalid_role', allowed: ALLOWED_SESSION_ROLES });
+    }
+    const session = sessions.updateMeta(req.params.id, body);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     res.json(session.toJSON());
   });
@@ -2023,7 +2034,7 @@ function createServer(config) {
       return res.status(410).json({ error: 'PTY is gone (session exited)' });
     }
 
-    const { cols, rows } = req.body;
+    const { cols, rows } = req.body || {};
     try {
       const resized = safelyResizePty(session, cols, rows);
       if (!resized) {
@@ -2603,7 +2614,7 @@ function createServer(config) {
 
   // POST /api/ai/query - query Mnestra memory via the bridge (direct|webhook|mcp)
   app.post('/api/ai/query', async (req, res) => {
-    let { question, sessionId, project } = req.body;
+    let { question, sessionId, project } = req.body || {};
     if (!question) return res.status(400).json({ error: 'Missing question' });
 
     let searchAll = false;
@@ -2758,8 +2769,9 @@ function createServer(config) {
     });
   }, 2000);
 
-  // Fallback route → serve index.html
-  app.get('*', (req, res) => {
+  // Fallback route → serve index.html. Express 5: named wildcard '/{*splat}'
+  // (path-to-regexp v8 — a bare '*' throws at registration; this matches all paths incl. root).
+  app.get('/{*splat}', (req, res) => {
     res.sendFile(path.join(clientDir, 'index.html'));
   });
 

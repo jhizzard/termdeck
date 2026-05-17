@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-17
+
+> **Sprint 66 — Public-scrutiny cleanup: CI reliability + Sprint-65 reception + dependency hygiene.** 3+1+1 with Codex auditor; T4-CODEX FINAL-VERDICT GREEN at 16:52 ET. TermDeck's first wave of external scrutiny surfaced red CI, idle dependency PRs, and two Sprint-65 features the requesting user could not reach. **Wave: `@jhizzard/termdeck@1.4.0 → 1.5.0` + `@jhizzard/termdeck-stack@1.4.0 → 1.5.0` (audit-trail aligned); `@jhizzard/mnestra` unchanged at 0.4.9.** Minor bump — `express` 4→5 is a major *dependency* upgrade with no break to TermDeck's own CLI / config / HTTP surface, and the reception-gap items are additive. Root `npm test` 375 (v1.4.0) → 391 pass / 0 fail / 0 skipped.
+
+### Fixed
+
+- **Latent install-breaking bug (`require('uuid')` → `ERR_REQUIRE_ESM`)** — the published package shipped `packages/server/src/**` but not `packages/server/package.json`, so an *installed* server's `require('uuid')` resolved to the root's ESM-only `uuid@13` and threw `ERR_REQUIRE_ESM` on Node 18 and Node 20.0–20.18 (both inside the declared `engines: >=18`). Masked in the dev workspace by a server-local `uuid@9` pin. Closed by removing `uuid` entirely (see Dependency hygiene). Surfaced by the Sprint 66 T2 dependency audit.
+- **`CI` workflow green end-to-end** — `CI` had been red since ~Sprint 63 on two real issues: `lint-conventions` step 1 flagged 5 bare `catch {` blocks, and step 2 (never reached — step 1 always aborted first) flagged ~10 pre-existing `console.error` issues. Both steps now pass: the 4 server-JS bare catches converted to `catch (err)` / `catch (_err)`; the grep scoped with `--exclude='*.ts'` so bundled Rumen Edge Function mirrors are not linted as server JS; camelCase `console.error` tags renamed to kebab-case; 3 operator-facing messages moved from `console.error` to `process.stderr.write` so the "every `console.error` carries a `[tag]`" rule stays strict. `docs-lint` green — `RESTART-PROMPT-*` docs added to the historical-records exclusion list.
+
+### Added — Sprint-65 reception gap (T1 lane)
+
+Sprint 65's project-filter chip rail and ORCH-pin shipped correctly but were unreachable for a single-project / pre-existing-orchestrator-panel operator. Closed:
+
+- **Chip rail renders with a single project** — `shouldShowChipRow()` previously hid the rail below 2 distinct projects; it now renders whenever ≥1 project exists, so the filter is discoverable from frame one.
+- **`meta.role` is mutable post-spawn** — a live panel's role can be changed via `PATCH /api/sessions/:id` (whitelist-validated, `400` on unknown role, SQLite-persisted, flows through `status_broadcast`). The previous design fixed `meta.role` at spawn with no way to change it.
+- **"Mark as orchestrator" UI affordance** — a panel Overview-tab toggle PATCHes `{role}`; the gold border + `ORCH` badge + pinned row appear immediately with no panel recreate. `updatePanelMeta()` re-syncs role changes from broadcasts.
+
+### Changed — Dependency hygiene (T2 lane)
+
+Four idle Dependabot major-bump PRs triaged and resolved in-tree:
+
+- **`express` 4.22.1 → 5.2.1** (merge) — one wildcard route migrated (`app.get('*')` → `app.get('/{*splat}')` for path-to-regexp v8) and two unguarded `req.body` destructures guarded; no other Express-5 breaking surface in use.
+- **`@anthropic-ai/sdk` 0.39.0 → 0.96.0** (merge) — dev dependency, used only by a repo-only maintenance script.
+- **`uuid` removed** (close) — `uuid` 12+ is ESM-only and cannot be `require()`d under TermDeck's CommonJS server. The single call site now uses the Node stdlib `crypto.randomUUID()`. Removal also closes the `ERR_REQUIRE_ESM` bug above and clears 1 moderate `npm audit` finding.
+- **`open` removed** (close) — the `open` npm package was imported nowhere (browser-launch is OS-native via `execSync`); removed as dead weight.
+
+### Changed — CI reliability (T3 lane)
+
+- **Secret-gated workflows are skip-neutral** — `install-smoke`, `macos-install-smoke`, and `systemd-nightly` had been failing red purely because their GitHub Actions secrets were absent. Each now has a `preflight` job that detects absent secrets and gates downstream jobs on `needs.preflight.outputs.secrets_present`: secrets absent → jobs skip neutrally (run concludes green); secrets present → every job runs with its original pass/fail semantics. The gate only skips — it never converts a real failure into a pass.
+- **README badge re-pointed** from the (secret-dependent) `install-smoke` workflow to `CI` — the honest, always-runnable signal.
+
+### Notes
+
+- **`npm test` 391 / 0 / 0** — T4-CODEX independently re-verified the root close gate at FINAL-VERDICT.
+- **CI-secret re-provisioning runbook** — `docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md` documents the 9 secrets + dedicated CI test Supabase project needed to restore full integration coverage (deferred — "skip now, re-provision later").
+- **Deferred to a follow-up** — `jhizzard/mnestra` and `jhizzard/rumen` have their own red CI (Mnestra: 4 failing Dependabot-PR runs; Rumen: CI red on every release push since v0.4.4) — out of Sprint 66 scope; queued.
+- **Discovered** — Sprint 64's `PreCompact` auto-commit hook shipped in the npm package but was never installed on the daily-driver machine; the `termdeck init --mnestra` hook-refresh path needs an audit.
+- **3+1+1 with Codex auditor** — T4-CODEX caught 2 AUDIT-CONCERNs (an over-broad `console.error` lint exception; a forbidden-literal slip in the sprint log), both resolved pre-FINAL-VERDICT.
+
 ## [1.4.0] - 2026-05-16
 
 > **Sprint 65 — Dashboard reliability + orch-panel awareness wave.** 3+1+1 with Codex auditor; ~65 min wall-clock from inject to T4-CODEX FINAL-VERDICT GREEN (20:43 ET). Bundles Brad's 2026-05-12 + 2026-05-13 v2 dashboard feedback (project-filter chips + always-visible orchestrator panel + dead-panel cleanup) and folds in Joshua's 2026-05-16 layout asks. **Wave: `@jhizzard/termdeck@1.3.0 → 1.4.0` + `@jhizzard/termdeck-stack@1.3.0 → 1.4.0` (audit-trail aligned); `@jhizzard/mnestra` unchanged at 0.4.9.** Minor bump — the new optional `meta.role` field on `POST /api/sessions` is an additive public-API surface change, no breaking changes. `npm test` 295 (v1.3.0) → 375 pass / 0 fail / 0 skipped. T4-CODEX caught 2 AUDIT-REDs + multiple AUDIT-CONCERNs, all resolved pre-FIX-LANDED.

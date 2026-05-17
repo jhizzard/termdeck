@@ -56,6 +56,75 @@ env:
 
 jobs:
   # ============================================================================
+  # PREFLIGHT — skip-neutral secret gate (Sprint 66 T3).
+  #
+  # Same gate as install-smoke.yml: macos-install-smoke needs a dedicated
+  # *test* Supabase project + API keys, provisioned as GitHub Actions secrets.
+  # Absent → the macOS job is gated OFF via
+  # `if: needs.preflight.outputs.secrets_present == 'true'` and the run is
+  # skip-neutral — GREEN, not RED.
+  #
+  # CRITICAL INVARIANT: the gate ONLY skips the job; it never converts a
+  # failure into a pass. Secrets present → secrets_present=true → the job runs
+  # with its ORIGINAL pass/fail semantics 100% intact; a genuine install
+  # regression still fails the build red.
+  #
+  # Re-provisioning runbook:
+  #   docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md
+  # ============================================================================
+  preflight:
+    name: 'Preflight — required-secret presence'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      secrets_present: ${{ steps.check.outputs.secrets_present }}
+    steps:
+      - name: Check required secrets are configured
+        id: check
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          # All-or-nothing: a partial secret set would cause a confusing
+          # mid-run failure, so the workflow runs in full ONLY when every
+          # required secret is present.
+          MISSING=""
+          for VAR in TEST_SUPABASE_URL TEST_SUPABASE_SERVICE_ROLE_KEY TEST_SUPABASE_ANON_KEY TEST_DATABASE_URL TEST_ANTHROPIC_API_KEY TEST_OPENAI_API_KEY; do
+            if [ -z "${!VAR:-}" ]; then
+              MISSING="${MISSING:+$MISSING }$VAR"
+            fi
+          done
+          if [ -z "$MISSING" ]; then
+            echo "secrets_present=true" >> "$GITHUB_OUTPUT"
+            echo "All required secrets present — macos-install-smoke will run in full."
+            {
+              echo "### macos-install-smoke — running (all required secrets present)"
+              echo ""
+              echo "The job runs with full, unmodified pass/fail semantics."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "secrets_present=false" >> "$GITHUB_OUTPUT"
+            echo "Required secrets absent — macos-install-smoke will skip-neutral. Missing: $MISSING"
+            {
+              echo "### macos-install-smoke — skipped (credentials not configured)"
+              echo ""
+              echo "This workflow needs a dedicated **test** Supabase project and API keys"
+              echo "provisioned as GitHub Actions secrets. They are not configured, so the"
+              echo "macOS integration job is **skipped-neutral** — this run is green, not red."
+              echo ""
+              echo "Missing secrets: \`$MISSING\`"
+              echo ""
+              echo "Restore real integration coverage with the runbook:"
+              echo "\`docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ============================================================================
   # GATING JOB — must always be GREEN. Mirrors install-smoke.yml's
   # clean-install-ubuntu, with macOS-specific adjustments + the Sprint 61
   # uninstall→verify→reinstall→doctor sequence appended.
@@ -63,6 +132,8 @@ jobs:
 
   clean-install-macos:
     name: 'GATING — clean install + uninstall + reinstall on macOS 14'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: macos-14
     timeout-minutes: 25
     steps:

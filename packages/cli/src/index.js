@@ -164,8 +164,8 @@ function reclaimStalePort(port) {
       try { process.kill(parseInt(pid, 10), 'SIGKILL'); } catch (_e) {}
     }
   } else {
-    console.error(`\n  \x1b[31m✗ Port ${port} is in use by a non-TermDeck process (PIDs: ${pids.join(' ')})\x1b[0m`);
-    console.error(`  \x1b[2mTry a different port: termdeck --port ${port + 1}\x1b[0m\n`);
+    process.stderr.write(`\n  \x1b[31m✗ Port ${port} is in use by a non-TermDeck process (PIDs: ${pids.join(' ')})\x1b[0m\n`);
+    process.stderr.write(`  \x1b[2mTry a different port: termdeck --port ${port + 1}\x1b[0m\n\n`);
     process.exit(1);
   }
 }

@@ -71,11 +71,84 @@ env:
 
 jobs:
   # ============================================================================
+  # PREFLIGHT — skip-neutral secret gate (Sprint 66 T3).
+  #
+  # install-smoke needs a dedicated *test* Supabase project + API keys,
+  # provisioned as GitHub Actions secrets. When those secrets are absent (a
+  # fork PR, or before re-provisioning) EVERY downstream job is gated OFF via
+  # `if: needs.preflight.outputs.secrets_present == 'true'`, so the run is
+  # skip-neutral — GREEN, not RED, because a run whose jobs are all `success`
+  # or `skipped` concludes `success`.
+  #
+  # CRITICAL INVARIANT: this gate ONLY skips jobs; it never converts a failure
+  # into a pass. When the secrets ARE present, secrets_present=true, every
+  # downstream `if:` is true, and every job runs with its ORIGINAL pass/fail
+  # semantics 100% intact — no `|| true`, no `continue-on-error` added by this
+  # gate. A genuine install regression still fails the build red.
+  #
+  # Re-provisioning runbook:
+  #   docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md
+  # ============================================================================
+  preflight:
+    name: 'Preflight — required-secret presence'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      secrets_present: ${{ steps.check.outputs.secrets_present }}
+    steps:
+      - name: Check required secrets are configured
+        id: check
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          # All-or-nothing: a partial secret set would cause a confusing
+          # mid-run failure, so the workflow runs in full ONLY when every
+          # required secret is present.
+          MISSING=""
+          for VAR in TEST_SUPABASE_URL TEST_SUPABASE_SERVICE_ROLE_KEY TEST_SUPABASE_ANON_KEY TEST_DATABASE_URL TEST_ANTHROPIC_API_KEY TEST_OPENAI_API_KEY; do
+            if [ -z "${!VAR:-}" ]; then
+              MISSING="${MISSING:+$MISSING }$VAR"
+            fi
+          done
+          if [ -z "$MISSING" ]; then
+            echo "secrets_present=true" >> "$GITHUB_OUTPUT"
+            echo "All required secrets present — install-smoke will run in full."
+            {
+              echo "### install-smoke — running (all required secrets present)"
+              echo ""
+              echo "Every job runs with full, unmodified pass/fail semantics."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "secrets_present=false" >> "$GITHUB_OUTPUT"
+            echo "Required secrets absent — install-smoke jobs will skip-neutral. Missing: $MISSING"
+            {
+              echo "### install-smoke — skipped (credentials not configured)"
+              echo ""
+              echo "This workflow needs a dedicated **test** Supabase project and API keys"
+              echo "provisioned as GitHub Actions secrets. They are not configured, so every"
+              echo "integration job is **skipped-neutral** — this run is green, not red."
+              echo ""
+              echo "Missing secrets: \`$MISSING\`"
+              echo ""
+              echo "Restore real integration coverage with the runbook:"
+              echo "\`docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ============================================================================
   # GATING JOBS — must always be GREEN. Acceptance criterion 1 in PLANNING.md.
   # ============================================================================
 
   clean-install-ubuntu:
     name: 'GATING — clean install on Ubuntu 24'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -328,6 +401,8 @@ jobs:
 
   docker-fedora-baseline:
     name: 'GATING — Docker baseline: Fedora 41'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -364,6 +439,8 @@ jobs:
 
   docker-debian-baseline:
     name: 'GATING — Docker baseline: Debian 12'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -410,6 +487,8 @@ jobs:
 
   reproduce-brad-5-no-zsh-ubuntu:
     name: 'REPRODUCER — Brad #5: Ubuntu without zsh'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     continue-on-error: true
@@ -494,6 +573,8 @@ jobs:
 
   reproduce-brad-5-alpine-bashism:
     name: 'REPRODUCER — Brad #5 / bashism: Alpine 3.20'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     continue-on-error: true
@@ -572,6 +653,8 @@ jobs:
 
   reproduce-brad-2-quoted-database-url:
     name: 'REPRODUCER — Brad #2: DATABASE_URL with surrounding quotes'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     continue-on-error: true
@@ -653,6 +736,8 @@ jobs:
 
   reproduce-brad-1-nohup-secrets:
     name: 'REPRODUCER — Brad #1: nohup launch without env-export'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     continue-on-error: true
@@ -770,6 +855,8 @@ jobs:
 
   reproduce-brad-6-claude-code-optional:
     name: 'REPRODUCER — Brad #6: claude-code user install command'
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     continue-on-error: true
@@ -849,8 +936,13 @@ jobs:
     name: 'GATING — fixture-status meta-check'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    if: always()
+    # always() so a continue-on-error reproducer failure does not skip the
+    # meta-check — BUT still gated on secrets: when secrets are absent the
+    # reproducers are skipped, there are no artifacts to meta-check, and this
+    # job must skip too rather than fail on an empty artifact set.
+    if: always() && needs.preflight.outputs.secrets_present == 'true'
     needs:
+      - preflight
       - reproduce-brad-5-no-zsh-ubuntu
       - reproduce-brad-5-alpine-bashism
       - reproduce-brad-2-quoted-database-url

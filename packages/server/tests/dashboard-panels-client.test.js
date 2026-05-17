@@ -52,6 +52,8 @@ const PURE_HELPERS = [
   'discoverPanelProjects', 'countPanelsForProject', 'isPanelVisibleUnderFilter',
   'shouldShowChipRow', 'isOrchestratorRole', 'findOrphanedPanelIds', 'annotateApiFailure',
   'filterValueRevealingPanel', 'clampFontSize',
+  // Sprint 66 T1 (Task 1.3) — the orchestrator-toggle pure helpers.
+  'nextRoleForToggle', 'orchToggleLabel',
 ];
 
 // Each helper must have exactly one definition (no accidental duplication).
@@ -141,19 +143,30 @@ test('isPanelVisibleUnderFilter — a project filter shows only exact matches', 
   assert.equal(isPanelVisibleUnderFilter(null, 'aetheria'), false);
 });
 
-// --- 1.1: shouldShowChipRow -----------------------------------------------
+// --- 1.1: shouldShowChipRow (Sprint 66 T1 Task 1.1 — ≥1-project threshold) --
 
-test('shouldShowChipRow — hidden for a single homogeneous project', () => {
+test('shouldShowChipRow — shown for a single project (discoverable rail)', () => {
   const shouldShowChipRow = loadHelper('shouldShowChipRow');
-  assert.equal(shouldShowChipRow(['aetheria'], false), false);
-  assert.equal(shouldShowChipRow([], false), false);
+  // Sprint 66 T1: the rail renders with ≥1 project so the project-filter
+  // feature is *discoverable* — Brad's single-live-panel setup sat below the
+  // old ≥2 threshold and saw nothing. hasNullProject no longer gates the row.
+  assert.equal(shouldShowChipRow(['aetheria'], false), true);
+  assert.equal(shouldShowChipRow(['aetheria'], true), true);
 });
 
-test('shouldShowChipRow — shown when there is real filtering to do', () => {
+test('shouldShowChipRow — shown for two or more projects', () => {
   const shouldShowChipRow = loadHelper('shouldShowChipRow');
   assert.equal(shouldShowChipRow(['aetheria', 'structural360'], false), true);
-  // One project plus some untagged panels still warrants an All-vs-project chip.
-  assert.equal(shouldShowChipRow(['aetheria'], true), true);
+  assert.equal(shouldShowChipRow(['a', 'b', 'c'], true), true);
+});
+
+test('shouldShowChipRow — hidden only when there are zero projects', () => {
+  const shouldShowChipRow = loadHelper('shouldShowChipRow');
+  // Zero project buckets → an All-only row has no filter value → stays hidden,
+  // even when untagged panels exist.
+  assert.equal(shouldShowChipRow([], false), false);
+  assert.equal(shouldShowChipRow([], true), false);
+  assert.equal(shouldShowChipRow(undefined, false), false);
 });
 
 // --- 1.2: isOrchestratorRole ----------------------------------------------
@@ -165,6 +178,30 @@ test('isOrchestratorRole — only the explicit orchestrator role qualifies', () 
   assert.equal(isOrchestratorRole('auditor'), false);
   assert.equal(isOrchestratorRole(null), false);
   assert.equal(isOrchestratorRole(undefined), false);
+});
+
+// --- 1.3: nextRoleForToggle + orchToggleLabel (Sprint 66 T1 — ORCH toggle) --
+
+test('nextRoleForToggle — orchestrator ⇄ unroled(null) is a binary toggle', () => {
+  const nextRoleForToggle = loadHelper('nextRoleForToggle');
+  // An orchestrator panel toggles back to unroled.
+  assert.equal(nextRoleForToggle('orchestrator'), null);
+  // Any non-orchestrator role (incl. null/undefined) toggles UP to orchestrator.
+  assert.equal(nextRoleForToggle(null), 'orchestrator');
+  assert.equal(nextRoleForToggle(undefined), 'orchestrator');
+  // A worker/reviewer/auditor panel is promoted to orchestrator — the toggle
+  // is a binary ORCH switch and deliberately does NOT preserve the prior role.
+  assert.equal(nextRoleForToggle('worker'), 'orchestrator');
+  assert.equal(nextRoleForToggle('reviewer'), 'orchestrator');
+  assert.equal(nextRoleForToggle('auditor'), 'orchestrator');
+});
+
+test('orchToggleLabel — button text reflects whether the panel is orchestrator', () => {
+  const orchToggleLabel = loadHelper('orchToggleLabel');
+  assert.equal(orchToggleLabel('orchestrator'), 'unmark orch');
+  assert.equal(orchToggleLabel(null), 'mark orch');
+  assert.equal(orchToggleLabel(undefined), 'mark orch');
+  assert.equal(orchToggleLabel('worker'), 'mark orch');
 });
 
 // --- 1.3: findOrphanedPanelIds --------------------------------------------
@@ -286,6 +323,33 @@ test('style.css ships the chip / ORCH / tile-state classes', () => {
   ]) {
     assert.ok(cssSource.includes(sel), `style.css should define ${sel}`);
   }
+});
+
+// --- 1.3: orchestrator-toggle wiring (Sprint 66 T1) -----------------------
+
+test('app.js builds the per-panel orchestrator-toggle button', () => {
+  assert.ok(appSource.includes('id="orch-toggle-${id}"'),
+    'createTerminalPanel builds a #orch-toggle-<id> button');
+  assert.ok(appSource.includes('class="ctrl-btn orch-toggle'),
+    'the toggle button carries the .ctrl-btn.orch-toggle classes');
+  assert.ok(appSource.includes('onclick="toggleOrchestratorRole('),
+    'the toggle button invokes toggleOrchestratorRole(id)');
+});
+
+test('app.js defines the orchestrator-toggle handler + sync helper', () => {
+  assert.ok(appSource.includes('async function toggleOrchestratorRole(id)'),
+    'the toggleOrchestratorRole handler is defined');
+  assert.ok(appSource.includes('function syncOrchToggle(id)'),
+    'the syncOrchToggle helper is defined');
+  assert.ok(appSource.includes('syncOrchToggle(id);'),
+    'syncOrchToggle is invoked (kept in sync on broadcast + after a toggle)');
+  assert.ok(appSource.includes('{ role: next }'),
+    'toggleOrchestratorRole PATCHes the next role to /api/sessions/:id');
+});
+
+test('style.css ships the orch-toggle active-state class', () => {
+  assert.ok(cssSource.includes('.ctrl-btn.orch-toggle.is-orch'),
+    'style.css defines the .ctrl-btn.orch-toggle.is-orch active state');
 });
 
 // --- 1.4: Path A dense layout presets -------------------------------------

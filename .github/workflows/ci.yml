@@ -43,8 +43,14 @@ jobs:
       - name: Check for silent catch blocks
         run: |
           # Allowed silent catches: feature detection at module load
-          # Find all bare `catch {` blocks across source files
-          BARE_CATCHES=$(grep -rn "catch\s*{" packages/server/src packages/cli/src packages/client/public/index.html 2>/dev/null | grep -v "catch (err)" | grep -v "catch {.*=.*null;.*}" || true)
+          # Find all bare `catch {` blocks across source files.
+          #
+          # --exclude='*.ts' drops the bundled Rumen Deno Edge Function
+          # mirrors under packages/server/src/setup/rumen/functions/**/*.ts.
+          # Their source of truth is the rumen repo; editing the mirror here
+          # would cause mirror drift. The [tag] logging convention is a
+          # TermDeck server-JS rule, not a Deno-Edge-Function rule.
+          BARE_CATCHES=$(grep -rn --exclude='*.ts' "catch\s*{" packages/server/src packages/cli/src packages/client/public/index.html 2>/dev/null | grep -v "catch (err)" | grep -v "catch {.*=.*null;.*}" || true)
           if [ -n "$BARE_CATCHES" ]; then
             # Filter out the 2 intentional module-load fallbacks
             UNEXPECTED=$(echo "$BARE_CATCHES" | grep -v "pty = null" | grep -v "Database = null" || true)
@@ -67,11 +73,24 @@ jobs:
           # [lowercase-tag] anywhere inside the call — not only immediately
           # after the opening quote.
           #
-          # Exceptions: `console.error('Usage: ...')` and continuation lines
-          # starting with '  termdeck' are intentional stderr help output from
-          # the CLI and are allowed to be untagged.
+          # Exception (3rd grep -Ev): the ONLY untagged console.error allowed
+          # is the CLI usage/help block in packages/cli/src/index.js — the
+          # `Usage:` header line and its `  termdeck ...` continuation lines.
+          # That is operator-facing help text, not diagnostic logging, and a
+          # [tag] in copy-read help output would be wrong. Every OTHER kind of
+          # operator-facing output (the better-sqlite3 rebuild command, the
+          # port-in-use error/hint) is written with process.stderr.write, NOT
+          # console.error, so it is correctly outside this lint's scope.
+          # Net rule: every console.error IS a diagnostic log and MUST carry a
+          # [tag] — an untagged console.error fails the lint unless it is the
+          # CLI usage block. (The exception is a literal-prefix allowlist, not
+          # a whitespace wildcard: a stray-leading-space untagged diagnostic
+          # still fails.)
+          #
+          # --exclude='*.ts' drops the bundled Rumen Deno Edge Function
+          # mirrors — same rationale as the silent-catch step above.
           BT='`'
-          UNTAGGED=$(grep -rn "console\.error" packages/server/src packages/cli/src packages/client/public/index.html 2>/dev/null \
+          UNTAGGED=$(grep -rn --exclude='*.ts' "console\.error" packages/server/src packages/cli/src packages/client/public/index.html 2>/dev/null \
             | grep -Ev "console\.error\([^)]*\[[a-z][a-z0-9:_-]*\]" \
             | grep -Ev "console\.error\((['\"]${BT}?|${BT})(Usage:|  termdeck)" \
             || true)

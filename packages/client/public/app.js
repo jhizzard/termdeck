@@ -438,6 +438,7 @@
                 <a class="theme-reset" id="theme-reset-${id}" href="javascript:void(0)" onclick="resetTheme('${id}')" title="Revert to project / global default from config.yaml" style="font-size:11px;color:#7aa2f7;text-decoration:none;margin-left:4px;opacity:0.7;cursor:pointer">↺ default</a>
                 <button class="ctrl-btn" onclick="focusPanel('${id}')">focus</button>
                 <button class="ctrl-btn" onclick="halfPanel('${id}')">half</button>
+                <button class="ctrl-btn orch-toggle${isOrchestratorRole(meta.role) ? ' is-orch' : ''}" id="orch-toggle-${id}" type="button" onclick="toggleOrchestratorRole('${id}')" title="${isOrchestratorRole(meta.role) ? 'Unmark this panel as the orchestrator' : 'Mark this panel as the orchestrator — gold border, ORCH badge, pinned row'}">${orchToggleLabel(meta.role)}</button>
                 <button class="ctrl-btn reply-toggle" id="reply-btn-${id}" onclick="toggleReplyForm('${id}')" title="Send text to another terminal">reply ▸</button>
                 <input type="text" class="ctrl-input" id="ai-${id}" placeholder="Ask about this terminal..." onkeydown="if(event.key==='Enter')askAI('${id}', this.value)">
               </div>
@@ -729,17 +730,38 @@
       return panelProject === selectedFilter;
     }
 
-    // The chip row is only worth showing when there is real filtering to do:
-    // at least two project buckets, or one project plus some untagged panels.
+    // Sprint 66 T1 (Task 1.1) — the chip row renders whenever there is at
+    // least one project bucket, so the project-filter feature is *discoverable*
+    // rather than hidden until a second project shows up. Brad's 2026-05-13 v2
+    // spec asked for an always-visible rail; his single-live-panel setup sat
+    // below the old ≥2 threshold and saw nothing. With one project the row is
+    // [ All ] + that one project chip — harmless, and it advertises the filter.
+    // `hasNullProject` is retained in the signature for call-site / test
+    // compatibility; with ≥1 project the row shows regardless of it, and with
+    // zero projects an All-only row carries no filter value so it stays hidden.
     function shouldShowChipRow(projects, hasNullProject) {
-      const n = (projects || []).length;
-      return n >= 2 || (n >= 1 && hasNullProject === true);
+      return (projects || []).length >= 1;
     }
 
     // Approach A (Brad's 2026-05-13 spec): orchestrator identity is the
     // explicit meta.role flag, never inferred from cwd.
     function isOrchestratorRole(role) {
       return role === 'orchestrator';
+    }
+
+    // Sprint 66 T1 (Task 1.3) — the binary "mark / unmark orchestrator" toggle.
+    // nextRoleForToggle: the role the toggle moves a panel TO, given its
+    // current role — orchestrator ⇄ unroled (null). A worker/reviewer/auditor
+    // panel is "not orchestrator", so the toggle promotes it to orchestrator;
+    // it does NOT preserve a prior non-orch role (the affordance is a binary
+    // ORCH switch, not a role-history stack — it matches "mark / unmark as
+    // orchestrator"). orchToggleLabel: the toggle button's text for a role.
+    // Both pure — unit-tested in tests/dashboard-panels-client.test.js.
+    function nextRoleForToggle(currentRole) {
+      return currentRole === 'orchestrator' ? null : 'orchestrator';
+    }
+    function orchToggleLabel(role) {
+      return role === 'orchestrator' ? 'unmark orch' : 'mark orch';
     }
 
     // Belt-and-suspenders for missed panel_exited frames: panel ids the
@@ -912,10 +934,15 @@
       }
     }
 
-    // 1.2 — defensive reconcile: keep every tile in the container its role
-    // dictates. meta.role is immutable post-spawn so this is a no-op after a
-    // panel's first placement; it only acts if a panel was somehow built
-    // before its role was known. Returns true if any tile moved.
+    // 1.2 — reconcile: keep every tile in the container its role dictates.
+    // Re-evaluates isOrchestratorRole() for every panel on each call, so it is
+    // the primary mover whenever a role CHANGES — not merely a placement
+    // safety net. Sprint 66 T1 (Task 1.2) made meta.role mutable post-spawn
+    // (PATCH /api/sessions/:id {role}); a role flip arrives via status_broadcast,
+    // updatePanelMeta() merges it into entry.session.meta, scheduleChromeRefresh()
+    // runs this, and the panel moves into / out of the ORCH row carrying the
+    // panel--role-orch class (the gold border + "ORCH " badge are pure CSS on
+    // that class). Returns true if any tile moved.
     function reconcileOrchRow() {
       const orchRow = document.getElementById('orch-pin-row');
       const grid = document.getElementById('termGrid');
@@ -2177,6 +2204,64 @@
       if (sel && sel.value !== resolved) sel.value = resolved;
     }
 
+    // Sprint 66 T1 (Task 1.3) — mark / unmark a LIVE panel as the orchestrator
+    // in place. Brad's existing orchestrator panel was spawned with no role and
+    // there was no way to set one short of destroy+recreate via the raw API.
+    // This PATCHes meta.role (the Task 1.2 endpoint); on success the panel
+    // moves into the pinned ORCH row and gains the gold border + "ORCH " badge
+    // with no reload — reconcileOrchRow() (via refreshDashboardChrome) moves it.
+    // Multi-orchestrator is allowed: marking panel B does not unmark panel A
+    // (the ORCH row holds more than one; the operator explicitly unmarks). A
+    // global function — invoked from the Overview-tab button's inline onclick.
+    async function toggleOrchestratorRole(id) {
+      const entry = state.sessions.get(id);
+      if (!entry || entry._mounting || !entry.session) return;
+      const current = entry.session.meta ? entry.session.meta.role : null;
+      const next = nextRoleForToggle(current);
+      const btn = document.getElementById(`orch-toggle-${id}`);
+      if (btn) btn.disabled = true;
+      try {
+        const updated = await api('PATCH', `/api/sessions/${id}`, { role: next });
+        // api() returns the parsed body; a non-2xx body is annotated with
+        // `.error` (annotateApiFailure). The toggle only ever sends a
+        // whitelisted value so a 400 should not occur — but a 404 (panel gone)
+        // or a network failure can, and must not be applied as success.
+        if (updated && updated.error) {
+          console.error('[client] orchestrator-role toggle failed:', updated.error);
+          return;
+        }
+        // Apply the authoritative server role from the PATCH response, then
+        // re-route + re-skin the panel. The 2s status_broadcast converges to
+        // the same value (eventually-consistent — same model as changeTheme).
+        if (entry.session.meta) {
+          entry.session.meta.role = (updated && updated.meta) ? updated.meta.role : next;
+        }
+        refreshDashboardChrome();
+      } catch (err) {
+        console.error('[client] orchestrator-role toggle error:', err);
+      } finally {
+        if (btn) btn.disabled = false;
+        syncOrchToggle(id);
+      }
+    }
+
+    // Sprint 66 T1 (Task 1.3) — keep a panel's orch-toggle button in sync with
+    // its current meta.role (label, active class, tooltip). Called after a
+    // toggle and on every status_broadcast (updatePanelMeta), so the button is
+    // correct even when the role is changed from another dashboard tab.
+    function syncOrchToggle(id) {
+      const entry = state.sessions.get(id);
+      const btn = document.getElementById(`orch-toggle-${id}`);
+      if (!entry || entry._mounting || !entry.session || !btn) return;
+      const role = entry.session.meta ? entry.session.meta.role : null;
+      const isOrch = isOrchestratorRole(role);
+      btn.textContent = orchToggleLabel(role);
+      btn.classList.toggle('is-orch', isOrch);
+      btn.title = isOrch
+        ? 'Unmark this panel as the orchestrator'
+        : 'Mark this panel as the orchestrator — gold border, ORCH badge, pinned row';
+    }
+
     async function askAI(id, question) {
       if (!question.trim()) return;
       const entry = state.sessions.get(id);
@@ -3404,6 +3489,11 @@
       if (entry && entry.session) {
         entry.session.meta = { ...entry.session.meta, ...meta };
       }
+
+      // Sprint 66 T1 (Task 1.3) — re-sync the orch-toggle button from the just-
+      // merged role, so a role changed from another dashboard tab is reflected
+      // here too (the per-tab toggle path syncs in its own finally block).
+      syncOrchToggle(id);
 
       const dot = document.getElementById(`dot-${id}`);
       const status = document.getElementById(`status-${id}`);

@@ -192,6 +192,17 @@ async function getJson(port, p) {
   return { status: res.status, json };
 }
 
+async function patchJson(port, p, body) {
+  const res = await fetch(url(port, p), {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let json = null;
+  try { json = await res.json(); } catch (_) { /* non-JSON body */ }
+  return { status: res.status, json };
+}
+
 // Poll a predicate until true or timeout — for the async WS-delivery window.
 async function waitFor(predicate, timeoutMs = 1500) {
   const start = Date.now();
@@ -304,6 +315,148 @@ test('2.1 — meta.role flows through GET /api/sessions and GET /api/sessions/:i
         const detail = await getJson(h.port, `/api/sessions/${id}`);
         assert.equal(detail.json.meta.role, 'orchestrator', 'role flows through the detail endpoint');
       } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2.1b — meta.role is PATCH-mutable (Sprint 66 T1 Task 1.2). An operator can
+// tag a LIVE panel as orchestrator in place — no destroy+recreate. Validation
+// mirrors POST exactly (the route 400s an unknown value before updateMeta).
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('2.1b — PATCH /api/sessions/:id mutates meta.role on a live panel (unroled → orchestrator → null)',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer();
+      try {
+        const created = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        assert.equal(created.status, 201);
+        assert.equal(created.json.meta.role, null, 'panel spawns unroled');
+        const id = created.json.id;
+
+        const marked = await patchJson(h.port, `/api/sessions/${id}`, { role: 'orchestrator' });
+        assert.equal(marked.status, 200, 'PATCH role succeeds on a live panel');
+        assert.equal(marked.json.meta.role, 'orchestrator', 'the PATCH response echoes the new role');
+
+        const detail = await getJson(h.port, `/api/sessions/${id}`);
+        assert.equal(detail.json.meta.role, 'orchestrator', 'the mutation is durable on the session');
+
+        const unmarked = await patchJson(h.port, `/api/sessions/${id}`, { role: null });
+        assert.equal(unmarked.status, 200);
+        assert.equal(unmarked.json.meta.role, null, 'role:null unmarks the panel');
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+test('2.1b — PATCH role accepts every whitelisted value',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer();
+      try {
+        const created = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        const id = created.json.id;
+        for (const role of ['orchestrator', 'worker', 'reviewer', 'auditor', null]) {
+          const r = await patchJson(h.port, `/api/sessions/${id}`, { role });
+          assert.equal(r.status, 200, `PATCH role=${JSON.stringify(role)} → 200`);
+          assert.equal(r.json.meta.role, role, `meta.role echoes ${JSON.stringify(role)}`);
+        }
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+test('2.1b — PATCH rejects an unknown role with 400 invalid_role and leaves meta.role unchanged',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer();
+      try {
+        const created = await postJson(h.port, '/api/sessions', { type: 'shell', role: 'worker' });
+        const id = created.json.id;
+        // Case-sensitive exact match — same rejection set shape as POST.
+        const bad = ['bogus-role', 'Orchestrator', '', 'ORCH', 123, ['orchestrator']];
+        for (const role of bad) {
+          const r = await patchJson(h.port, `/api/sessions/${id}`, { role });
+          assert.equal(r.status, 400, `role=${JSON.stringify(role)} must be rejected with 400`);
+          assert.equal(r.json.ok, false);
+          assert.equal(r.json.code, 'invalid_role');
+          assert.ok(Array.isArray(r.json.allowed) && r.json.allowed.includes('orchestrator'),
+            '400 body lists the allowed roles (mirrors POST)');
+        }
+        // None of the rejected PATCHes touched the panel — role still 'worker'.
+        const detail = await getJson(h.port, `/api/sessions/${id}`);
+        assert.equal(detail.json.meta.role, 'worker', 'an invalid PATCH leaves meta.role intact');
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+test('2.1b — a non-role PATCH (theme) is unaffected; role stays a no-op when absent',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer();
+      try {
+        const created = await postJson(h.port, '/api/sessions', { type: 'shell', role: 'orchestrator' });
+        const id = created.json.id;
+        // A PATCH with no `role` key must not disturb the existing role.
+        const r = await patchJson(h.port, `/api/sessions/${id}`, { label: 'renamed panel' });
+        assert.equal(r.status, 200);
+        assert.equal(r.json.meta.label, 'renamed panel', 'label still PATCHes');
+        assert.equal(r.json.meta.role, 'orchestrator', 'an absent role key leaves role intact');
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+test('2.1b — PATCH role to a never-existed session is 404',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer();
+      try {
+        const r = await patchJson(h.port, '/api/sessions/no-such-session-id', { role: 'orchestrator' });
+        assert.equal(r.status, 404, 'a valid-role PATCH to a missing session is 404');
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+test('2.1b — a PATCHed role flows through status_broadcast (T1 ORCH-pin re-evaluation contract)',
+  { skip: !_ptyFakeAvailable || !WebSocket }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer();
+      let client;
+      try {
+        const a = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        const b = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        client = await connectWsClient(h.port, a.json.id);
+
+        // PATCH panel B's role. The dashboard re-routes the ORCH pin off the
+        // status_broadcast frame (reconcileOrchRow), so the new role MUST
+        // surface there — not only in the PATCH response.
+        const marked = await patchJson(h.port, `/api/sessions/${b.json.id}`, { role: 'orchestrator' });
+        assert.equal(marked.status, 200);
+
+        const carried = await waitFor(() => client.frames.some((f) =>
+          f.type === 'status_broadcast'
+          && Array.isArray(f.sessions)
+          && f.sessions.some((s) => s.id === b.json.id && s.meta.role === 'orchestrator')
+        ), 4000);
+        assert.ok(carried, 'the PATCHed role appears in a subsequent status_broadcast frame');
+      } finally {
+        if (client && client.ws) { try { client.ws.close(); } catch (_) { /* fail-soft */ } }
         _fakeTermsByPid.clear();
         await closeTestServer(h);
       }
@@ -596,6 +749,34 @@ test('SQLite — initDatabase migrates an existing pre-Sprint-65 database (ALTER
         assert.equal(legacy.role, null, 'a pre-Sprint-65 row reads role as NULL (correct unroled default)');
       } finally {
         try { migrated.close(); } catch (_) { /* fail-soft */ }
+      }
+    });
+  });
+
+test('SQLite — SessionManager.updateMeta persists a role change to the sessions.role column (Sprint 66 T1)',
+  { skip: !Database }, async () => {
+    await withTempHome(async () => {
+      const db = initDatabase(Database);
+      try {
+        const mgr = new SessionManager(db);
+        mgr.create({ id: 'db-role-patch', type: 'shell', role: 'worker' });
+        assert.equal(
+          db.prepare('SELECT role FROM sessions WHERE id = ?').get('db-role-patch').role,
+          'worker', 'the spawn-time role is persisted by create()');
+
+        // Sprint 66 T1 (Task 1.2) — updateMeta writes a role change through to
+        // SQLite, so a PATCH-tagged orchestrator survives a server restart.
+        mgr.updateMeta('db-role-patch', { role: 'orchestrator' });
+        assert.equal(
+          db.prepare('SELECT role FROM sessions WHERE id = ?').get('db-role-patch').role,
+          'orchestrator', 'updateMeta persisted the role change to the role column');
+
+        mgr.updateMeta('db-role-patch', { role: null });
+        assert.equal(
+          db.prepare('SELECT role FROM sessions WHERE id = ?').get('db-role-patch').role,
+          null, 'updateMeta persisted the unmark (role → NULL)');
+      } finally {
+        try { db.close(); } catch (_) { /* fail-soft */ }
       }
     });
   });

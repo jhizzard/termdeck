@@ -187,7 +187,7 @@ async function generateScaffolding({ name, projects, cwd, force, initProject, te
   // Refuse on existing non-empty dir without force, mirroring T2's CLI semantics.
   if (fs.existsSync(targetPath)) {
     const entries = (() => {
-      try { return fs.readdirSync(targetPath); } catch { return []; }
+      try { return fs.readdirSync(targetPath); } catch (err) { console.error('[orch-preview] readdir failed:', err); return []; }
     })();
     const nonEmpty = entries.length > 0;
     if (nonEmpty && !force) {

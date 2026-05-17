@@ -57,8 +57,83 @@ env:
   HCLOUD_VERSION: '1.51.0'
 
 jobs:
+  # ============================================================================
+  # PREFLIGHT — skip-neutral secret gate (Sprint 66 T3).
+  #
+  # This nightly needs a Hetzner Cloud API token + SSH key, plus a dedicated
+  # *test* Supabase project — all provisioned as GitHub Actions secrets. When
+  # they are absent the smoke job is gated OFF via
+  # `if: needs.preflight.outputs.secrets_present == 'true'` and the run is
+  # skip-neutral — GREEN, not RED. (The smoke script's `require_env` would
+  # otherwise abort with `FATAL: ... HETZNER_API_TOKEN is not set`.)
+  #
+  # CRITICAL INVARIANT: the gate ONLY skips the job; it never converts a
+  # failure into a pass. Secrets present → secrets_present=true → the smoke
+  # job runs with its ORIGINAL pass/fail semantics 100% intact; a genuine
+  # Brad #7/#8 regression still fails the nightly red.
+  #
+  # Re-provisioning runbook:
+  #   docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md
+  # ============================================================================
+  preflight:
+    name: 'Preflight — required-secret presence'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      secrets_present: ${{ steps.check.outputs.secrets_present }}
+    steps:
+      - name: Check required secrets are configured
+        id: check
+        env:
+          HETZNER_API_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
+          HETZNER_SSH_KEY_NAME: ${{ secrets.HETZNER_SSH_KEY_NAME }}
+          HETZNER_SSH_PRIVATE_KEY: ${{ secrets.HETZNER_SSH_PRIVATE_KEY }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          # All-or-nothing: a partial secret set would abort the smoke script
+          # mid-run, so the nightly runs ONLY when every required secret is
+          # present.
+          MISSING=""
+          for VAR in HETZNER_API_TOKEN HETZNER_SSH_KEY_NAME HETZNER_SSH_PRIVATE_KEY TEST_SUPABASE_URL TEST_SUPABASE_SERVICE_ROLE_KEY TEST_DATABASE_URL TEST_OPENAI_API_KEY TEST_ANTHROPIC_API_KEY; do
+            if [ -z "${!VAR:-}" ]; then
+              MISSING="${MISSING:+$MISSING }$VAR"
+            fi
+          done
+          if [ -z "$MISSING" ]; then
+            echo "secrets_present=true" >> "$GITHUB_OUTPUT"
+            echo "All required secrets present — systemd nightly will run in full."
+            {
+              echo "### systemd-nightly — running (all required secrets present)"
+              echo ""
+              echo "The smoke job runs with full, unmodified pass/fail semantics."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "secrets_present=false" >> "$GITHUB_OUTPUT"
+            echo "Required secrets absent — systemd nightly will skip-neutral. Missing: $MISSING"
+            {
+              echo "### systemd-nightly — skipped (credentials not configured)"
+              echo ""
+              echo "This nightly needs a Hetzner Cloud API token + SSH key and a dedicated"
+              echo "**test** Supabase project, provisioned as GitHub Actions secrets. They"
+              echo "are not configured, so the smoke job is **skipped-neutral** — this run"
+              echo "is green, not red."
+              echo ""
+              echo "Missing secrets: \`$MISSING\`"
+              echo ""
+              echo "Restore real integration coverage with the runbook:"
+              echo "\`docs/sprint-66-public-scrutiny-cleanup/CI-SECRET-REPROVISIONING.md\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   systemd-smoke:
     name: systemd Type=simple + PATH= fixture (Brad #7+#8)
+    needs: preflight
+    if: needs.preflight.outputs.secrets_present == 'true'
     runs-on: ubuntu-latest
     # Enough headroom for: provision (~2 min) + apt + npm install (~5 min)
     # + init wizards (~3 min) + 30s settle + probes + teardown. Real-world

@@ -362,14 +362,26 @@ test('SessionManager.create persists role into the in-memory session', () => {
   assert.equal(mgr.get('t-role-mgr').meta.role, 'auditor');
 });
 
-test('SessionManager.updateMeta does NOT allow role mutation (role is spawn-time only)', () => {
-  // role is a spawn-time identity attribute — Brad's 2026-05-13 spec tags
-  // panels at creation, not via PATCH. role is intentionally absent from
-  // PATCHABLE_META_FIELDS, so a PATCH attempt to change it is a silent no-op.
+test('SessionManager.updateMeta allows role mutation (Sprint 66 T1 — role is PATCH-mutable)', () => {
+  // Sprint 66 T1 (Task 1.2) inverted the Sprint-65 immutability: an operator
+  // can tag a live panel as orchestrator in place. `role` is now in
+  // PATCHABLE_META_FIELDS; the PATCH /api/sessions/:id route validates the
+  // value against ALLOWED_SESSION_ROLES (fenced in session-lifecycle-api.test.js)
+  // before it reaches updateMeta — the model itself trusts the value.
   const mgr = new SessionManager(null);
   mgr.create({ id: 't-role-patch', type: 'shell', role: 'worker' });
   mgr.updateMeta('t-role-patch', { role: 'orchestrator' });
-  assert.equal(mgr.get('t-role-patch').meta.role, 'worker', 'role must not change via PATCH');
+  assert.equal(mgr.get('t-role-patch').meta.role, 'orchestrator',
+    'role updates via PATCH (worker → orchestrator)');
+});
+
+test('SessionManager.updateMeta can unmark a role back to null', () => {
+  // The "unmark orchestrator" path — role: null clears the role.
+  const mgr = new SessionManager(null);
+  mgr.create({ id: 't-role-unmark', type: 'shell', role: 'orchestrator' });
+  mgr.updateMeta('t-role-unmark', { role: null });
+  assert.equal(mgr.get('t-role-unmark').meta.role, null,
+    'role: null clears the role');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
