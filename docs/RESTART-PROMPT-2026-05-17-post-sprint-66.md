@@ -1,5 +1,7 @@
 # RESTART-PROMPT — 2026-05-17 post-Sprint-66
 
+> **⚠ SUPERSEDED 2026-05-17 by `docs/RESTART-PROMPT-2026-05-17-ci-followup.md`.** Task #7 (Mnestra + Rumen red CI) — the headline carry-over below — is **COMPLETE**: both repos' `main` CI is green. Read the ci-followup doc for current state + the Sprint 67–69 forward plan.
+
 **Authored:** 2026-05-17 at Sprint 66 close-out by orchestrator session `8d5b9432-f85f-4f3a-86e6-758d689f5bd1`.
 
 **Why this file exists:** Sprint 66 ("Public-scrutiny cleanup") closed GREEN at 16:52 ET — TermDeck's first-public-scrutiny incident response. Wave target `@jhizzard/termdeck@1.5.0` + `@jhizzard/termdeck-stack@1.5.0`. This file boots the next TermDeck session. **Carried-over work is flagged in § What's next — most importantly the Mnestra + Rumen red-CI follow-up (task #7).**
