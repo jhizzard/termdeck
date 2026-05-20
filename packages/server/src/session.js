@@ -18,6 +18,8 @@ const flashbackDiag = require('./flashback-diag');
 const geminiAdapter = require('./agent-adapters/gemini');
 const { detectAdapter, getAdapterForSessionType } = require('./agent-adapters');
 
+const { detectParked } = require("./parked-detection");
+
 // Strip ANSI escape codes for pattern matching
 function stripAnsi(str) {
   return str
@@ -540,8 +542,10 @@ class Session {
       if (ageMs > Session.STALE_STATUS_THRESHOLD_MS) {
         meta.status = 'idle';
         meta.statusDetail = '';
+        meta.parked = true;
       }
     }
+    meta.parked = detectParked(this);
     return {
       id: this.id,
       pid: this.pid,

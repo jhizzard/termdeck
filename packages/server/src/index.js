@@ -93,6 +93,13 @@ const { themes, statusColors } = require('./themes');
 const { loadConfig, addProject, removeProject, updateConfig } = require('./config');
 const { createAuthMiddleware, verifyWebSocketUpgrade, hasAuth } = require('./auth');
 const { createSprintRoutes } = require('./sprint-routes');
+const { createSprintInjectRoutes } = require('./sprints/inject');
+// Sprint 69 T1 — boot-prompt template engine. Exposed at the public surface
+// so external callers (T2's inject route, integration tests, future tools)
+// can do `require('@termdeck/server').templateEngine` instead of reaching
+// into the internal `./templates/template-engine` path.
+const templateEngine = require('./templates/template-engine');
+const { createSprintNudgeRoutes } = require('./sprints/nudge');
 const { createGraphRoutes } = require('./graph-routes');
 const { createProjectsRoutes } = require('./projects-routes');
 const orchestrationPreview = require('./orchestration-preview');
@@ -1734,6 +1741,14 @@ function createServer(config) {
     spawnTerminalSession,
     getSession: (id) => sessions.get(id),
   });
+  createSprintInjectRoutes({
+    app,
+    getSession: (id) => sessions.get(id),
+  });
+  createSprintNudgeRoutes({
+    app,
+    getSession: (id) => sessions.get(id),
+  });
 
   // Graph endpoints (Sprint 38 T4) — knowledge-graph view backing graph.html.
   // Reuses the daily-driver pg pool (same DATABASE_URL serves memory_items +
@@ -3062,6 +3077,10 @@ module.exports = {
   SECRETS_EXCLUDED_FROM_PTY,
   // Sprint 65 T2 (2.1) — operator-role whitelist, exported for the route fence.
   ALLOWED_SESSION_ROLES,
+  // Sprint 69 T1 — boot-prompt template engine. Exported so T2's inject
+  // endpoint and integration tests can import without traversing the
+  // internal `./templates/template-engine` path.
+  templateEngine,
   // Sprint 50 T1 — exported for unit testing the per-agent SessionEnd
   // hook trigger (skip-claude, no-transcript, no-hook-installed,
   // payload shape, fire-and-forget).

@@ -22,6 +22,7 @@ const os = require('os');
 const { execFileSync } = require('child_process');
 
 const { injectSprintPrompts } = require('./sprint-inject');
+const { parseStatusMd: parseStatusMdV2 } = require('./sprints/status-parser');
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
@@ -426,6 +427,22 @@ function createSprintRoutes({ app, config, spawnTerminalSession, getSession }) {
       relDir: s.relDir,
     }));
     res.json({ project, sprints });
+  });
+
+
+  // GET /api/sprints/status?file=<path> — new structured parser (Sprint 69 T3)
+  app.get('/api/sprints/status', (req, res) => {
+    const filePath = req.query.file;
+    if (!filePath) return res.status(400).json({ error: 'file query param required' });
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: `file not found: ${filePath}` });
+    }
+    try {
+      const parsed = parseStatusMdV2(filePath);
+      res.json(parsed);
+    } catch (err) {
+      res.status(500).json({ error: `parse failed: ${err.message}` });
+    }
   });
 
   // GET /api/sprints/:name/status?project=foo — parse STATUS.md per-lane.

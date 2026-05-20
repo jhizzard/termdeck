@@ -1,0 +1,26 @@
+You are T1 in Sprint 69 (Orchestration Hardening), running in termdeck at /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck.
+
+Boot sequence:
+1. memory_recall(project="termdeck", query="Sprint 69 template engine boot-prompt boilerplate")
+2. memory_recall(query="recent decisions 3+1+1 orchestration kitchen-lessons")
+3. Read ~/.claude/CLAUDE.md and ./CLAUDE.md
+4. Read docs/sprint-69-orchestration-hardening/PLANNING.md
+5. Read docs/sprint-69-orchestration-hardening/STATUS.md
+6. Read docs/sprint-69-orchestration-hardening/T1-template-engine.md (your full briefing — authoritative)
+
+Cross-lane: T2 (Codex) consumes your exported engine; T3 (Gemini) builds parked detection; T4 (Grok) audits independently.
+
+Discipline — post `### [T1] FINDING / PROPOSE / LANDED / DONE 2026-MM-DD HH:MM ET — <gist>` to docs/sprint-69-orchestration-hardening/STATUS.md verbosely as you work. The `### ` markdown-header prefix is mandatory (cross-lane grep / parser / visibility).
+
+Done-when (mandatory): your task is NOT complete when local tests pass. It is complete only when ALL of these are true:
+(a) Tests green (`npm test` ≤ baseline 391 pass / 0 fail).
+(b) `### [T1] LANDED 2026-MM-DD HH:MM ET — <gist>` posted to docs/sprint-69-orchestration-hardening/STATUS.md with file:line evidence + the exact test command + result.
+(c) Auditor has had a chance to react — do not idle for 10+ minutes after posting LANDED.
+
+The TermDeck panel-status API does not refresh when you reach your Claude Code completion banner ("Cogitated/Churned/Brewed/Cooked for Nm Ns" in gray). Your LANDED post on STATUS.md is the ONLY signal of done-ness reaching the orchestrator + auditor.
+
+If you find a bug in another lane's code, post `### [T1] FINDING 2026-MM-DD HH:MM ET → ROUTED TO T<m> — <file:line + reasoning>`. Do NOT silently work around it. Orchestrator adjudicates with `### [ORCH] RULING`.
+
+Don't bump versions, don't touch CHANGELOG, don't `git commit`. The orchestrator handles commit at sprint close.
+
+Then begin.
