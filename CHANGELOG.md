@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.6.0 (2026-05-20) — Sprint 69: 3+1+1 Orchestration Hardening
+
+Adds the TermDeck primitives that prevent Maestro-Sprint-2-style operational slop in future 3+1+1 sprints.
+
+**New API:**
+- `POST /api/sprints/inject` — auto-detects CLI via `meta.type`, picks template, runs two-stage submit (paste → 400ms settle → submit). Replaces orchestrator-hand-rolled inject scripts.
+- `POST /api/sprints/nudge` — `kind ∈ {post-landed-reminder, status-check, tooling-failure-recover, custom}` with prebuilt template text.
+- `GET /api/sprints/status?file=<path>` — parses a sprint STATUS.md and returns structured per-lane state (`last_post`, `open_reds_against_me`, `landed_since_last_red`).
+- New `meta.parked` field on `GET /api/sessions` — derived from buffer-content parsing for the Claude Code completion-banner regex `(Cogitated|Churned|Brewed|Cooked|Mused|Pondered|Wandered|Crafted) for \d+m \d+s`. Authoritative substitute for the unreliable `meta.status` field when detecting parked-done panels.
+
+**New machinery:**
+- Boot-prompt template engine at `packages/server/src/templates/template-engine.js`. 10 default templates ship under `packages/server/share/termdeck/templates/` indexed by `(meta.type × role)`. Override path: `~/.termdeck/templates/`. Public API: `loadTemplate(cliType, role, variables)` + `requiredVariables(cliType, role)`.
+- STATUS.md parser at `packages/server/src/sprints/status-parser.js` with the canonical post regex `^### \[<lane>\] <VERB> <DATE> <HH:MM> ET — <gist>$`.
+
+**Kitchen-lessons surfaced (saved to Mnestra):**
+- Grok CLI does not honor bracketed-paste escape sequences. Structurally unusable as a TermDeck-injected lane until either Grok ships paste support or the inject endpoint adds a Grok-specific transport.
+- codex-rescue subagent can stall silently (tool_uses=1, placeholder response). Orchestrator-internal audit is the load-bearing fallback.
+- Worker done-when clause "(c) auditor has had a chance to react" can deadlock when auditor is deadweight. New canonical clause: 10-minute waiver.
+- Gemini CLI → Antigravity CLI migration deadline 2026-06-18 for Google One / unpaid-tier users. Antigravity adapter folded into Sprint 68 scope.
+
+**Sprint stats:** 35 files / +4277 lines / 438 pass / 0 fail / 9.2s suite duration. 4 distinct CLI workers (Claude/Codex/Gemini/Grok) attempted; Grok unusable; ran as effective 3+0+1 with orchestrator-internal audit at close.
+
+**CLAUDE.md amendments staged at `docs/sprint-69-orchestration-hardening/CLAUDE-amendments/` for manual landing into `~/.claude/CLAUDE.md`:**
+- `worker-discipline.md` (done-when mandatory clause + 10-min auditor-reaction waiver)
+- `auditor-synchronize-on-LANDED.md` (build-sprint audit cycle + tooling-failure fallback)
+- `orchestrator-default-polling.md` (270s STATUS.md-driven polling; do NOT read meta.status)
+
+
 All notable changes to TermDeck will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
