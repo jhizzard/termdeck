@@ -353,6 +353,7 @@
     /* Focus mode: single terminal fills the grid */
     .grid-container.layout-focus { grid-template-columns: 1fr; grid-template-rows: 1fr; }
     .grid-container.layout-focus .term-panel:not(.focused) { display: none; }
+    .orch-pin-row:has(~ .grid-container.layout-focus) { display: none; }
 
     /* Half mode: one big + small stack */
     .grid-container.layout-half {

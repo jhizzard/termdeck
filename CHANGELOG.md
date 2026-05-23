@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.6.1 (2026-05-23) — focus-mode hotfix (Brad v1.6.0 regression)
+
+Single-line CSS fix for the orch-pin-row / `layout-focus` sibling-container gap reported by Brad against v1.6.0. When an operator clicked the focus (▢) button on a worker panel, `.grid-container` correctly switched to `layout-focus`, but `.orch-pin-row` — a *sibling* of the grid, not a descendant — kept rendering its panels at the top of the viewport. Brad observed: focused panel filled the grid 1×1 in the bottom half of the viewport while orchestrator panels continued to occupy the top.
+
+### Fixed
+
+- **Focus mode now hides the orch-pin-row.** Added one CSS rule at `packages/client/public/style.css:356` — `.orch-pin-row:has(~ .grid-container.layout-focus) { display: none; }`. Mirrors the existing `.grid-container.layout-focus .term-panel:not(.focused) { display: none }` reach across the sibling boundary using the modern `:has()` combinator. Browser support is universal across Chromium ≥105, Safari ≥15.4, Firefox ≥121 (late-2023 baseline; Brad's Chromium-on-Ubuntu 24.04 environment is well within scope).
+
+### Notes
+
+- **Edge case (queued for v1.6.2):** when the focused panel itself lives inside `.orch-pin-row` (i.e., the operator focuses an orchestrator-role panel), the new rule hides the entire row including the focused panel. Operators typically focus workers — Brad's reported workflow doesn't hit this path — but the case is tracked in BACKLOG and will get a refinement (`:not(:has(.term-panel.focused))` qualifier + a paired `:not(.focused)` rule inside the row).
+- **Other Brad reports triaged from the 2026-05-17 → 2026-05-22 multi-thread wave** (filed to BACKLOG, no code change in this release): Sprint 65 ORCH-pin gold-border concern (likely resolved by Sprint 66 / v1.5.0 `meta.role` PATCH endpoint — pending Brad re-test on ≥1.5.0); Rumen 0 insights (Brad's Claude self-resolved by deploying v36 of `rumen-tick`; suggestion to default `init --rumen` to track `@latest` instead of pinning); Mnestra `privacy_tags text[]` + `include_privacy[]` schema PR proposal (migration 023, Mnestra-side); Antigravity migration heads-up — Sprint 68 scope correction (~2-4h → realistic 16-19h; in-flight `stdbuf -oL` stdout capture preferred over protobuf reverse-engineering); `lastActivity` heartbeat watchdog gap (panel hung 2h with `lastActivity` not advancing); PKA architecture brief (informational only).
+- **Wave:** `@jhizzard/termdeck@1.6.0 → 1.6.1` + `@jhizzard/termdeck-stack@1.6.0 → 1.6.1` (audit-trail aligned). `@jhizzard/mnestra` and `@jhizzard/rumen` unchanged.
+
 ## 1.6.0 (2026-05-20) — Sprint 69: 3+1+1 Orchestration Hardening
 
 Adds the TermDeck primitives that prevent Maestro-Sprint-2-style operational slop in future 3+1+1 sprints.
