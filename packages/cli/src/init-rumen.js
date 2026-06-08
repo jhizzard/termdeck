@@ -331,7 +331,7 @@ async function applyRumenTables(secrets, dryRun) {
 // up front. Idempotent: a re-run on an up-to-date project reports
 // "install up to date" and applies nothing.
 //
-// Brad's 2026-05-02 jizzard-brain report (INSTALLER-PITFALLS.md ledger #13)
+// Brad's 2026-05-02 peer install report (INSTALLER-PITFALLS.md ledger #13)
 // is the originating motivation: he upgraded npm packages but his database
 // stayed frozen at first-kickstart because no installer code path diffed an
 // existing install against the bundled migration set. After v1.0.1 ships,
@@ -391,7 +391,7 @@ const FUNCTIONS_WITH_VERSION_PLACEHOLDER = new Set(['rumen-tick']);
 
 // Sprint 51.6 T3 — `projectRef` is required and passed explicitly to every
 // `supabase functions deploy` invocation as `--project-ref <ref>`. Brad's
-// 2026-05-03 jizzard-brain install hit Bug C: `supabase link --project-ref`
+// 2026-05-03 peer install install hit Bug C: `supabase link --project-ref`
 // runs successfully (audit-upgrade probes confirm the link is live), but a
 // few subprocess calls later `supabase functions deploy` errors with
 // `Cannot find project ref. Have you run supabase link?` because the link
@@ -577,7 +577,7 @@ function vaultSqlEditorUrl(projectRef, secretName, secretValue) {
 //   - graph_inference_service_role_key  (used by 003_graph_inference_schedule.sql)
 //
 // Both keys hold the same value (`secrets.SUPABASE_SERVICE_ROLE_KEY`). Brad's
-// 2026-05-02 recovery on jizzard-brain literally cloned rumen → graph_inference
+// 2026-05-02 recovery on peer install literally cloned rumen → graph_inference
 // in vault.
 //
 // Strategy:

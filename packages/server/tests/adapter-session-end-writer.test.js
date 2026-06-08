@@ -371,12 +371,13 @@ test('onPanelClose fires exactly once even when multiple rollouts share the cwd 
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// source_agent canonicalization — the server hands the hook the literal
-// adapter name. The bundled hook's `normalizeSourceAgent` gates the allowed
-// set ({claude, codex, gemini, grok, orchestrator}). Belt-and-suspenders:
-// the server-side payload uses adapter.name verbatim, which must already
-// be in the allow-list — proves the contract is satisfied at the writer
-// boundary, not lazily at the parser boundary.
+// source_agent canonicalization — the server hands the hook the adapter's
+// provenance tag (Sprint 70 T3: `adapter.sourceAgent || adapter.name`; existing
+// adapters omit sourceAgent so this stays adapter.name for them). The bundled
+// hook's `normalizeSourceAgent` gates the allowed set ({claude, codex, gemini,
+// grok, orchestrator, antigravity}). Belt-and-suspenders: the server-side
+// payload value must already be in the allow-list — proves the contract is
+// satisfied at the writer boundary, not lazily at the parser boundary.
 // ─────────────────────────────────────────────────────────────────────────
 
 test('onPanelClose payload.source_agent is the canonical adapter.name', async () => {
@@ -398,7 +399,7 @@ test('onPanelClose payload.source_agent is the canonical adapter.name', async ()
     // (also 'codex' in this case but in general they can diverge —
     // claude.sessionType === 'claude-code' but claude.name === 'claude').
     assert.equal(calls[0].payload.source_agent, codexAdapter.name);
-    assert.ok(['claude', 'codex', 'gemini', 'grok', 'orchestrator'].includes(calls[0].payload.source_agent),
+    assert.ok(['claude', 'codex', 'gemini', 'grok', 'orchestrator', 'antigravity'].includes(calls[0].payload.source_agent),
       'source_agent must be in the bundled hook\'s ALLOWED_SOURCE_AGENTS set');
   });
 });

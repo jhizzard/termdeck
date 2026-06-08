@@ -597,7 +597,39 @@ function refreshBundledHookIfNewer(opts = {}) {
   }
   const installed = readVersion(HOOK_DEST);
   if (installed !== null && installed >= bundled) {
-    return { status: 'up-to-date', installed, bundled };
+    // Sprint 67 T1 — content-drift gate. Stamp-equal does NOT prove content-
+    // equal. Sprints 62/63/64 each grew the v2-stamped session-end body
+    // without bumping to v3; the daily-driver sat on the Sprint-51.7-era v2
+    // body for ~2 weeks (May 4 → May 19, 2026) because this early-return
+    // fired before any bytes were compared. Compare bytes; if they differ
+    // AND the installed file is TermDeck-managed (same trust signal that
+    // gates the unsigned-installed safety branch below), refresh with a
+    // backup. Hand-edited user files (no TermDeck markers) are still
+    // preserved — drift in that case is the user's intent.
+    let identical = false;
+    try {
+      identical = fs.readFileSync(HOOK_SOURCE).equals(fs.readFileSync(HOOK_DEST));
+    } catch (_) {
+      // Best-effort: a transient read error shouldn't trigger an overwrite.
+      // Treat as identical so we exit through the safe up-to-date path.
+      identical = true;
+    }
+    if (identical) return { status: 'up-to-date', installed, bundled };
+    if (!looksTermdeckManaged(HOOK_DEST)) {
+      return {
+        status: 'custom-hook-preserved-content-drift',
+        message: 'installed hook is stamp-equal to bundled but bytes differ and the file lacks TermDeck-managed markers; keeping as-is.',
+        installed,
+        bundled,
+      };
+    }
+    if (dryRun) return { status: 'would-refresh-content-drift', from: installed, to: bundled };
+    const dStamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+    const dBackup = `${HOOK_DEST}.bak.${dStamp}`;
+    try { fs.copyFileSync(HOOK_DEST, dBackup); } catch (_) { /* best-effort */ }
+    fs.copyFileSync(HOOK_SOURCE, HOOK_DEST);
+    fs.chmodSync(HOOK_DEST, 0o644);
+    return { status: 'refreshed-content-drift', from: installed, to: bundled, backup: dBackup };
   }
   // Sprint 51.6 T4-CODEX audit 20:23 ET safety gate: an unsigned installed
   // hook gets refreshed ONLY if it looks TermDeck-managed (carries one of
@@ -625,11 +657,11 @@ function refreshBundledHookIfNewer(opts = {}) {
 // DB-side failures (Class A schema drift, network blips, partial state)
 // cannot strand the hook upgrade. Joshua's 2026-05-03 Phase B run threw at
 // `applyMigrations()` on `001_mnestra_tables.sql` (the `match_memories`
-// CREATE OR REPLACE return-type drift on petvetbid — existing function had
+// CREATE OR REPLACE return-type drift on the daily-driver project — existing function had
 // columns in a different order, Postgres rejected with "cannot change return
 // type of existing function"). Outer catch at the old call site fired and
 // returned exit 5; the refresh at the old wire-up never ran. Brad's
-// jizzard-brain reproduced the same symptom under v1.0.2.
+// peer install reproduced the same symptom under v1.0.2.
 //
 // Hook refresh is a LOCAL filesystem operation. It has no dependency on DB
 // success, so it should run as part of the initial local-setup phase next
@@ -660,7 +692,7 @@ function refreshBundledHookIfNewer(opts = {}) {
 // v1.0.0/v1.0.1) gets the v2 hook FILE post-1.0.3, but the file is still
 // wired under `Stop`. The v2 hook does not gate on event type, so it
 // fires every assistant turn and writes N `session_summary` rows in
-// `memory_items` per session (Brad's 2026-05-04 jizzard-brain repro).
+// `memory_items` per session (Brad's 2026-05-04 peer install repro).
 //
 // `_mergeSessionEndHookEntry` is a 1:1 hoist of the same-named function
 // in `packages/stack-installer/src/index.js:451`. We can't `require()`
@@ -965,6 +997,12 @@ function runHookRefresh({ dryRun = false } = {}) {
       ok(`installed v${r.bundled} (no prior copy)`);
     } else if (r.status === 'would-install') {
       ok(`would-install v${r.bundled} (dry-run, no prior copy)`);
+    } else if (r.status === 'refreshed-content-drift') {
+      ok(`refreshed v${r.from} → v${r.to} (content-drift; backup: ${path.basename(r.backup)})`);
+    } else if (r.status === 'would-refresh-content-drift') {
+      ok(`would-refresh v${r.from} → v${r.to} (content-drift; dry-run)`);
+    } else if (r.status === 'custom-hook-preserved-content-drift') {
+      ok(`custom-hook-preserved (bytes differ from bundled but no TermDeck markers; keeping as-is)`);
     } else if (r.status === 'up-to-date') {
       ok(`up-to-date (v${r.installed})`);
     } else {
@@ -998,6 +1036,12 @@ function runHookRefresh({ dryRun = false } = {}) {
       ok(`installed v${r.bundled} (no prior copy)`);
     } else if (r.status === 'would-install') {
       ok(`would-install v${r.bundled} (dry-run, no prior copy)`);
+    } else if (r.status === 'refreshed-content-drift') {
+      ok(`refreshed v${r.from} → v${r.to} (content-drift; backup: ${path.basename(r.backup)})`);
+    } else if (r.status === 'would-refresh-content-drift') {
+      ok(`would-refresh v${r.from} → v${r.to} (content-drift; dry-run)`);
+    } else if (r.status === 'custom-hook-preserved-content-drift') {
+      ok(`custom-hook-preserved (bytes differ from bundled but no TermDeck markers; keeping as-is)`);
     } else if (r.status === 'up-to-date') {
       ok(`up-to-date (v${r.installed})`);
     } else {
@@ -1083,7 +1127,7 @@ async function main(argv) {
   // DB phase. Hook refresh is local FS work; coupling it downstream of pg
   // connect + 17-migration replay (the old wire-up at line 677 in v1.0.2)
   // meant ANY DB-side error (Joshua's mig-001 `match_memories` return-type
-  // drift, Brad's same on jizzard-brain) silently skipped the upgrade. With
+  // drift, Brad's same on peer install) silently skipped the upgrade. With
   // refresh here, the user always lands the bundled hook even when the DB
   // phase later fails — decoupled concerns, idempotent re-runs, and the
   // helper handles its own try/catch internally so a refresh failure never
@@ -1098,7 +1142,7 @@ async function main(argv) {
   // and writes N session_summary rows in memory_items per session. This
   // migration is idempotent and runs alongside the file refresh so the
   // wire-up + wiring stay in lockstep on every wizard pass. Brad's
-  // 2026-05-04 jizzard-brain repro is the canonical fixture for this
+  // 2026-05-04 peer install repro is the canonical fixture for this
   // class of bug (INSTALLER-PITFALLS.md ledger #16).
   runSettingsJsonMigration({ dryRun: flags.dryRun });
 

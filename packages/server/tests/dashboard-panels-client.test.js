@@ -356,9 +356,14 @@ test('style.css ships the orch-toggle active-state class', () => {
 
 test('1.4 — dense layout presets are wired across app.js, style.css, index.html', () => {
   // Keyboard layout array carries the new 8/9/0 presets (1x2, 4x3, 4x4).
-  assert.ok(
-    appSource.includes("'orch', '1x2', '4x3', '4x4'"),
-    'app.js keyboard layouts array should append 1x2 / 4x3 / 4x4');
+  // Sprint 67 T3: index 6 is now `null` (legacy `orch` layout retired in favor
+  // of the role-tagged ORCH-pin row) — assert each dense preset is present
+  // individually rather than pinning the exact array shape.
+  for (const slot of ["'1x2'", "'4x3'", "'4x4'"]) {
+    assert.ok(
+      appSource.includes(slot),
+      `app.js keyboard layouts array should include ${slot}`);
+  }
   // CSS grid template + topbar button exist for every dense preset.
   for (const layout of ['1x2', '2x5', '5x2', '4x3', '3x4', '4x4']) {
     assert.ok(cssSource.includes(`.grid-container.layout-${layout}`),

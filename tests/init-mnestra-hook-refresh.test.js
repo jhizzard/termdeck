@@ -143,16 +143,24 @@ test('refreshBundledHookIfNewer: no installed hook → installs bundled', () => 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('refreshBundledHookIfNewer: installed up-to-date → no overwrite', () => {
+test('refreshBundledHookIfNewer: stamp-equal + bytes-differ + NO TermDeck marker → preserve custom hook (Sprint 67 T1 content-drift gate)', () => {
+  // Sprint 67 T1 — Pre-Sprint-67 this test asserted status='up-to-date' on
+  // the assumption that stamp-equality alone proved content-equality. That
+  // assumption hid the daily-driver staleness for ~2 weeks (Sprints 62/63/64
+  // grew the v2-stamped body without bumping; the gate fired before bytes
+  // were compared). The new content-drift sub-branch compares bytes; when
+  // they differ AND the installed file lacks TermDeck-managed markers (as
+  // this fixture does — neither side carries the docstring sentinel), the
+  // safety branch fires and preserves the file as a custom user hook.
   const dir = freshTmpDir();
   try {
     const src = writeHook(dir, 'bundled/h.js', "// @termdeck/stack-installer-hook v1\n// bundled\n");
     const dest = writeHook(dir, 'installed/h.js', "// @termdeck/stack-installer-hook v1\n// installed (different body)\n");
     const r = refreshBundledHookIfNewer({ sourcePath: src, destPath: dest });
-    assert.equal(r.status, 'up-to-date');
+    assert.equal(r.status, 'custom-hook-preserved-content-drift');
     assert.equal(r.installed, 1);
     assert.equal(r.bundled, 1);
-    // Body NOT overwritten.
+    // Body NOT overwritten — same invariant as the pre-Sprint-67 test.
     assert.match(fs.readFileSync(dest, 'utf8'), /installed \(different body\)/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

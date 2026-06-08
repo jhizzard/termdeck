@@ -290,7 +290,13 @@ async function onPanelClose(session) {
       session_id: session.id,
       sessionType: adapter.sessionType,
       // Sprint 50 — T2 consumes this via the new memory_items.source_agent column.
-      source_agent: adapter.name,
+      // Sprint 70 T3 — prefer an explicit `adapter.sourceAgent` provenance tag
+      // when an adapter declares one (decouples the provenance string from the
+      // registry/binary-match `name`); existing adapters omit it and fall back
+      // to `name` (behavior unchanged). The antigravity (`agy`) adapter sets
+      // sourceAgent:'antigravity'; the session-end hook's normalizeSourceAgent
+      // also aliases the binary name `agy` → `antigravity` as a safety net.
+      source_agent: adapter.sourceAgent || adapter.name,
     };
 
     _spawnSessionEndHookImpl(hookPath, payload, {
@@ -355,7 +361,10 @@ async function onPanelPeriodicCapture(session) {
       cwd: session.meta.cwd,
       session_id: session.id,
       sessionType: adapter.sessionType,
-      source_agent: adapter.name,
+      // Sprint 70 T3 — same provenance contract as onPanelClose: an explicit
+      // adapter.sourceAgent wins, else fall back to adapter.name (unchanged for
+      // existing adapters). agy panels' periodic snapshots tag 'antigravity'.
+      source_agent: adapter.sourceAgent || adapter.name,
       // Mode discriminator the hook reads in resolveFiringContext —
       // distinguishes "TermDeck server periodic capture" from "Claude Code
       // PreCompact harness fire."
@@ -387,6 +396,50 @@ function _resolvePeriodicCaptureIntervalMs() {
   if (Number.isNaN(n) || n < 0) return 10 * 60 * 1000;
   return n;
 }
+
+// Sprint 70 T1 — best-effort line-buffering wrap for stdout-capture adapters.
+//
+// The LOAD-BEARING capture mechanism is the PTY tee in spawnTerminalSession;
+// this wrap is a RESIDUAL buffering-defense, valuable only for line-buffered
+// C-stdio CLIs and timelier mid-session periodic checkpoints. It is inert for a
+// compiled binary like `agy` (libstdbuf only affects glibc stdio) and a no-op
+// on hosts without a stdbuf-family tool (stock macOS) — the tee captures
+// everything regardless. We PREFER `stdbuf`/`gstdbuf` (GNU coreutils) because
+// it exec()s the target IN PLACE: same controlling TTY, pid preserved, exit
+// code propagated. We deliberately do NOT use `unbuffer` (expect) — it
+// allocates its own pty, producing a double-pty that strips the interactive-TTY
+// context agent CLIs need (Sprint 64 T2 carve-out 2.4 rationale).
+let _stdbufToolCache;  // undefined = unprobed, string = tool name, null = none on PATH
+function _defaultLookStdbuf() {
+  if (_stdbufToolCache !== undefined) return _stdbufToolCache;
+  const { spawnSync } = require('child_process');
+  _stdbufToolCache = null;
+  for (const name of ['stdbuf', 'gstdbuf']) {
+    try {
+      const r = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' });
+      if (r && r.status === 0 && typeof r.stdout === 'string' && r.stdout.trim()) {
+        _stdbufToolCache = name;
+        break;
+      }
+    } catch (_) { /* try next candidate */ }
+  }
+  return _stdbufToolCache;
+}
+
+// Returns the (possibly rewritten) { binary, args } to hand pty.spawn. No-op
+// unless the adapter declares `capture.mode==='stdout'` AND `capture.unbuffer`.
+// `lookPath` is dependency-injected so tests stay hermetic (no real stdbuf
+// dependence). Resets the memo via `_resetStdbufToolCacheForTesting`.
+function _resolveStdoutCaptureSpawn(binary, args, capture, lookPath = _defaultLookStdbuf) {
+  if (!capture || capture.mode !== 'stdout' || !capture.unbuffer) {
+    return { binary, args };
+  }
+  let tool = null;
+  try { tool = lookPath(); } catch (_) { tool = null; }
+  if (!tool) return { binary, args };  // graceful fallback — bare direct-spawn
+  return { binary: tool, args: ['-oL', '-eL', binary, ...args] };
+}
+function _resetStdbufToolCacheForTesting() { _stdbufToolCache = undefined; }
 
 // Sprint 37 T3 — lazy resolution of T2's CLI modules. The orchestration-preview
 // helper is decoupled from T2's templates.js / init-project.js; we resolve
@@ -1361,6 +1414,18 @@ function createServer(config) {
         args = (cmdTrim && !isPlainShell) ? ['-c', cmdTrim] : [];
       }
 
+      // Sprint 70 T1 — stdout-capture adapters (agy) may opt into a best-effort
+      // line-buffering wrap of the direct-spawn. No-op for every other adapter
+      // (none declare `capture`) and for the shell-wrap path. Gated on
+      // directSpawnAdapter because a capture declaration only rides the
+      // exact-binary direct-spawn path. Falls back to the bare binary when no
+      // stdbuf-family tool is on PATH; the PTY tee below captures regardless.
+      if (directSpawnAdapter && directSpawnAdapter.capture) {
+        const wrapped = _resolveStdoutCaptureSpawn(spawnShell, args, directSpawnAdapter.capture);
+        spawnShell = wrapped.binary;
+        args = wrapped.args;
+      }
+
       try {
         // Sprint 48 T4: merge ~/.termdeck/secrets.env into the PTY env so
         // the bundled session-end memory hook (`memory-session-end.js`) sees
@@ -1472,9 +1537,42 @@ function createServer(config) {
           }
         } catch (_periodicErr) { /* fail-soft */ }
 
+        // Sprint 70 T1 — initialize the in-flight stdout capture buffer for
+        // adapters that opt in (agy). The tee in term.onData below appends to
+        // it; resolveTranscriptPath materializes it into a tempfile envelope at
+        // panel close + on the periodic-capture tick. Gated on the direct-spawn
+        // adapter's declaration so non-capture panels carry no buffer (zero
+        // overhead; their behavior is byte-for-byte unchanged).
+        if (directSpawnAdapter && directSpawnAdapter.capture
+            && directSpawnAdapter.capture.mode === 'stdout') {
+          const declaredMax = directSpawnAdapter.capture.maxBytes;
+          const maxBytes = (typeof declaredMax === 'number' && declaredMax > 0)
+            ? declaredMax
+            : 4 * 1024 * 1024;
+          session._stdoutCapture = { chunks: [], bytes: 0, maxBytes };
+        }
+
         // PTY output → analyze + broadcast to WebSocket + transcript archive
         term.onData((data) => {
           session.analyzeOutput(data);
+
+          // Sprint 70 T1 — tee PTY output into the in-flight capture buffer for
+          // stdout-capture adapters (agy). Tail-capped: when the buffer exceeds
+          // maxBytes we drop whole chunks from the FRONT, keeping the most
+          // recent conversation (TUI redraws inflate raw bytes far past the
+          // de-chromed content). Best-effort — a capture failure must never
+          // disrupt the load-bearing PTY data path below.
+          const cap = session._stdoutCapture;
+          if (cap) {
+            try {
+              cap.chunks.push(data);
+              cap.bytes += Buffer.byteLength(data, 'utf8');
+              while (cap.bytes > cap.maxBytes && cap.chunks.length > 1) {
+                const dropped = cap.chunks.shift();
+                cap.bytes -= Buffer.byteLength(dropped, 'utf8');
+              }
+            } catch (_capErr) { /* capture is best-effort */ }
+          }
 
           // Send to connected WebSocket
           if (session.ws && session.ws.readyState === 1) {
@@ -3090,4 +3188,7 @@ module.exports = {
   onPanelPeriodicCapture,
   _setSpawnPeriodicCaptureHookImplForTesting,
   _resolvePeriodicCaptureIntervalMs,
+  // Sprint 70 T1 — stdout-capture spawn-wrap resolver (best-effort stdbuf).
+  _resolveStdoutCaptureSpawn,
+  _resetStdbufToolCacheForTesting,
 };

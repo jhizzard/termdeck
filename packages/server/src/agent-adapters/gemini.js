@@ -106,54 +106,108 @@ async function resolveTranscriptPath(session) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// parseTranscript — Gemini CLI session JSON format (NOT JSONL).
+// parseTranscript — Gemini CLI session transcript → normalized Memory[].
 //
-// Captured shape (from `gemini -p "say hi"` 2026-05-01):
-//   {
-//     sessionId, projectHash, startTime, lastUpdated, kind,
-//     messages: [
-//       { id, timestamp, type: 'user',   content: [{ text: '...' }] },
-//       { id, timestamp, type: 'gemini', content: '...', thoughts, tokens, model },
-//       ...
-//     ]
-//   }
+// TWO on-disk shapes, both handled (verified 2026-06-07 against real files in
+// `~/.gemini/tmp/<proj>/chats/`):
 //
-// The user role carries a content ARRAY of `{text}` parts; the gemini
-// (assistant) role carries a STRING. We normalize both to the Claude
-// adapter's output shape — `{ role: 'user'|'assistant', content: string }`
-// truncated to 400 chars — so the memory-hook summary builder doesn't have
-// to branch on adapter type.
+//   (A) LEGACY single-JSON object (`.json`, Gemini CLI ≤ ~2026-05-02) —
+//       pretty-printed across many lines:
+//         { sessionId, projectHash, startTime, lastUpdated, kind,
+//           messages: [ { id, timestamp, type:'user'|'gemini', content }, ... ] }
 //
-// `type: 'gemini'` maps to `role: 'assistant'` for cross-adapter parity.
+//   (B) MODERN JSONL (`.jsonl`, Gemini CLI ≥ ~2026-05-08 — what ships today) —
+//       one JSON object per line, heterogeneous:
+//         line 0           → session header { sessionId, projectHash, ... }   (no messages/type → skipped)
+//         { "$set": {...} } → incremental mutation deltas                      (no type        → skipped)
+//         { id, timestamp, type:'user'|'gemini'|'info', content } → a message  (extracted)
+//
+// In BOTH shapes a `type:'user'` message carries a content ARRAY of `{text}`
+// parts and a `type:'gemini'` message carries a STRING. We normalize both to
+// the Claude adapter's output shape — `{ role:'user'|'assistant', content }`
+// truncated to 400 chars — so the memory-hook summary builder never branches
+// on adapter type. `type:'gemini'` → `role:'assistant'`; any other type
+// (info / system / tool) is skipped.
+//
+// Pre-Sprint-70 this did a single `JSON.parse(raw)` and `return []` on throw,
+// so EVERY modern `.jsonl` session threw `Extra data: line 2` and captured
+// NOTHING (silent data loss). Strategy now: try a whole-blob parse first — it
+// succeeds only for shape (A) and any genuinely single-line input, keeping the
+// Sprint-45 fixtures green — then fall back to line-by-line JSONL for shape
+// (B), tolerating blank lines, a trailing newline, and a partial last line,
+// and skipping any line that isn't a well-formed transcript turn.
+//
+// CROSS-FILE CONTRACT: the parser the LIVE capture path actually invokes is
+// the hook-side mirror `parseGeminiJson` in `~/.claude/hooks/memory-session-
+// end.js` (+ its bundled copy `packages/stack-installer/assets/hooks/memory-
+// session-end.js`); the bundled comment there mandates "keep the two in sync."
+// Those copies need the same whole-blob→JSONL fix to close the capture gap
+// end-to-end — that file is Sprint-70 T3-owned (see STATUS.md T2 cross-lane
+// FINDING). This adapter copy is the canonical reference they mirror.
 // ──────────────────────────────────────────────────────────────────────────
+
+// Normalize one parsed Gemini message object into the cross-adapter
+// `{ role, content }` shape and push it onto `out`. Non-message objects
+// (the session header, `$set` deltas, info/system/tool roles, empty content)
+// contribute nothing.
+function pushGeminiMessage(msg, out) {
+  if (!msg || typeof msg !== 'object') return;
+  let role;
+  if (msg.type === 'user') role = 'user';
+  else if (msg.type === 'gemini' || msg.type === 'assistant') role = 'assistant';
+  else return; // header line, $set delta, info/system/tool — not a transcript turn
+
+  const content = msg.content;
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter((c) => c && typeof c.text === 'string')
+      .map((c) => c.text)
+      .join(' ');
+  }
+  if (text) out.push({ role, content: text.slice(0, 400) });
+}
+
+// Collect messages from one parsed JSON node, whether it's a session wrapper
+// (shape A — carries a `messages` array) or a single bare message (shape B —
+// one JSONL line). A node that is neither contributes nothing.
+function collectGeminiNode(node, out) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node.messages)) {
+    for (const msg of node.messages) pushGeminiMessage(msg, out);
+  } else {
+    pushGeminiMessage(node, out);
+  }
+}
 
 function parseTranscript(raw) {
   if (typeof raw !== 'string' || raw.length === 0) return [];
-  let session;
-  try { session = JSON.parse(raw); } catch (_) { return []; }
-  if (!session || !Array.isArray(session.messages)) return [];
+  const out = [];
 
-  const messages = [];
-  for (const msg of session.messages) {
-    if (!msg || typeof msg !== 'object') continue;
-    let role;
-    if (msg.type === 'user') role = 'user';
-    else if (msg.type === 'gemini' || msg.type === 'assistant') role = 'assistant';
-    else continue;
+  // Shape (A): a single (possibly pretty-printed, multi-line) JSON object.
+  // Succeeds only when the WHOLE blob is valid JSON — the legacy `.json`
+  // format or a 1-line `.jsonl`. A multi-line `.jsonl` throws here
+  // ("Extra data: line 2") and falls through to the JSONL path below.
+  try {
+    collectGeminiNode(JSON.parse(raw), out);
+    if (out.length) return out;
+  } catch (_) { /* not a single JSON blob → try JSONL */ }
 
-    const content = msg.content;
-    let text = '';
-    if (typeof content === 'string') {
-      text = content;
-    } else if (Array.isArray(content)) {
-      text = content
-        .filter((c) => c && typeof c.text === 'string')
-        .map((c) => c.text)
-        .join(' ');
-    }
-    if (text) messages.push({ role, content: text.slice(0, 400) });
+  // Shape (B): JSONL — one object per line. Tolerate blank lines, a trailing
+  // newline, and a partial/truncated final line (skip unparseable lines rather
+  // than aborting the whole transcript). Only reached when the whole-blob parse
+  // threw OR yielded zero messages (e.g. a header-only single object), so `out`
+  // is still empty here and there is no double-collection.
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let node;
+    try { node = JSON.parse(trimmed); } catch (_) { continue; }
+    collectGeminiNode(node, out);
   }
-  return messages;
+  return out;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -233,6 +287,202 @@ function buildMnestraBlock({ secrets } = {}) {
   };
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Auth — API-key mode + doctor probe (Sprint 70 T2)
+//
+// WHY THIS EXISTS: Google ends the Gemini CLI's OAuth / subscription serving
+// path on JUNE 18 2026. After that date the `gemini` binary authenticates
+// ONLY via a billing-enabled API key, which requires BOTH:
+//   • `GEMINI_API_KEY` in the environment — TermDeck loads it from
+//     ~/.termdeck/secrets.env at server boot and merges it into the panel PTY
+//     env (see spawn.env note above); and
+//   • ~/.gemini/settings.json → `security.auth.selectedType: "gemini-api-key"`
+//     (the *mode* switch — a present key is ignored while the mode is still
+//     `oauth-personal`).
+// Antigravity (`agy`) deliberately stays on OAuth, so the two coexist:
+// agy = OAuth, gemini = API-key. A future operator must NOT have to reverse-
+// engineer why Gemini panels went dark after 2026-06-18 — `checkAuth()` makes
+// every failure mode loud and actionable.
+//
+// `checkAuth(opts)` returns a structured verdict; it never throws and never
+// blocks by default:
+//   { ok, state, keyPresent, keySource, selectedType, detail, hint, live }
+//   state ∈
+//     'valid'            key present + selectedType === 'gemini-api-key'
+//                        (+ live AUTHOK appended when opts.live confirmed it)
+//     'missing-key'      GEMINI_API_KEY absent from env AND secrets.env → the
+//                        binary cannot authenticate at all post-2026-06-18
+//     'wrong-mode'       key present but selectedType !== 'gemini-api-key'
+//                        (e.g. still 'oauth-personal' — works NOW, BREAKS 06-18)
+//     'settings-missing' ~/.gemini/settings.json absent/unparseable → mode unknown
+//     'unverified'       static config is correct but the live probe couldn't
+//                        confirm (offline / binary absent / timeout) — soft-OK
+//
+// The static checks (env + settings.json) are pure and always run. The LIVE
+// probe — actually invoking `gemini` non-interactively to confirm the key is
+// accepted, the "AUTHOK" model the prior session validated — is gated behind
+// `opts.live` and routed through the monkey-patchable `_liveAuthProbe` seam so
+// unit tests stay offline and a future `termdeck doctor` wiring never hangs on
+// it. The seams (`_geminiApiKeyState` / `_readGeminiSettings` /
+// `_liveAuthProbe`) are attached to the adapter object below for the same
+// stub-ability the stack doctor uses (cli/src/doctor.js `_fetchLatest`).
+// ──────────────────────────────────────────────────────────────────────────
+
+// GEMINI_API_KEY presence — env first, then the canonical ~/.termdeck/
+// secrets.env store (the server merges that file into the PTY env at boot, but
+// a standalone probe may run before that merge). PRESENCE ONLY — the key value
+// is never read into a variable, returned, or logged.
+function _geminiApiKeyState({ env, secretsPath } = {}) {
+  const e = env || process.env;
+  if (e && typeof e.GEMINI_API_KEY === 'string' && e.GEMINI_API_KEY.trim()) {
+    return { present: true, source: 'env' };
+  }
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const p = secretsPath || path.join(os.homedir(), '.termdeck', 'secrets.env');
+  try {
+    const txt = fs.readFileSync(p, 'utf8');
+    // Match a non-empty assignment without ever capturing the value.
+    if (/^\s*(?:export\s+)?GEMINI_API_KEY=\s*\S/m.test(txt)) {
+      return { present: true, source: 'secrets.env' };
+    }
+  } catch (_) { /* no secrets.env / unreadable */ }
+  return { present: false, source: null };
+}
+
+// Read ~/.gemini/settings.json and return { selectedType } (or null when the
+// file is absent or unparseable — the caller maps null to 'settings-missing').
+function _readGeminiSettings({ settingsPath } = {}) {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const p = settingsPath || path.join(os.homedir(), '.gemini', 'settings.json');
+  let txt;
+  try { txt = fs.readFileSync(p, 'utf8'); } catch (_) { return null; }
+  try {
+    const j = JSON.parse(txt);
+    const sel = j && j.security && j.security.auth && j.security.auth.selectedType;
+    return { selectedType: typeof sel === 'string' ? sel : null };
+  } catch (_) { return null; }
+}
+
+// Live auth probe — invoke `gemini` non-interactively and resolve
+//   { ran:true, ok:boolean, note:string }
+// Success = exit 0 with non-empty stdout (the binary only emits a response once
+// the key is accepted); the AUTHOK token, when echoed, is surfaced in `note`.
+// Any spawn error / timeout / non-zero exit resolves ok:false — the caller
+// keeps the static verdict and downgrades 'valid' → 'unverified' (never RED) to
+// avoid false negatives on offline / rate-limited runs. Replaceable for tests.
+function _liveAuthProbe({ timeoutMs = 8000 } = {}) {
+  const { spawn } = require('child_process');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('gemini', ['-p', 'Reply with exactly: AUTHOK'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (e) {
+      return resolve({ ran: true, ok: false, note: `spawn failed: ${e && e.message || e}` });
+    }
+    let out = '';
+    let timedOut = false;
+    const t = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGKILL'); } catch (_) { /* already gone */ }
+    }, timeoutMs);
+    child.stdout.on('data', (b) => { out += b.toString('utf8'); });
+    child.stderr.on('data', () => { /* auth errors land here; intentionally not logged */ });
+    child.on('error', (e) => {
+      clearTimeout(t);
+      resolve({ ran: true, ok: false, note: `error: ${e && e.message || e}` });
+    });
+    child.on('close', (code) => {
+      clearTimeout(t);
+      if (timedOut) return resolve({ ran: true, ok: false, note: `timed out after ${timeoutMs}ms` });
+      const responded = code === 0 && out.trim().length > 0;
+      const sawToken = /AUTHOK/i.test(out);
+      resolve({
+        ran: true,
+        ok: responded,
+        note: responded
+          ? (sawToken ? 'AUTHOK' : 'gemini responded (exit 0)')
+          : `gemini exited ${code} without a response`,
+      });
+    });
+  });
+}
+
+// See the WHY / contract block above. Async because the optional live probe
+// awaits a spawn; the static-only path (default) resolves immediately. Seams
+// are dereferenced via `geminiAdapter.*` so tests can monkey-patch them.
+async function checkAuth(opts = {}) {
+  const options = opts || {};
+  const keyState = geminiAdapter._geminiApiKeyState(options);
+  const settings = geminiAdapter._readGeminiSettings(options);
+  const selectedType = settings ? settings.selectedType : null;
+
+  let state;
+  let ok;
+  let detail;
+  let hint;
+  if (!keyState.present) {
+    state = 'missing-key';
+    ok = false;
+    detail = 'GEMINI_API_KEY is not set (checked process env + ~/.termdeck/secrets.env).';
+    hint = 'Add GEMINI_API_KEY=<billing-enabled key> to ~/.termdeck/secrets.env (mode 600). '
+      + 'After 2026-06-18 the Gemini CLI authenticates ONLY via an API key.';
+  } else if (settings === null) {
+    state = 'settings-missing';
+    ok = false;
+    detail = 'GEMINI_API_KEY is present, but ~/.gemini/settings.json is missing or '
+      + 'unparseable — cannot confirm the auth mode.';
+    hint = 'Create ~/.gemini/settings.json with '
+      + '{"security":{"auth":{"selectedType":"gemini-api-key"}}}.';
+  } else if (selectedType !== 'gemini-api-key') {
+    state = 'wrong-mode';
+    ok = false;
+    detail = `GEMINI_API_KEY is present, but settings.json security.auth.selectedType is `
+      + `${selectedType ? `"${selectedType}"` : 'unset'} — not "gemini-api-key", so the key `
+      + `is ignored. This still works until 2026-06-18, then breaks.`;
+    hint = 'Set ~/.gemini/settings.json security.auth.selectedType to "gemini-api-key" '
+      + '(Antigravity `agy` keeps OAuth separately).';
+  } else {
+    state = 'valid';
+    ok = true;
+    detail = `GEMINI_API_KEY present (${keyState.source}) and settings.json `
+      + `selectedType="gemini-api-key".`;
+    hint = '';
+  }
+
+  // Optional live confirmation — only when static config is already valid AND
+  // the caller asked for it. A live miss is a soft downgrade, never a RED.
+  let live = { ran: false, ok: false, note: 'not run (static check only)' };
+  if (state === 'valid' && options.live) {
+    live = await geminiAdapter._liveAuthProbe(options);
+    if (live.ok) {
+      detail += ` Live probe confirmed (${live.note}).`;
+    } else {
+      state = 'unverified';
+      ok = true; // config is correct; the probe just couldn't confirm
+      detail += ` Live probe could not confirm (${live.note}); static config looks correct.`;
+      hint = 'If Gemini panels fail, check the key is billing-enabled and not rate-limited, '
+        + 'and that `gemini` is on PATH.';
+    }
+  }
+
+  return {
+    ok,
+    state,
+    keyPresent: keyState.present,
+    keySource: keyState.source,
+    selectedType,
+    detail,
+    hint,
+    live,
+  };
+}
+
 const geminiAdapter = {
   name: 'gemini',
   sessionType: 'gemini',
@@ -242,10 +492,17 @@ const geminiAdapter = {
   spawn: {
     binary: 'gemini',
     defaultArgs: [],
-    // GEMINI_API_KEY is read via `process.env` at spawn time by index.js'
-    // PTY env merge — declared here for documentation / discoverability,
-    // not for in-adapter overriding. OAuth-personal is the typical auth
-    // path (settings.json `security.auth.selectedType: 'oauth-personal'`).
+    // AUTH (Sprint 70 T2): the Gemini CLI now requires API-KEY auth — Google
+    // ends the OAuth / subscription serving path on 2026-06-18. `GEMINI_API_KEY`
+    // is read via `process.env` at spawn time by index.js' PTY env merge
+    // (loaded from ~/.termdeck/secrets.env at server boot) — declared here for
+    // documentation / discoverability, not for in-adapter overriding — AND
+    // ~/.gemini/settings.json must set `security.auth.selectedType:
+    // 'gemini-api-key'` (the mode switch; a present key is ignored while the
+    // mode is still 'oauth-personal'). Antigravity (`agy`) stays on OAuth — the
+    // two are deliberately segregated. `checkAuth()` below makes a misconfig
+    // loud. (Pre-2026-06-18 the typical path was 'oauth-personal'; it stops
+    // working after the cutoff.)
     env: {},
     // Sprint 64 T2 (carve-out 2.4) — direct spawn (no `zsh -c` wrapper) when
     // the launching command is exactly the binary name. See claude.js for the
@@ -267,6 +524,9 @@ const geminiAdapter = {
   // Sprint 50 T1 — 10th adapter field. Walks ~/.gemini/tmp/<proj>/chats.
   resolveTranscriptPath,
   bootPromptTemplate,
+  // Sprint 70 T2 — API-key auth doctor probe. See the Auth section above for
+  // states + the live-probe seam. async (raw, opts) -> verdict object.
+  checkAuth,
   costBand: 'pay-per-token',
   // Sprint 47 T3 — Gemini's CLI is paste-friendly per the single-JSON-object
   // session shape captured in Sprint 45 T2; bracketed-paste injects cleanly.
@@ -279,5 +539,12 @@ const geminiAdapter = {
     mnestraBlock: buildMnestraBlock,
   },
 };
+
+// Sprint 70 T2 — monkey-patchable test seams for `checkAuth` (same pattern as
+// cli/src/doctor.js `_fetchLatest`). Attached to the adapter object so unit
+// tests can stub the live spawn / filesystem reads and stay hermetic.
+geminiAdapter._geminiApiKeyState = _geminiApiKeyState;
+geminiAdapter._readGeminiSettings = _readGeminiSettings;
+geminiAdapter._liveAuthProbe = _liveAuthProbe;
 
 module.exports = geminiAdapter;

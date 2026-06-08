@@ -128,9 +128,10 @@ test('every adapter appears in both projections with matching name + sessionType
   }
 });
 
-test('expected adapter set is registered (claude/codex/gemini/grok)', () => {
+test('expected adapter set is registered (claude/codex/gemini/grok/antigravity)', () => {
   const names = projectAgents().map((a) => a.name).sort();
-  assert.deepEqual(names, ['claude', 'codex', 'gemini', 'grok']);
+  // Sprint 70 T1 — Antigravity (`agy`) joins as the 5th adapter.
+  assert.deepEqual(names, ['antigravity', 'claude', 'codex', 'gemini', 'grok']);
 });
 
 test('displayNames match the Sprint 50 T3 lane brief labels', () => {
@@ -139,4 +140,6 @@ test('displayNames match the Sprint 50 T3 lane brief labels', () => {
   assert.equal(byName.get('codex').displayName, 'Codex CLI');
   assert.equal(byName.get('gemini').displayName, 'Gemini CLI');
   assert.equal(byName.get('grok').displayName, 'Grok CLI');
+  // Sprint 70 T1 — Antigravity (`agy`) panel header / launcher label.
+  assert.equal(byName.get('antigravity').displayName, 'Antigravity');
 });

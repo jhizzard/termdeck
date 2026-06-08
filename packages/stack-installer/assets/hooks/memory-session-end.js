@@ -39,7 +39,7 @@
  *   9. (Sprint 51.6 T3) POSTs ONE row to Supabase /rest/v1/memory_sessions with
  *      Prefer: resolution=merge-duplicates so SessionEnd-fires-twice resolves
  *      to a single row. Requires Mnestra migration 017 on canonical installs;
- *      petvetbid already has the rich schema from rag-system bootstrap.
+ *      the daily-driver project already has the rich schema from rag-system bootstrap.
  *  10. Logs every step to ~/.claude/hooks/memory-hook.log.
  *
  * Version stamp (Sprint 51.6 T3 — hook upgrade gap fix):
@@ -61,7 +61,7 @@
  *       to bundled-v2 always passes the `installed >= bundled` short-circuit
  *       at init-mnestra.js:550 and reaches the refresh path.
  *
- * @termdeck/stack-installer-hook v2
+ * @termdeck/stack-installer-hook v3
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
@@ -305,35 +305,43 @@ function parseCodexJsonl(raw) {
 }
 
 function parseGeminiJson(raw) {
-  // Gemini CLI persists each session as a single JSON object (NOT JSONL):
-  //   { sessionId, projectHash, startTime, lastUpdated, kind,
-  //     messages: [{ id, timestamp, type: 'user'|'gemini', content }] }
-  // user content: [{ text }]; gemini content: string. Map type='gemini' →
-  // role='assistant' to match the rest of the dispatch shape.
+  // Sprint 70 T2/T3 cross-lane: handles BOTH transcript shapes —
+  // (A) legacy single JSON object {..., messages:[{type,content}]} (.json) +
+  // (B) modern JSONL — header line, `{ "$set": ... }` deltas, and message lines
+  //     {id,timestamp,type:'user'|'gemini'|'info',content} (.jsonl, ships today).
+  // Pre-Sprint-70 this did one whole-blob JSON.parse → threw on every modern
+  // .jsonl file → returned [] → captured nothing. user content = array of {text};
+  // gemini content = string; gemini → assistant.
+  // Keep in sync with packages/server/src/agent-adapters/gemini.js::parseTranscript.
   if (typeof raw !== 'string' || raw.length === 0) return [];
-  let obj;
-  try { obj = JSON.parse(raw); } catch (_) { return []; }
-  if (!obj || !Array.isArray(obj.messages)) return [];
-  const messages = [];
-  for (const msg of obj.messages) {
-    if (!msg || typeof msg !== 'object') continue;
+  const out = [];
+  const pushMsg = (msg) => {
+    if (!msg || typeof msg !== 'object') return;
     let role;
     if (msg.type === 'user') role = 'user';
     else if (msg.type === 'gemini' || msg.type === 'assistant') role = 'assistant';
-    else continue;
+    else return;
     const content = msg.content;
     let text = '';
-    if (typeof content === 'string') {
-      text = content;
-    } else if (Array.isArray(content)) {
-      text = content
-        .filter((c) => c && typeof c.text === 'string')
-        .map((c) => c.text)
-        .join(' ');
+    if (typeof content === 'string') text = content;
+    else if (Array.isArray(content)) {
+      text = content.filter((c) => c && typeof c.text === 'string').map((c) => c.text).join(' ');
     }
-    if (text) messages.push({ role, content: text.slice(0, 400) });
+    if (text) out.push({ role, content: text.slice(0, 400) });
+  };
+  const collect = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node.messages)) node.messages.forEach(pushMsg);
+    else pushMsg(node);
+  };
+  try { collect(JSON.parse(raw)); if (out.length) return out; } catch (_) { /* JSONL */ }
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    let node; try { node = JSON.parse(t); } catch (_) { continue; }
+    collect(node);
   }
-  return messages;
+  return out;
 }
 
 // Sprint 50 T1 — Grok parser. Mirrors packages/server/src/agent-adapters/grok.js
@@ -469,7 +477,7 @@ function selectTranscriptParser(sessionType) {
 // per-message timestamps. The legacy rag-system writer
 // (~/Documents/Graciella/rag-system/src/scripts/process-session.ts) populated
 // those fields by parsing the transcript JSONL passed to it on stdin, and
-// petvetbid's 289 baseline rows carried the rich shape from that writer.
+// the daily-driver project's 289 baseline rows carried the rich shape from that writer.
 // v2 closes the gap in pure Node so the bundled hook reaches parity without
 // the rag-system dependency (Class E hidden-dependency rule).
 //
@@ -637,18 +645,31 @@ async function embedText(text, openaiKey) {
 // tag (memory_items.source_agent). Defaults to 'claude' for backwards
 // compat with Claude Code's existing SessionEnd payload, which doesn't
 // supply the field; TermDeck server's per-adapter onPanelClose
-// interceptor (Sprint 50 T1) sets it explicitly to 'codex'/'gemini'/'grok'
-// for non-Claude panels. The set is open-ended on the server side; this
-// constant gates only the spelling-mistake/empty-string case.
+// interceptor (Sprint 50 T1) sets it explicitly to 'codex'/'gemini'/'grok'/
+// 'antigravity' for non-Claude panels. The set is open-ended on the server
+// side; this constant gates only the spelling-mistake/empty-string case.
+//
+// Sprint 70 T3: Antigravity (`agy`) is a first-class source_agent. The CLI
+// binary is `agy` but the canonical provenance tag is `antigravity`, so the
+// alias map below folds `agy` → `antigravity` before the allowlist check —
+// an agy panel's memories must not be mis-tagged `claude`.
 const ALLOWED_SOURCE_AGENTS = new Set([
-  'claude', 'codex', 'gemini', 'grok', 'orchestrator',
+  'claude', 'codex', 'gemini', 'grok', 'orchestrator', 'antigravity',
 ]);
+
+// Alias → canonical source_agent. Keeps the binary name (`agy`) and any older
+// callers from being dropped to 'claude' by the allowlist gate. Applied (after
+// lowercasing) before the ALLOWED_SOURCE_AGENTS membership test.
+const SOURCE_AGENT_ALIASES = {
+  agy: 'antigravity',
+};
 
 function normalizeSourceAgent(raw) {
   if (typeof raw !== 'string') return 'claude';
   const v = raw.trim().toLowerCase();
   if (!v) return 'claude';
-  return ALLOWED_SOURCE_AGENTS.has(v) ? v : 'claude';
+  const canonical = SOURCE_AGENT_ALIASES[v] || v;
+  return ALLOWED_SOURCE_AGENTS.has(canonical) ? canonical : 'claude';
 }
 
 async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, project, sessionId, sourceAgent }) {
@@ -694,10 +715,10 @@ async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, pr
 // closes it.
 //
 // Schema target: Mnestra migration 017 brings canonical engram in line with
-// petvetbid's rag-system flavor (session_id, summary_embedding, started_at,
+// the daily-driver project's rag-system flavor (session_id, summary_embedding, started_at,
 // ended_at, duration_minutes, messages_count, transcript_path, etc). The
 // bundled hook writes the rich shape on every install — fresh-canonical
-// (post-mig-017) and petvetbid alike.
+// (post-mig-017) and the daily-driver project alike.
 //
 // Idempotency: Prefer: resolution=merge-duplicates relies on the
 // memory_sessions_session_id_key unique constraint. Mig 017 adds it where
@@ -804,7 +825,27 @@ async function processStdinPayload(input) {
   try { stat = statSync(transcriptPath); }
   catch (e) { log(`cannot-stat-transcript: ${transcriptPath} — ${e.message}`); return; }
 
-  if (stat.size < MIN_TRANSCRIPT_BYTES) {
+  // Sprint 70 T1 (A1 RED fix — ORCH 2026-06-07 19:21 ET). The raw-byte floor is
+  // calibrated for verbose on-disk JSONL (claude/codex/gemini/grok session files
+  // run 10s of KB even when short). Antigravity has no on-disk transcript — its
+  // capture is a synthesized COMPACT stdout-tee envelope (cleaned, de-chromed
+  // content only), so a genuinely-substantive short agy session is legitimately
+  // <5KB and the byte floor would wrongly drop it (false zero-row). Exempt
+  // sessionType==='antigravity' from the byte floor and gate on parsed CONTENT
+  // instead — require >= 1 assistant turn so an empty / no-model-output capture
+  // still no-ops. Do NOT lower the global floor; it correctly filters trivial
+  // verbose sessions for every other agent.
+  if (sessionType === 'antigravity') {
+    let agyRaw = '';
+    try { agyRaw = readFileSync(transcriptPath, 'utf8'); }
+    catch (e) { log(`cannot-read-transcript: ${transcriptPath} — ${e.message}`); return; }
+    const agyTurns = selectTranscriptParser(sessionType).parser(agyRaw);
+    const assistantTurns = agyTurns.filter((m) => m && m.role === 'assistant').length;
+    if (assistantTurns < 1) {
+      debug(`antigravity-no-assistant-turn: ${agyTurns.length} parsed, 0 assistant — skipping`);
+      return;
+    }
+  } else if (stat.size < MIN_TRANSCRIPT_BYTES) {
     debug(`small-transcript: ${stat.size} bytes < ${MIN_TRANSCRIPT_BYTES}, skipping`);
     return;
   }

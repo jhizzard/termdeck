@@ -256,6 +256,7 @@ function parseArgv(argv) {
     json: args.includes('--json'),
     noColor: args.includes('--no-color'),
     noSchema: args.includes('--no-schema'),
+    noAgents: args.includes('--no-agents'),
   };
 }
 
@@ -547,6 +548,83 @@ function renderSchemaResult(result, c) {
   return out.join('\n');
 }
 
+// ── Sprint 70 T2: agent-CLI auth-probe section ─────────────────────────────
+//
+// Surfaces each agent adapter's `checkAuth()` verdict in `termdeck doctor` so a
+// misconfigured agent CLI is caught here instead of failing silently at panel
+// spawn. The motivating case: Google ends Gemini's OAuth serving path on
+// 2026-06-18, after which a Gemini CLI still set to `oauth-personal` stops
+// working — `checkAuth()` reports that as `wrong-mode` and this section turns
+// it into a doctor RED (exit 1) with a remediation hint.
+//
+// Only adapters that expose a `checkAuth` function participate (Gemini today;
+// forward-compatible as Codex/Grok/agy add probes). Static-only (`live:false`)
+// — no spawn / network, so the section never hangs or hits an API. The whole
+// registry require is wrapped: on any load failure the section is skipped
+// (never a crash, never a false RED). Monkey-patchable as
+// `module.exports._runAgentAuthCheck`, the same seam pattern as
+// `_runSchemaCheck`.
+async function _runAgentAuthCheck(opts = {}) {
+  let registry;
+  try {
+    registry = require(path.join(__dirname, '..', '..', 'server', 'src', 'agent-adapters'));
+  } catch (err) {
+    return {
+      skipped: true,
+      reason: `agent adapters unavailable: ${err && err.message || err}`,
+      agents: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+  const adapters = Object.values((registry && registry.AGENT_ADAPTERS) || {})
+    .filter((a) => a && typeof a.checkAuth === 'function');
+  const agents = [];
+  for (const a of adapters) {
+    let v;
+    try {
+      // live:false → static checks only (env + settings.json); never spawns.
+      v = await a.checkAuth({ live: false, ...opts });
+    } catch (err) {
+      v = { ok: false, state: 'error', detail: `probe threw: ${err && err.message || err}`, hint: '' };
+    }
+    agents.push({
+      name: a.displayName || a.name,
+      state: v.state,
+      ok: v.ok === true,
+      detail: v.detail || '',
+      hint: v.hint || '',
+    });
+  }
+  const passed = agents.filter((x) => x.ok).length;
+  return { skipped: false, agents, passed, total: agents.length, hasGaps: passed < agents.length };
+}
+
+function renderAgentAuthResult(result, c) {
+  const out = [];
+  out.push('');
+  out.push(c.bold('Agent CLI auth'));
+  out.push('');
+  if (result.skipped) {
+    out.push(`  ${c.dim(`(skipped) ${result.reason}`)}`);
+    return out.join('\n');
+  }
+  if (!result.agents || result.agents.length === 0) {
+    out.push(`  ${c.dim('(no agent adapters expose an auth probe)')}`);
+    return out.join('\n');
+  }
+  for (const a of result.agents) {
+    if (a.ok) {
+      out.push(`  ${c.green('✓')} ${a.name}: ${a.state}`);
+    } else {
+      out.push(`  ${c.yellow('✗')} ${a.name}: ${a.state}`);
+      if (a.detail) out.push(`      ${c.dim(a.detail)}`);
+      if (a.hint) out.push(`      ${c.dim(a.hint)}`);
+    }
+  }
+  out.push('');
+  out.push(`  ${result.passed}/${result.total} agent auth checks passed`);
+  return out.join('\n');
+}
+
 async function doctor(argv) {
   const opts = parseArgv(argv);
 
@@ -586,6 +664,22 @@ async function doctor(argv) {
     }
   }
 
+  // Sprint 70 T2: agent-CLI auth probe (skippable for tests / hosts without
+  // agent CLIs). Static-only by default — no spawn / network.
+  let agents = null;
+  if (!opts.noAgents) {
+    try {
+      agents = await module.exports._runAgentAuthCheck();
+    } catch (err) {
+      agents = {
+        skipped: false,
+        agents: [{ name: 'agent auth', state: 'error', ok: false,
+          detail: `unexpected error: ${err && err.message || err}`, hint: '' }],
+        passed: 0, total: 1, hasGaps: true,
+      };
+    }
+  }
+
   // Exit-code priority: any network failure → 2; any update available OR
   // schema gap → 1; else 0. Computed after all rows resolve so a single
   // transient failure doesn't mask real updates in stdout. A schema connect
@@ -600,10 +694,12 @@ async function doctor(argv) {
   }
   if (schema && schema.connectError && exitCode < 2) exitCode = 2;
   if (schema && !schema.skipped && schema.hasGaps && exitCode < 1) exitCode = 1;
+  if (agents && !agents.skipped && agents.hasGaps && exitCode < 1) exitCode = 1;
 
   if (opts.json) {
     const payload = { exitCode, rows };
     if (schema) payload.schema = schema;
+    if (agents) payload.agents = agents;
     process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return exitCode;
   }
@@ -615,6 +711,9 @@ async function doctor(argv) {
   if (schema) {
     process.stdout.write(renderSchemaResult(schema, c) + '\n');
   }
+  if (agents) {
+    process.stdout.write(renderAgentAuthResult(agents, c) + '\n');
+  }
   return exitCode;
 }
 
@@ -625,5 +724,6 @@ module.exports._compareSemver = _compareSemver;
 module.exports._detectMnestraVersion = _detectMnestraVersion;
 module.exports._selectHybridSearchRpcNames = _selectHybridSearchRpcNames;
 module.exports._runSchemaCheck = _runSchemaCheck;
+module.exports._runAgentAuthCheck = _runAgentAuthCheck;
 module.exports.STACK_PACKAGES = STACK_PACKAGES;
 module.exports.STATUS = STATUS;

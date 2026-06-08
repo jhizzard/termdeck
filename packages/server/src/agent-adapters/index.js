@@ -16,6 +16,9 @@ const claude = require('./claude');
 const codex = require('./codex');
 const gemini = require('./gemini');
 const grok = require('./grok');
+// Sprint 70 T1 — Antigravity CLI (`agy`). Registered under its canonical
+// adapter name `antigravity` (= source_agent); the binary it matches is `agy`.
+const antigravity = require('./agy');
 
 // Keyed by adapter name (NOT session.meta.type — adapters expose their own
 // `sessionType` field for that mapping). Order is iteration order for the
@@ -25,6 +28,10 @@ const AGENT_ADAPTERS = {
   codex,
   gemini,
   grok,
+  // Listed last: its idle `> ` prompt overlaps claude's, and claude (first)
+  // claims that string in the detect loop. agy panels are normally resolved by
+  // exact-binary direct-spawn, not output sniffing, so order is not load-bearing.
+  antigravity,
 };
 
 // Convenience accessor — returns the adapter whose `sessionType` matches the

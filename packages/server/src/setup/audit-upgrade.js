@@ -1,6 +1,6 @@
 // Sprint 51.5 T1 — schema-introspection audit-upgrade.
 //
-// Brad's 2026-05-02 jizzard-brain report (INSTALLER-PITFALLS.md ledger #13)
+// Brad's 2026-05-02 peer install report (INSTALLER-PITFALLS.md ledger #13)
 // surfaced Class A — schema drift. The user upgraded npm packages but the
 // database stayed frozen at first-kickstart: graph-inference Edge Function
 // never deployed, vault key never created, Mnestra migrations 009-015 + TD
@@ -124,7 +124,7 @@ const PROBES = Object.freeze([
     // the rich rag-system column set to memory_sessions; canonical engram
     // mig 001 only ships (id, project, summary, metadata, created_at).
     // Probe for memory_sessions.session_id (the most distinctive of the
-    // mig-017 columns) and apply mig 017 if absent. Idempotent on petvetbid
+    // mig-017 columns) and apply mig 017 if absent. Idempotent on the daily-driver project
     // where the columns are already present from hand-applied DDL.
     name: 'memory_sessions.session_id',
     kind: 'mnestra',
@@ -180,7 +180,7 @@ const PROBES = Object.freeze([
   // Sprint 51.6 T3 — Brad's Bug D: function-existence probes (cron schedule
   // checks for jobname presence) are not enough. The deployed Edge Function
   // SOURCE may be stale even when the cron job and function both exist.
-  // jizzard-brain on 2026-05-03: deployed rumen-tick was missing the
+  // peer install on 2026-05-03: deployed rumen-tick was missing the
   // SUPABASE_DB_URL fallback that Sprint 51.5 T1 added; cron probe said
   // "present", source was old. The marker check below detects that drift.
   //

@@ -3377,6 +3377,12 @@
 
     // ===== Layout =====
     function setLayout(layout) {
+      // Sprint 67 T3: legacy `orch` layout retired (superseded by the role-tagged
+      // ORCH-pin row from Sprint 65). Redirect any stale callers to `4x2` so the
+      // grid still renders cleanly if `orch` arrives from older code paths.
+      if (layout === 'orch') {
+        layout = '4x2';
+      }
       const wasControl = state.layout === 'control';
       // Only persist "real" grid layouts as state.layout; the control view is
       // an overlay, not a target to restore to when the user hits Escape.
@@ -3385,15 +3391,7 @@
       }
       const grid = document.getElementById('termGrid');
       grid.className = `grid-container layout-${layout}`;
-
-      // Orchestrator layout: set column count based on worker panels (total - 1)
-      if (layout === 'orch') {
-        const panelCount = grid.querySelectorAll('.term-panel').length;
-        const workerCount = Math.max(0, panelCount - 1);
-        grid.setAttribute('data-orch-cols', String(workerCount || panelCount));
-      } else {
-        grid.removeAttribute('data-orch-cols');
-      }
+      grid.removeAttribute('data-orch-cols');
 
       // Remove focus/half states
       document.querySelectorAll('.term-panel').forEach(p => {
@@ -3685,7 +3683,7 @@
       {
         target: '.topbar-center',
         title: 'Layout modes',
-        body: `Eight preset grid layouts — <kbd>1x1</kbd> through <kbd>4x2</kbd>, <strong>orch</strong> (4 workers across the top + 1 full-width orchestrator across the bottom, for 4+1 sprints), plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+7</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>7</kbd>) do the same.`,
+        body: `Preset grid layouts — <kbd>1x1</kbd> through <kbd>4x4</kbd> — plus <strong>control</strong> (aggregate activity feed). Click any layout to switch instantly; all terminals re-fit to the new grid. Keyboard shortcuts <kbd>Cmd+Shift+1</kbd>–<kbd>Cmd+Shift+9</kbd> (or <kbd>Ctrl+Shift+1</kbd>–<kbd>9</kbd>) cycle through them. Orchestrator panels are pinned to a dedicated row above the grid via <strong>meta.role</strong>; no special "orch" layout needed.`,
       },
       {
         target: '#termSwitcher',
@@ -5001,7 +4999,10 @@
       // the new dense presets. Topbar buttons cover every preset incl. 2x5/5x2/3x4.
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key >= '0' && e.key <= '9') {
         e.preventDefault();
-        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2', 'orch', '1x2', '4x3', '4x4'];
+        // Sprint 67 T3: index 6 (was `orch`, key 7) is now null — the legacy
+        // orch layout is retired in favor of the role-tagged ORCH-pin row.
+        // Keep the slot to preserve muscle memory on keys 8/9/0.
+        const layouts = ['1x1', '2x1', '2x2', '3x2', '2x4', '4x2', null, '1x2', '4x3', '4x4'];
         const idx = e.key === '0' ? 9 : parseInt(e.key, 10) - 1;
         if (layouts[idx]) setLayout(layouts[idx]);
       }

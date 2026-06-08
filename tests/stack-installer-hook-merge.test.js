@@ -513,6 +513,8 @@ const {
   // Sprint 50 T2 — source_agent provenance helpers.
   normalizeSourceAgent,
   ALLOWED_SOURCE_AGENTS,
+  // Sprint 70 T2/T3 — Gemini transcript parser (JSONL + legacy single-object).
+  parseGeminiJson,
 } = hookModule;
 
 // Drop the LOG_FILE so test runs don't pollute the user's hook log.
@@ -851,6 +853,46 @@ test('buildSummary handles Gemini single-JSON-object transcript', () => {
   } finally { fs.unlinkSync(p); }
 });
 
+// Sprint 70 T2/T3 — the LIVE capture path runs the hook's parseGeminiJson (not
+// the adapter's parseTranscript). Pre-Sprint-70 it did one whole-blob JSON.parse
+// → threw on every modern Gemini .jsonl → returned [] → captured nothing. These
+// pin the JSONL fallback (header + `$set` deltas + `info` lines skipped) AND that
+// the legacy single-object path still works. Kept in sync with T2's
+// gemini.js::parseTranscript (verbatim FIX-PROPOSED, STATUS Sprint 70).
+test('parseGeminiJson extracts modern JSONL (skips header/$set/info)', () => {
+  const jsonl = [
+    JSON.stringify({ sessionId: 's', projectHash: 'h', startTime: 't', kind: 'main' }), // header → skip
+    JSON.stringify({ $set: { lastUpdated: 'x' } }),                                       // delta → skip
+    JSON.stringify({ id: '1', timestamp: 't', type: 'user', content: [{ text: 'hello there' }] }),
+    JSON.stringify({ id: '2', timestamp: 't', type: 'gemini', content: 'hi back' }),
+    JSON.stringify({ id: '3', timestamp: 't', type: 'info', content: 'system noise' }),  // info → skip
+  ].join('\n');
+  const out = parseGeminiJson(jsonl);
+  assert.equal(out.length, 2, 'only the user + gemini message lines survive');
+  assert.deepEqual(out[0], { role: 'user', content: 'hello there' });
+  assert.deepEqual(out[1], { role: 'assistant', content: 'hi back' }); // type=gemini → assistant
+});
+
+test('parseGeminiJson still parses the legacy single-JSON-object shape', () => {
+  const legacy = JSON.stringify({
+    sessionId: 's',
+    messages: [
+      { type: 'user', content: [{ text: 'q1' }] },
+      { type: 'gemini', content: 'a1' },
+    ],
+  });
+  const out = parseGeminiJson(legacy);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].role, 'user');
+  assert.equal(out[1].role, 'assistant');
+});
+
+test('parseGeminiJson returns [] for empty / non-string input (no throw)', () => {
+  assert.deepEqual(parseGeminiJson(''), []);
+  assert.deepEqual(parseGeminiJson(null), []);
+  assert.deepEqual(parseGeminiJson(undefined), []);
+});
+
 test('buildSummary Gemini-detection does NOT swallow Claude JSONL', () => {
   // A Claude JSONL file's first line starts with `{` and parses as JSON,
   // but JSON.parse on the WHOLE file fails (multi-line concatenated objects).
@@ -951,13 +993,27 @@ test('postMemoryItem returns false on fetch exception', withMockedFetch(
 
 // ── Sprint 50 T2 — source_agent provenance ─────────────────────────────
 
-test('normalizeSourceAgent accepts the canonical 5 agents', () => {
-  for (const a of ['claude', 'codex', 'gemini', 'grok', 'orchestrator']) {
+test('normalizeSourceAgent accepts the canonical 6 agents', () => {
+  for (const a of ['claude', 'codex', 'gemini', 'grok', 'orchestrator', 'antigravity']) {
     assert.equal(normalizeSourceAgent(a), a);
   }
-  // ALLOWED_SOURCE_AGENTS is the live set; export shape pinned for the
-  // mnestra MCP zod enum to mirror without drift.
-  assert.equal(ALLOWED_SOURCE_AGENTS.size, 5);
+  // ALLOWED_SOURCE_AGENTS is the live write-side set. Sprint 70 T3 added
+  // 'antigravity' (Antigravity `agy` panels). NOTE: the mnestra MCP read-side
+  // `source_agents` zod enum mirror is a documented Sprint 70 follow-up (still
+  // {claude,codex,gemini,grok} there) — write-side leads, read-side widens later.
+  assert.equal(ALLOWED_SOURCE_AGENTS.size, 6);
+});
+
+// Sprint 70 T3 — the Antigravity binary is `agy` but the canonical provenance
+// tag is `antigravity`. normalizeSourceAgent folds the alias so agy panels (and
+// any caller passing the binary name) are never mis-tagged 'claude'.
+test('normalizeSourceAgent aliases agy → antigravity (case-insensitive)', () => {
+  assert.equal(normalizeSourceAgent('agy'), 'antigravity');
+  assert.equal(normalizeSourceAgent('AGY'), 'antigravity');
+  assert.equal(normalizeSourceAgent('  Agy  '), 'antigravity');
+  // The canonical form passes through unchanged.
+  assert.equal(normalizeSourceAgent('antigravity'), 'antigravity');
+  assert.equal(normalizeSourceAgent('ANTIGRAVITY'), 'antigravity');
 });
 
 test('normalizeSourceAgent defaults to "claude" for absent / empty / unknown', () => {
