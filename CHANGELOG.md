@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.8.0 (2026-06-08) — Sprints 71 + 72: MCP Bridge (INBOUND) + Grok web-chat panel (OUTBOUND)
+
+Two-direction web-chat integration around shared Mnestra memory: consumer chats can now *pull* your memory + live terminal state through a self-hosted remote MCP server, and a real Grok web chat can be driven *inside* TermDeck as an interactive panel. Both ship repo-only this release (self-hosted / local dogfood); the published package carries the server/client seams.
+
+### Added
+
+- **MCP Bridge (`packages/mcp-bridge/`, Sprint 71) — a self-hosted, read-only remote MCP server (INBOUND).** Lets Claude.ai / ChatGPT / Grok connect via their own sanctioned connector feature and call read-only tools: `memory_recall` / `memory_search` (Mnestra) and `list_panels` / `panel_status` / `read_panel` / `recent_activity` (live TermDeck state). Streamable-HTTP transport + a self-hosted **OAuth 2.1 / PKCE** Authorization Server (Dynamic Client Registration, audience-bound HS256 tokens per RFC 8707, operator-secret consent gate, rotating refresh) — the MCP spec ships no auth, so the server provides it. Security keystone is **egress redaction** (inverted threat model: tool *results* transit the provider cloud, so secrets are scrubbed outbound — provider keys / JWTs / Supabase-refs / connection-strings built-in, plus an external org-literal denylist that never lives in-repo). Read-only manifest, per-call approval gates on the terminal-state tools, default-deny project allowlist. Per-provider connect docs (claude / chatgpt / grok) + `tunnel.md`. **Live-validated against Claude.ai, 2026-06-08.**
+- **Grok web-chat panel (`packages/web-chat-driver/`, Sprint 72) — drive a real Grok chat as a TermDeck panel (OUTBOUND).** A real, logged-in, headful Chrome (grok.com) attached via Playwright `connectOverCDP`: a live screencast canvas you see + click, plus an input bar that injects prompts and reads completions. Posture-locked (real Chrome, no automation infobar, dedicated profile, localhost-only debug port, **Grok-only**, never headless/stealth). New `web-chat` session type (8 additive server seams; `web-chat-grok` adapter; client canvas panel) — captured to Mnestra via the periodic-capture timer, so the conversation joins shared memory.
+
+### Fixed
+
+- **Bridge `memory_recall` returned empty (live go-live fix).** The Mnestra webhook `recall` op returns rows under `hits` (RAG shape `{ ok, hits, text, tokens_used }`), but the client read `data.memories` — recall silently returned nothing end-to-end. Now reads `hits` (with a `memories` fallback). The unit test that should have caught it mocked a `{memories:[…]}` shape the webhook never emits; corrected to pin the real contract.
+- **Bridge connector couldn't auto-recover after a restart / tunnel cycle.** `/mcp` returned `400` for an unknown/expired session id; per the MCP Streamable-HTTP spec a server must return `404` so the client re-initializes. Now returns `404` for an expired session, and accepts an `initialize` even when the client carries a stale session id — so the connector self-heals after a Bridge restart or an ephemeral-tunnel change.
+
+### Notes
+
+- **Both new packages are `private:true` and repo-only this release** (not in the npm `files` glob): the bridge is self-hosted from a clone; the web-chat driver needs local Chrome + `playwright-core` (installed local to its package, never the repo-root lockfile). The published `@jhizzard/termdeck` ships the server/client `web-chat` *seams* (`server/src/**` + `client/public/**`), which no-op gracefully when the driver isn't present. The bridge + driver ship via the public repo.
+- **Codex auditors (T4) earned their seats** — caught, on landed code: a `redactDeep` object-KEY leak; a read-only policy bypass (mutating verbs `remember`/`forget`/`store`/`save`) + an exact-credential-key egress miss; a CDP posture option-surface breach (headless / forbidden-flag escape hatch); a completion-detector timeout-as-success bug; and a client/server form-submit contract miss (the panel buffered prompts instead of sending).
+- **Wave:** `@jhizzard/termdeck@1.7.0 → 1.8.0` + `@jhizzard/termdeck-stack@1.7.0 → 1.8.0` (audit-trail aligned).
+- **Deferred to hardening follow-ups:** ChatGPT + Grok inbound round-trips validated end-to-end; accurate `grok-web` provenance (currently `grok`); a named cloudflared tunnel (stable hostname — the ephemeral one breaks the connector on restart); README `headful:false` doc-drift; relabel the bridge memory `similarity` field (it is an RRF fusion score, ~0.016 by construction — invites misreads); surface the webhook's synthesized `text` answer in recall; raise the 500-char/row recall format cap; wire `mcp-bridge` + `web-chat-driver` into the root test glob.
+
 ## 1.7.0 (2026-06-07) — Sprint 70: CLI-runtime migration — Antigravity adapter · Grok options · Gemini hardening
 
 Brings the 4-CLI auditor fleet (Claude · Codex · Antigravity · Grok Build) whole again after two of the underlying CLIs churned, and hardens Gemini capture.

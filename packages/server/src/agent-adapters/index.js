@@ -19,6 +19,12 @@ const grok = require('./grok');
 // Sprint 70 T1 — Antigravity CLI (`agy`). Registered under its canonical
 // adapter name `antigravity` (= source_agent); the binary it matches is `agy`.
 const antigravity = require('./agy');
+// Sprint 72 T2 — Grok web-chat panel (`type:'web-chat'`). NOT a node-pty agent:
+// driven by the CDP render-bridge (packages/web-chat-driver) against a real
+// grok.com tab. Registered for `getAdapterForSessionType('web-chat')` +
+// onPanelClose/periodic capture only — its `matches:()=>false` + absent
+// `patterns.prompt` mean it never participates in output/command detection.
+const webChatGrok = require('./web-chat-grok');
 
 // Keyed by adapter name (NOT session.meta.type — adapters expose their own
 // `sessionType` field for that mapping). Order is iteration order for the
@@ -32,6 +38,12 @@ const AGENT_ADAPTERS = {
   // claims that string in the detect loop. agy panels are normally resolved by
   // exact-binary direct-spawn, not output sniffing, so order is not load-bearing.
   antigravity,
+  // Sprint 72 T2 — web-chat-grok. Order is irrelevant: it carries no
+  // `patterns.prompt` and `matches()` returns false, so detectAdapter() + the
+  // direct-spawn loop skip it entirely. It is reachable ONLY via
+  // getAdapterForSessionType('web-chat') (the `.find(a=>a.sessionType===type)`
+  // fallback, since the registry key 'web-chat-grok' ≠ sessionType 'web-chat').
+  'web-chat-grok': webChatGrok,
 };
 
 // Convenience accessor — returns the adapter whose `sessionType` matches the

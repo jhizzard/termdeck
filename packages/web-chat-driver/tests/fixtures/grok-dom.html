@@ -1,0 +1,34 @@
+<!doctype html>
+<!--
+  Representative grok.com DOM fixture — Sprint 72 T3.
+  HAND-AUTHORED (not a verbatim capture) to mirror the structural shape of the
+  grok.com chat surface for INTEGRATION bring-up against a local file:// page.
+  data-testid values are best-effort and must be confirmed against the live
+  site by T1's CDP bring-up; the role/label fallbacks + self-heal are what make
+  a wrong testid non-fatal. Browser-free unit tests use the ARIA-snapshot
+  fixtures (grok-aria-*.txt), NOT this file.
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Grok (fixture)</title></head>
+<body>
+  <header role="banner"><a href="/">Grok</a><button>New chat</button></header>
+  <main>
+    <div role="log" data-testid="conversation">
+      <article data-message-author-role="user"><p>What is the capital of France?</p></article>
+      <article data-message-author-role="assistant">
+        <p>The capital of France is Paris.</p>
+        <div class="message-actions">
+          <button data-testid="copy-message" aria-label="Copy">Copy</button>
+          <button aria-label="Regenerate">Regenerate</button>
+        </div>
+      </article>
+    </div>
+    <form>
+      <textarea data-testid="grok-composer" aria-label="Ask Grok anything"
+                placeholder="Ask Grok anything"></textarea>
+      <!-- idle: Send shown; while streaming the app swaps this for a Stop button -->
+      <button type="submit" data-testid="send-button" aria-label="Send">Send</button>
+    </form>
+  </main>
+</body>
+</html>

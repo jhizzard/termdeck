@@ -1,0 +1,22 @@
+{
+  "name": "@jhizzard/termdeck-mcp-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The MCP Bridge — a read-only remote MCP server that lets consumer LLM chats (Claude.ai, ChatGPT, Grok) pull Mnestra memory and see live TermDeck terminal state, over their own sanctioned connector feature. Egress-redacted, approval-gated, allowlisted.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "zod": "^4.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

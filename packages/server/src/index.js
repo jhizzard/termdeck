@@ -104,7 +104,7 @@ const { createGraphRoutes } = require('./graph-routes');
 const { createProjectsRoutes } = require('./projects-routes');
 const orchestrationPreview = require('./orchestration-preview');
 const { createPtyReaper } = require('./pty-reaper');
-const { AGENT_ADAPTERS } = require('./agent-adapters');
+const { AGENT_ADAPTERS, getAdapterForSessionType } = require('./agent-adapters');
 const { deriveRagMode } = require('./rag-mode');
 const { resolveSpawnShell } = require('./spawn-shell');
 
@@ -243,6 +243,37 @@ function _defaultSpawnPeriodicCaptureHookImpl(hookPath, payload, env) {
 let _spawnPeriodicCaptureHookImpl = _defaultSpawnPeriodicCaptureHookImpl;
 function _setSpawnPeriodicCaptureHookImplForTesting(fn) {
   _spawnPeriodicCaptureHookImpl = typeof fn === 'function' ? fn : _defaultSpawnPeriodicCaptureHookImpl;
+}
+
+// Sprint 72 T2 — web-chat driver resolver (Workstream B). A `web-chat` panel is
+// backed by T1's CDP render-bridge (packages/web-chat-driver), NOT node-pty.
+// Lazy-required + fail-soft: if the driver isn't built/installed yet (T1/T3
+// build it in parallel) the require throws and we return null, so a web-chat
+// spawn degrades to 'errored' status instead of crashing the server — PTY
+// panels AND the parallel Sprint 71 deck stay completely unaffected. The
+// require is by RELATIVE PATH (resolving the package's own package.json `main`),
+// not a root dependency, per Guardrail 5 (no root package.json churn; the
+// driver keeps its own isolated install). Tests inject a fake driver via
+// `_setWebChatDriverImplForTesting` (same DI rationale as the hook-spawn impls
+// above) so the seams are exercised with no real Chrome / CDP / network.
+//
+// Defensive aggregator-gap handling: the driver's src/index.js currently
+// exports only `{ cdp }` (T3's `grok` namespace isn't wired into the aggregator
+// yet — flagged in Sprint 72 STATUS.md). If `.grok` is absent we attach it from
+// the sub-module directly so this seam works before that one-line T1 fix lands.
+function _defaultWebChatDriverImpl() {
+  let driver;
+  try { driver = require('../../web-chat-driver'); }
+  catch (_e) { return null; }
+  if (driver && !driver.grok) {
+    try { driver = { ...driver, grok: require('../../web-chat-driver/src/grok') }; }
+    catch (_e) { /* grok namespace not present yet — cdp-only handle is degraded but non-fatal */ }
+  }
+  return driver;
+}
+let _webChatDriverImpl = _defaultWebChatDriverImpl;
+function _setWebChatDriverImplForTesting(fn) {
+  _webChatDriverImpl = typeof fn === 'function' ? fn : _defaultWebChatDriverImpl;
 }
 
 // Fires when a panel's PTY exits. Routes through the adapter registry's
@@ -1324,6 +1355,328 @@ function createServer(config) {
   // the same wiring (transcripts, RAG, Mnestra flashback) without copy-paste.
   // Returns the Session object regardless of PTY success — status will be
   // 'errored' if pty.spawn threw.
+  // ────────────────────────────────────────────────────────────────────────
+  // Sprint 72 T2 (Workstream B) — web-chat panel lifecycle.
+  //
+  // A `web-chat` session is driven by T1's CDP render-bridge against a real
+  // grok.com tab, NOT node-pty. These closures are the server seams that
+  // consume the `web-chat-grok` adapter + the driver, reusing the SAME
+  // inject/read/transcript/capture machinery the PTY panels use. The PTY path
+  // (`if (pty)` in spawnTerminalSession) is left byte-identical (Guardrail 3);
+  // everything web-chat is gated on `session.meta.type === 'web-chat'`.
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Per-server panel counter so each web-chat panel gets a distinct CDP port
+  // (T1's profile.js: "T2 allocates a distinct port per panel"). The first
+  // panel uses the canonical 'grok' profile + base port — the warm-login
+  // location the human signs into once. Additional concurrent panels get their
+  // own profile + port (their own Chrome). NOTE: that means panel ≥2 has an
+  // ISOLATED Grok login, not the shared one — the shared-browser-multi-tab
+  // model is a follow-up (flagged in STATUS); single-panel is the sprint scope.
+  let _webChatPanelSeq = 0;
+
+  // Resolve the dedicated profile (NAME → T1's resolveProfileDir maps it to
+  // ~/.termdeck/web-chat-profiles/<name>; an absolute path is used verbatim),
+  // the per-panel CDP port, and the provider start URL (from the adapter).
+  // Posture: never the human's DEFAULT Chrome profile (Chrome 136+ blocks CDP
+  // there anyway). Every value is config/env-overridable.
+  function resolveWebChatProfile(adapter) {
+    const wc = (config && config.webChat) || {};
+    const n = _webChatPanelSeq++;
+    const baseName = wc.profile || process.env.TERMDECK_WEBCHAT_PROFILE || 'grok';
+    const userDataDir = wc.userDataDir
+      || process.env.TERMDECK_WEBCHAT_USER_DATA_DIR
+      || (n === 0 ? baseName : `${baseName}-${n + 1}`);
+    const basePort = parseInt(
+      String(wc.cdpPort || process.env.TERMDECK_WEBCHAT_CDP_PORT || '9333'), 10,
+    );
+    const cdpPort = (Number.isFinite(basePort) ? basePort : 9333) + n;
+    const startUrl = (adapter && adapter.webChatUrl) || wc.startUrl || 'https://grok.com';
+    return { userDataDir, cdpPort, startUrl };
+  }
+
+  // Set status + fire the (best-effort) status-change telemetry. No-op once the
+  // panel is exited so a late driver callback can't resurrect a dead panel.
+  function applyWebChatStatus(session, { status, statusDetail } = {}) {
+    if (!status || session.meta.status === 'exited') return;
+    const oldStatus = session.meta.status;
+    session.meta.status = status;
+    session.meta.statusDetail = statusDetail || '';
+    session.meta.lastActivity = new Date().toISOString();
+    if (oldStatus !== status && session.onStatusChange) {
+      try { session.onStatusChange(session, oldStatus, status); }
+      catch (err) { console.error('[web-chat] onStatusChange error:', err && err.message); }
+    }
+  }
+
+  // Register the periodic-capture timer — web-chat is a non-Claude adapter WITH
+  // resolveTranscriptPath, so it is eligible exactly like a Codex/Gemini/Grok/
+  // agy panel. Replicated from the PTY path (index.js spawn block) rather than
+  // shared so the PTY branch stays byte-identical (Guardrail 3).
+  function maybeRegisterWebChatPeriodicCapture(session) {
+    try {
+      const adapter = getAdapterForSessionType(session.meta.type);
+      const eligible = adapter
+        && adapter.sessionType !== 'claude-code'
+        && typeof adapter.resolveTranscriptPath === 'function';
+      const intervalMs = _resolvePeriodicCaptureIntervalMs();
+      if (eligible && intervalMs > 0) {
+        session._periodicCapture = { lastSize: 0, lastFireMs: 0, timer: null };
+        session._periodicCapture.timer = setInterval(() => {
+          onPanelPeriodicCapture(session).catch((err) => {
+            console.error('[periodic-capture] async error:', err && err.message ? err.message : err);
+          });
+        }, intervalMs);
+        if (session._periodicCapture.timer.unref) session._periodicCapture.timer.unref();
+      }
+    } catch (_e) { /* fail-soft */ }
+  }
+
+  // A completed Grok turn (from the driver's onComplete OR a degraded driver's
+  // inject-resolved text): record it, update status via the adapter, broadcast
+  // {type:'output'}, archive to the transcript writer. Deliberately NOT
+  // session.analyzeOutput() — its _detectErrors would false-positive 'errored'
+  // on chat prose containing "Error:" (see web-chat-grok.js header). statusFor
+  // gives the same status outcome without that hazard.
+  function onWebChatResponse(session, responseText) {
+    if (typeof responseText !== 'string' || responseText.length === 0) return;
+    if (session.meta.status === 'exited') return;
+
+    if (session._webChatTranscript && Array.isArray(session._webChatTranscript.turns)) {
+      session._webChatTranscript.turns.push({ role: 'assistant', content: responseText });
+    }
+
+    const adapter = getAdapterForSessionType('web-chat');
+    let applied = false;
+    if (adapter && typeof adapter.statusFor === 'function') {
+      const st = adapter.statusFor(responseText);
+      if (st && st.status) { applyWebChatStatus(session, st); applied = true; }
+    }
+    if (!applied) session.meta.lastActivity = new Date().toISOString();
+
+    if (session.ws && session.ws.readyState === 1) {
+      try { session.ws.send(JSON.stringify({ type: 'output', data: responseText })); }
+      catch (_e) { /* never disrupt */ }
+    }
+    if (transcriptWriter) {
+      try { transcriptWriter.append(session.id, responseText, Buffer.byteLength(responseText, 'utf8')); }
+      catch (_e) { /* never let transcript failures disrupt the data path */ }
+    }
+  }
+
+  // Route injected/typed text to the driver's "type into composer + send",
+  // NOT pty.write. Assembles the 4+1 two-stage submit (paste body buffered,
+  // fired on the lone-`\r`) so the orchestrator inject pattern works UNCHANGED.
+  // Returns a small status object the route maps to HTTP.
+  function routeWebChatInput(session, text) {
+    if (typeof text !== 'string') return { ok: false, code: 'invalid_text' };
+    const wc = session._webChat;
+    if (!wc || !wc.handle || !wc.driver || !wc.driver.grok
+        || typeof wc.driver.grok.inject !== 'function') {
+      return { ok: false, code: 'web_chat_not_ready' };
+    }
+    if (!session._webChatInput) session._webChatInput = { pending: '' };
+
+    // Strip bracketed-paste markers; a trailing CR/LF is the submit signal.
+    // No trailing newline ⇒ accumulate only (the two-stage stage-1 case).
+    const stripped = text.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+    const m = stripped.match(/^([\s\S]*?)[\r\n]+$/);
+    let content; let doSubmit;
+    if (m) { content = m[1]; doSubmit = true; } else { content = stripped; doSubmit = false; }
+    if (content) session._webChatInput.pending += content;
+    if (!doSubmit) return { ok: true, buffered: true };
+
+    const full = session._webChatInput.pending;
+    session._webChatInput.pending = '';
+    if (!full) return { ok: true, empty: true };
+
+    if (session._webChatTranscript && Array.isArray(session._webChatTranscript.turns)) {
+      session._webChatTranscript.turns.push({ role: 'user', content: full });
+    }
+    // Event-driven status so the orchestrator inject-verify sees 'thinking'
+    // immediately after the submit lands (parity with a PTY agent panel).
+    applyWebChatStatus(session, { status: 'thinking', statusDetail: 'Grok is responding…' });
+
+    try {
+      const p = Promise.resolve(wc.driver.grok.inject(wc.handle, full));
+      if (!wc.unsubscribe) {
+        // onComplete wasn't wired (degraded/cdp-only driver) — pull the reply
+        // from inject's resolved value instead so the turn is still captured.
+        p.then((responseText) => onWebChatResponse(session, responseText))
+         .catch((err) => {
+           console.error('[web-chat] inject failed:', err && err.message ? err.message : err);
+           applyWebChatStatus(session, { status: 'errored', statusDetail: `inject failed: ${err && err.message ? err.message : 'unknown'}` });
+         });
+      } else {
+        // Push model: the onComplete listener handles the reply; just surface
+        // inject errors (double-processing avoided by not consuming the value).
+        p.catch((err) => {
+          console.error('[web-chat] inject failed:', err && err.message ? err.message : err);
+          applyWebChatStatus(session, { status: 'errored', statusDetail: `inject failed: ${err && err.message ? err.message : 'unknown'}` });
+        });
+      }
+    } catch (err) {
+      return { ok: false, code: 'inject_threw', error: err && err.message ? err.message : 'unknown' };
+    }
+    return { ok: true, submitted: true };
+  }
+
+  // The web-chat analog of term.onExit. Idempotent (guarded by
+  // `_webChatClosed`): fires the memory-capture hook (seam 7), clears the
+  // periodic timer, broadcasts exit/panel_exited, and tears down the driver.
+  // Wired into DELETE /api/sessions/:id + the driver disconnect callback.
+  function closeWebChatSession(session, opts = {}) {
+    if (!session || session._webChatClosed) return;
+    session._webChatClosed = true;
+    const exitCode = typeof opts.exitCode === 'number' ? opts.exitCode : 0;
+    const signal = opts.signal || null;
+
+    session.meta.status = 'exited';
+    session.meta.exitCode = exitCode;
+    session.meta.exitedAt = new Date().toISOString();
+    session.meta.statusDetail = `Closed${signal ? ` (${signal})` : ''}`;
+
+    if (session.ws && session.ws.readyState === 1) {
+      try { session.ws.send(JSON.stringify({ type: 'exit', exitCode, signal })); }
+      catch (_e) { /* fail-soft */ }
+    }
+    try {
+      const exitPayload = JSON.stringify({
+        type: 'panel_exited',
+        sessionId: session.id,
+        exitCode,
+        signal: signal || null,
+        exitedAt: session.meta.exitedAt,
+      });
+      wss.clients.forEach((client) => {
+        if (client.readyState === 1) {
+          try { client.send(exitPayload); }
+          catch (err) { console.error('[ws] panel_exited send failed:', err); }
+        }
+      });
+    } catch (err) {
+      console.error('[ws] panel_exited broadcast failed:', err);
+    }
+
+    // Clear the periodic timer BEFORE the close hook so a tick mid-teardown
+    // can't race onPanelClose (same ordering as the PTY path).
+    if (session._periodicCapture && session._periodicCapture.timer) {
+      try { clearInterval(session._periodicCapture.timer); }
+      catch (_e) { /* fail-soft */ }
+      session._periodicCapture.timer = null;
+    }
+
+    onPanelClose(session).catch((err) => {
+      console.error('[panel-close] async error:', err && err.message ? err.message : err);
+    });
+
+    // Tear down driver listeners + detach the CDP handle (tolerant of whichever
+    // teardown method T1's handle exposes).
+    try {
+      const wc = session._webChat;
+      if (wc) {
+        if (typeof wc.unsubscribe === 'function') { try { wc.unsubscribe(); } catch (_e) { /* fail-soft */ } }
+        const h = wc.handle;
+        if (h && typeof h.close === 'function') { try { h.close(); } catch (_e) { /* fail-soft */ } }
+        else if (h && typeof h.detach === 'function') { try { h.detach(); } catch (_e) { /* fail-soft */ } }
+        else if (wc.driver && wc.driver.cdp && typeof wc.driver.cdp.detach === 'function') {
+          try { wc.driver.cdp.detach(h); } catch (_e) { /* fail-soft */ }
+        }
+      }
+    } catch (_e) { /* fail-soft */ }
+  }
+
+  // Boot a web-chat panel: attach T1's driver fire-and-forget (route stays
+  // sync), wire screencast→WS, completion→capture, disconnect→close. Fail-soft
+  // at every step — a missing/partial/throwing driver degrades the panel to
+  // 'errored', never crashes the server.
+  function setupWebChatSession(session) {
+    session.pty = null;
+    session.pid = null;
+    session.meta.status = 'starting';
+    session.meta.statusDetail = 'Connecting to Grok…';
+
+    const adapter = getAdapterForSessionType('web-chat');
+    const driver = _webChatDriverImpl();
+    if (!driver || !driver.cdp || typeof driver.cdp.attach !== 'function' || !adapter) {
+      session.meta.status = 'errored';
+      session.meta.statusDetail = (!driver || !driver.cdp)
+        ? 'web-chat driver not available'
+        : (!adapter ? 'web-chat adapter not registered' : 'web-chat driver missing cdp.attach');
+      return;
+    }
+
+    // In-flight transcript buffer + two-stage inject assembler state.
+    session._webChatTranscript = { turns: [] };
+    session._webChatInput = { pending: '' };
+    // Best-effort status telemetry parity with PTY panels.
+    session.onStatusChange = (sess, oldStatus, newStatus) => {
+      try { rag.onStatusChanged(sess, oldStatus, newStatus); }
+      catch (_e) { /* telemetry is best-effort */ }
+    };
+
+    maybeRegisterWebChatPeriodicCapture(session);
+
+    const { userDataDir, cdpPort, startUrl } = resolveWebChatProfile(adapter);
+
+    (async () => {
+      let handle;
+      try {
+        handle = await driver.cdp.attach({ userDataDir, port: cdpPort, startUrl });
+      } catch (err) {
+        console.error('[web-chat] attach failed:', err && err.message ? err.message : err);
+        if (session.meta.status !== 'exited') {
+          session.meta.status = 'errored';
+          session.meta.statusDetail = `web-chat attach failed: ${err && err.message ? err.message : 'unknown'}`;
+        }
+        return;
+      }
+      if (session._webChatClosed) {
+        // Panel was deleted during attach — detach immediately, don't wire.
+        try { if (handle && typeof handle.close === 'function') handle.close(); } catch (_e) { /* fail-soft */ }
+        return;
+      }
+      session._webChat = { driver, handle, unsubscribe: null };
+
+      // Screencast → WS canvas frames (T3 paints). Prefer handle-method form
+      // (T1's per-session recommendation); fall back to the standalone form.
+      try {
+        const onFrame = (frame) => {
+          if (session.ws && session.ws.readyState === 1) {
+            try { session.ws.send(JSON.stringify({ type: 'web-chat-frame', frame })); }
+            catch (_e) { /* never disrupt */ }
+          }
+        };
+        if (handle && typeof handle.screencast === 'function') handle.screencast(onFrame);
+        else if (driver.cdp && typeof driver.cdp.screencast === 'function') driver.cdp.screencast(handle, onFrame);
+      } catch (err) {
+        console.error('[web-chat] screencast wiring failed:', err && err.message ? err.message : err);
+      }
+
+      // Completed Grok turn → capture (push model).
+      try {
+        if (driver.grok && typeof driver.grok.onComplete === 'function') {
+          session._webChat.unsubscribe = driver.grok.onComplete(handle, (responseText) => {
+            onWebChatResponse(session, responseText);
+          });
+        }
+      } catch (err) {
+        console.error('[web-chat] onComplete wiring failed:', err && err.message ? err.message : err);
+      }
+
+      // Driver/Chrome disconnect → panel close (web-chat analog of term.onExit).
+      try {
+        if (handle && typeof handle.onDisconnect === 'function') {
+          handle.onDisconnect(() => closeWebChatSession(session, { exitCode: 0, signal: 'disconnect' }));
+        } else if (driver.cdp && typeof driver.cdp.onDisconnect === 'function') {
+          driver.cdp.onDisconnect(handle, () => closeWebChatSession(session, { exitCode: 0, signal: 'disconnect' }));
+        }
+      } catch (_e) { /* optional hook — absence is fine */ }
+
+      applyWebChatStatus(session, { status: 'idle', statusDetail: 'Ready' });
+    })();
+  }
+
   function spawnTerminalSession({ command, cwd, project, label, type, theme, reason, role }) {
     const rawCwd = cwd || config.projects?.[project]?.path || os.homedir();
     const resolvedCwd = path.resolve(rawCwd.replace(/^~/, os.homedir()));
@@ -1340,6 +1693,17 @@ function createServer(config) {
       // already rejected unknown values; here `undefined`/`null` → null.
       role: role || null,
     });
+
+    // Sprint 72 T2 — web-chat panels are driver-backed, not PTY-backed. Boot
+    // T1's CDP render-bridge (fire-and-forget; `pty` stays null) and return the
+    // session synchronously, exactly as the PTY path returns before the first
+    // onData. setupWebChatSession is fully fail-soft, so this branch can never
+    // crash a spawn — and it sits BEFORE `if (pty)` so a web-chat panel never
+    // touches node-pty.
+    if (session.meta.type === 'web-chat') {
+      setupWebChatSession(session);
+      return session;
+    }
 
     if (pty) {
       // Four launch shapes (Sprint 64 T2 carve-out 2.4 extends the original three):
@@ -1888,8 +2252,14 @@ function createServer(config) {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // Kill PTY process
-    if (session.pty) {
+    // Sprint 72 T2 — web-chat panels have no PTY to kill. Fire the idempotent
+    // close path (memory capture + periodic-timer cleanup + exit/panel_exited
+    // broadcast + driver detach) — the web-chat analog of term.onExit — before
+    // removing the session from the manager.
+    if (session.meta.type === 'web-chat') {
+      closeWebChatSession(session, { exitCode: 0, signal: 'SIGTERM' });
+    } else if (session.pty) {
+      // Kill PTY process
       try { session.pty.kill(); } catch (err) { console.error('[pty] kill failed for session', req.params.id + ':', err); }
       // Sprint 63 T1 (Item 1.2) — stamp `_destroyed = true` on the pty wrapper
       // so `safelyResizePty` can short-circuit any resize attempts that arrive
@@ -1912,6 +2282,60 @@ function createServer(config) {
   app.post('/api/sessions/:id/input', (req, res) => {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    // Sprint 72 T2 — web-chat panels have no PTY. Route the inject to the
+    // driver (type into composer + send) BEFORE the `!session.pty` 410 guard
+    // below (which would otherwise reject every web-chat inject as "exited").
+    // Self-contained (own rate-limit + logging + response) so the PTY path
+    // below stays byte-identical (Guardrail 3).
+    if (session.meta.type === 'web-chat') {
+      if (session.meta.status === 'exited' || session._webChatClosed) {
+        const msg = `Panel ${req.params.id} has exited`;
+        return res.status(410).json({
+          ok: false, code: 'panel_exited', error: msg, message: msg,
+          exitCode: session.meta.exitCode ?? null,
+          exitedAt: session.meta.exitedAt || null,
+        });
+      }
+      const { text, source, fromSessionId } = req.body || {};
+      if (typeof text !== 'string') return res.status(400).json({ error: 'Missing text' });
+
+      // Same 10 writes/sec/session rate limit as the PTY path below.
+      const now = Date.now();
+      const bucket = inputRateLimit.get(session.id) || { windowStart: now, count: 0 };
+      if (now - bucket.windowStart >= 1000) { bucket.windowStart = now; bucket.count = 0; }
+      bucket.count += 1;
+      inputRateLimit.set(session.id, bucket);
+      if (bucket.count > 10) return res.status(429).json({ error: 'Rate limit exceeded (10/sec)' });
+
+      const result = routeWebChatInput(session, text);
+      if (!result.ok && result.code !== 'invalid_text') {
+        // Driver not attached yet (or inject threw) — 409 Conflict so the caller
+        // can retry; distinct from 410 (gone) / 400 (bad input).
+        return res.status(409).json({
+          ok: false, code: result.code || 'web_chat_not_ready',
+          error: result.error || 'web-chat panel not ready',
+        });
+      }
+      if (!result.ok) return res.status(400).json({ error: 'Missing text' });
+
+      session.meta.replyCount = (session.meta.replyCount || 0) + 1;
+      const effectiveSource = source || 'user';
+      if (db) {
+        try {
+          const snippet = fromSessionId ? `from:${fromSessionId}` : null;
+          logCommand(db, session.id, text.slice(0, 500), snippet, effectiveSource);
+        } catch (err) {
+          console.error('[db] logCommand (web-chat input) failed:', err);
+        }
+      }
+      return res.json({
+        ok: true,
+        bytes: Buffer.byteLength(text, 'utf8'),
+        replyCount: session.meta.replyCount,
+        buffered: !!result.buffered,
+        submitted: !!result.submitted,
+      });
+    }
     // Sprint 65 T2 (2.3) — inject to a dead panel returns 410 Gone, not the
     // pre-Sprint-65 silent 404. The orchestrator POSTing to an exited panel
     // (Brad's D.5 item 3 — "10 dead codex cli") got a 404 that reads as
@@ -2119,14 +2543,22 @@ function createServer(config) {
   app.get('/api/sessions/:id/buffer', (req, res) => {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (session.meta.status === 'exited' || !session.pty) {
+    // Sprint 72 T2 — web-chat panels have no PTY by design, so only the
+    // exited check gates them (the `!session.pty` arm is PTY-only). This keeps
+    // the orchestrator's inject-verify poll (status:'thinking' after a submit)
+    // working on a web-chat panel exactly as on a PTY agent panel (seam 4/5).
+    const isWebChat = session.meta.type === 'web-chat';
+    if (session.meta.status === 'exited' || (!isWebChat && !session.pty)) {
       return res.status(404).json({ error: 'Session is exited' });
     }
+    const inFlight = isWebChat
+      ? ((session._webChatInput && session._webChatInput.pending) || '')
+      : (session._inputBuffer || '');
     res.json({
       ok: true,
-      pid: session.pty.pid,
-      inputBufferLength: (session._inputBuffer || '').length,
-      inputBufferPreview: (session._inputBuffer || '').slice(-200),
+      pid: session.pty ? session.pty.pid : (session.pid || null),
+      inputBufferLength: inFlight.length,
+      inputBufferPreview: inFlight.slice(-200),
       lastActivity: session.meta.lastActivity,
       status: session.meta.status,
       statusDetail: session.meta.statusDetail || '',
@@ -2816,9 +3248,34 @@ function createServer(config) {
 
         switch (parsed.type) {
           case 'input':
-            if (session.pty && !session.pty._destroyed) {
+            // Sprint 72 T2 — web-chat composer text from the client input box
+            // goes to the driver's inject (type+send), NOT pty.write. Same
+            // two-stage assembler as the POST /input route, so a trailing-`\r`
+            // submits. PTY panels are untouched (the else-branch is verbatim).
+            if (session.meta.type === 'web-chat') {
+              routeWebChatInput(session, parsed.data);
+            } else if (session.pty && !session.pty._destroyed) {
               session.pty.write(parsed.data);
               session.trackInput(parsed.data);
+            }
+            break;
+
+          case 'web-chat-input':
+            // Sprint 72 T2 — raw CDP input-event forwarding for DIRECT human
+            // interaction with the live Grok tab (mouse/keyboard on the
+            // screencast canvas). T3's canvas emits
+            // {type:'web-chat-input', event:<CDP Input.* payload>}; routed to
+            // the driver's sendInput. Never reaches a PTY.
+            if (session.meta.type === 'web-chat' && session._webChat && session._webChat.handle) {
+              const wc = session._webChat;
+              try {
+                if (typeof wc.handle.sendInput === 'function') wc.handle.sendInput(parsed.event);
+                else if (wc.driver && wc.driver.cdp && typeof wc.driver.cdp.sendInput === 'function') {
+                  wc.driver.cdp.sendInput(wc.handle, parsed.event);
+                }
+              } catch (err) {
+                console.error('[web-chat] sendInput failed:', err && err.message ? err.message : err);
+              }
             }
             break;
 
@@ -3191,4 +3648,8 @@ module.exports = {
   // Sprint 70 T1 — stdout-capture spawn-wrap resolver (best-effort stdbuf).
   _resolveStdoutCaptureSpawn,
   _resetStdbufToolCacheForTesting,
+  // Sprint 72 T2 — web-chat driver DI seam. Tests inject a fake driver so the
+  // web-chat seams (spawn/inject/output/status/close/capture) are exercised
+  // with no real Chrome / CDP / network.
+  _setWebChatDriverImplForTesting,
 };

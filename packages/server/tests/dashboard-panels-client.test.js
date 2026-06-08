@@ -54,6 +54,8 @@ const PURE_HELPERS = [
   'filterValueRevealingPanel', 'clampFontSize',
   // Sprint 66 T1 (Task 1.3) — the orchestrator-toggle pure helpers.
   'nextRoleForToggle', 'orchToggleLabel',
+  // Sprint 72 T3 — the web-chat composer submit-frame builder.
+  'webChatSubmitFrames',
 ];
 
 // Each helper must have exactly one definition (no accidental duplication).
@@ -306,9 +308,50 @@ test('app.js looks up the same container ids index.html declares', () => {
   assert.ok(appSource.includes("getElementById('project-chips')"));
 });
 
-test('both ws.onmessage switches route the panel_exited frame', () => {
+test('all ws.onmessage switches route the panel_exited frame', () => {
   const matches = appSource.match(/case 'panel_exited':/g) || [];
-  assert.equal(matches.length, 2, 'panel_exited handled in the main + reconnect switches');
+  // Sprint 72 T3: main + reconnect (xterm) + handleWebChatWsMessage (web-chat
+  // panels share dead-tile removal). 2 → 3 when the web-chat WS router landed.
+  assert.equal(matches.length, 3, 'panel_exited handled in the main + reconnect + web-chat switches');
+});
+
+// --- Sprint 72 T3: web-chat composer submit drives T2's two-stage assembler -
+
+test('webChatSubmitFrames emits the bracketed-paste body then a lone CR', () => {
+  const webChatSubmitFrames = loadHelper('webChatSubmitFrames');
+  const frames = webChatSubmitFrames('hello grok');
+  assert.equal(frames.length, 2);
+  assert.deepEqual(frames[0], { type: 'input', data: '\x1b[200~hello grok\x1b[201~' });
+  assert.deepEqual(frames[1], { type: 'input', data: '\r' });
+});
+
+test('webChatSubmitFrames drives a T2-style assembler to inject the FULL multi-line prompt once', () => {
+  const webChatSubmitFrames = loadHelper('webChatSubmitFrames');
+  // Mirror T2's routeWebChatInput (server index.js:1480-1491): strip
+  // bracketed-paste markers, submit on a TRAILING CR/LF, buffer otherwise. This
+  // oracle proves the client payload shape actually FIRES grok.inject — the
+  // exact gap T4 named (a single raw {type:'input'} buffers forever).
+  let pending = '';
+  const injected = [];
+  const feed = (data) => {
+    const stripped = data.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+    const m = stripped.match(/^([\s\S]*?)[\r\n]+$/);
+    const content = m ? m[1] : stripped;
+    if (content) pending += content;
+    if (m) { injected.push(pending); pending = ''; }
+  };
+  for (const f of webChatSubmitFrames('line one\nline two')) feed(f.data);
+  assert.deepEqual(injected, ['line one\nline two'], 'one inject with the full multi-line prompt');
+  assert.equal(pending, '', 'nothing left buffered server-side');
+});
+
+test('webChatSubmitFrames: stage-1 body never ends in a newline (no early submit)', () => {
+  const webChatSubmitFrames = loadHelper('webChatSubmitFrames');
+  const body = webChatSubmitFrames('multi\nline\nprompt')[0].data;
+  const stripped = body.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+  // After the server strips the close marker, the buffered text must NOT end in
+  // a CR/LF — otherwise the assembler would submit on stage 1, before the CR.
+  assert.ok(!/[\r\n]$/.test(stripped), 'stage-1 buffered text must not end with a newline');
 });
 
 test('api() branches on res.ok and annotates non-2xx bodies', () => {

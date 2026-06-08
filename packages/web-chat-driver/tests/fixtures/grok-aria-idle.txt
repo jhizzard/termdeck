@@ -1,0 +1,16 @@
+- banner:
+  - link "Grok"
+  - button "New chat"
+- main:
+  - log:
+    - article:
+      - text "What is the capital of France?"
+    - article:
+      - text "The capital of France is Paris."
+      - button "Copy"
+      - button "Regenerate"
+      - button "Good response"
+      - button "Bad response"
+  - form:
+    - textbox "Ask Grok anything"
+    - button "Send"

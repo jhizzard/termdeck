@@ -1,0 +1,12 @@
+- banner:
+  - link "Grok"
+  - button "New chat"
+- main:
+  - log:
+    - article:
+      - text "Write me a long essay about the sea."
+    - article:
+      - text "The sea has captivated humanity since"
+  - form:
+    - textbox "Ask Grok anything"
+    - button "Stop"

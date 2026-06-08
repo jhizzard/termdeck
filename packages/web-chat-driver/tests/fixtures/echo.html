@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>web-chat-driver echo fixture</title>
+  <style>
+    html, body { margin: 0; }
+    body { font: 16px ui-monospace, Menlo, monospace; padding: 24px; color: #111; }
+    h1 { font-size: 18px; margin: 0 0 14px; }
+    #in { width: 420px; font: inherit; padding: 8px; box-sizing: border-box; }
+    #out { margin-top: 14px; padding: 10px; border: 1px solid #bbb; min-height: 22px; white-space: pre-wrap; }
+    #status { margin-top: 10px; color: #555; font-size: 13px; }
+    /* A full-bleed pulsing strip so screencast frames visibly change frame-to-frame. */
+    #pulse { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; }
+  </style>
+</head>
+<body>
+  <h1>echo fixture — proves the CDP round-trip without any external site</h1>
+  <input id="in" autofocus placeholder="type here" />
+  <div id="out" data-echo=""></div>
+  <div id="status">clicks-on-input: <span id="clicks" data-count="0">0</span> · tick: <span id="tick">0</span></div>
+  <div id="pulse"></div>
+  <script>
+    (function () {
+      var inp = document.getElementById('in');
+      var out = document.getElementById('out');
+      var clicks = document.getElementById('clicks');
+      var pulse = document.getElementById('pulse');
+      var tickEl = document.getElementById('tick');
+
+      // Echo typed input into a readable attribute the test asserts against.
+      inp.addEventListener('input', function () {
+        out.textContent = inp.value;
+        out.setAttribute('data-echo', inp.value);
+      });
+
+      // Count real mousedown events that land on the input (proves mouse forwarding hit-tests).
+      var n = 0;
+      inp.addEventListener('mousedown', function () {
+        n += 1;
+        clicks.textContent = String(n);
+        clicks.setAttribute('data-count', String(n));
+      });
+
+      // Continuously mutate pixels so the screencast produces a stream of DISTINCT frames.
+      var t = 0;
+      setInterval(function () {
+        t += 1;
+        document.title = 'echo ' + t;
+        tickEl.textContent = String(t);
+        var hue = (t * 23) % 360;
+        pulse.style.background = 'hsl(' + hue + ', 80%, 55%)';
+        document.body.style.background = t % 2 ? '#ffffff' : '#f4f4f4';
+      }, 90);
+    })();
+  </script>
+</body>
+</html>

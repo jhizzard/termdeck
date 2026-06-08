@@ -172,8 +172,13 @@ async function postSession(port, body) {
 // Adapter declaration fences — cheapest first. These don't need the server.
 // ─────────────────────────────────────────────────────────────────────────
 
-test('every adapter declares spawn.shellWrap === false (carve-out 2.4 contract)', () => {
+test('every spawn-declaring (PTY) adapter declares spawn.shellWrap === false (carve-out 2.4 contract)', () => {
   for (const adapter of Object.values(AGENT_ADAPTERS)) {
+    // Sprint 72 T2: web-chat-grok is a non-PTY adapter (driver-backed via the
+    // CDP render-bridge, no binary) — it carries NO `spawn` block, so the
+    // direct-spawn-vs-shell-wrap dispatch contract doesn't apply to it. Only
+    // adapters that actually spawn a binary must opt into direct-spawn.
+    if (!adapter.spawn) continue;
     assert.equal(
       adapter.spawn.shellWrap,
       false,

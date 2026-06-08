@@ -472,6 +472,14 @@
       // /api/sessions/:id/input, and reply-form targets are unaffected.
       setupPanelDragDrop(panel);
 
+      // Sprint 72 T3 — web-chat (Grok) panels render a live screencast canvas +
+      // an inject input box instead of an xterm. Branch AFTER the shared chrome
+      // (header/meta/drawer) is built, then return; the entire xterm path below
+      // stays byte-identical for every other panel type.
+      if (meta.type === 'web-chat') {
+        return mountWebChatPanel(id, sessionData, panel);
+      }
+
       // Create xterm.js instance
       const terminal = new Terminal({
         fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace",
@@ -651,6 +659,297 @@
       resizeObserver.observe(container);
 
       return { terminal, ws, fitAddon };
+    }
+
+    // ===== Sprint 72 T3: web-chat (Grok) canvas panel =====
+    // A web-chat panel mirrors a real, logged-in headful grok.com tab: T1's CDP
+    // screencast frames paint to a <canvas>; an input box injects a prompt into
+    // the live composer (T2 routes {type:'input'} → grok.inject); and canvas
+    // mouse/wheel events forward back to the tab ({type:'web-chat-input'} →
+    // handle.sendInput) so the human can drive it in-deck. The xterm render path
+    // (createTerminalPanel, above) is untouched for every non-web-chat panel.
+
+    function ensureWebChatStyles() {
+      if (document.getElementById('wc-styles')) return;
+      const style = document.createElement('style');
+      style.id = 'wc-styles';
+      style.textContent = [
+        '.panel-terminal.web-chat-terminal{display:flex;flex-direction:column;height:100%;min-height:0;background:#000;}',
+        '.web-chat-stage{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#000;}',
+        '.web-chat-canvas{display:block;max-width:100%;max-height:100%;outline:none;}',
+        '.web-chat-input-bar{display:flex;gap:6px;padding:6px;border-top:1px solid #1f2335;background:#16161e;}',
+        '.web-chat-input{flex:1;min-width:0;padding:6px 8px;border:1px solid #1f2335;border-radius:6px;background:#1a1b26;color:#c0caf5;font:13px/1.3 inherit;}',
+        '.web-chat-input:focus{outline:none;border-color:#7aa2f7;}',
+        '.web-chat-send{padding:6px 14px;border:0;border-radius:6px;background:#7aa2f7;color:#0b0b14;font-weight:600;cursor:pointer;}',
+        '.web-chat-send:hover{background:#8fb3ff;}',
+      ].join('');
+      document.head.appendChild(style);
+    }
+
+    // Build the two WS frames that drive T2's server-side two-stage assembler
+    // (routeWebChatInput): (1) the prompt wrapped in bracketed-paste markers —
+    // buffered server-side after the markers are stripped — then (2) a lone CR,
+    // the submit signal that fires grok.inject on the accumulated text. The
+    // wrapper is what makes a MULTI-LINE prompt safe: the server submits on a
+    // TRAILING CR, so a naive `text + '\r'` would submit early on an embedded
+    // newline. Same shape as the 4+1 orchestrator inject. Pure (vm-extract tested).
+    function webChatSubmitFrames(text) {
+      return [
+        { type: 'input', data: '\x1b[200~' + String(text) + '\x1b[201~' },
+        { type: 'input', data: '\r' },
+      ];
+    }
+
+    function mountWebChatPanel(id, sessionData, panel) {
+      const meta = sessionData.meta;
+      ensureWebChatStyles();
+
+      const container = document.getElementById(`term-${id}`);
+      container.classList.add('web-chat-terminal');
+      container.innerHTML =
+        `<div class="web-chat-stage" id="wc-stage-${id}">` +
+          `<canvas class="web-chat-canvas" id="wc-canvas-${id}" tabindex="0"></canvas>` +
+        `</div>` +
+        `<form class="web-chat-input-bar" id="wc-form-${id}" autocomplete="off">` +
+          `<input type="text" class="web-chat-input" id="wc-input-${id}" placeholder="Message Grok…  (Enter sends into the live session)">` +
+          `<button type="submit" class="web-chat-send" id="wc-send-${id}">send</button>` +
+        `</form>`;
+
+      const stage = document.getElementById(`wc-stage-${id}`);
+      const canvas = document.getElementById(`wc-canvas-${id}`);
+      const ctx = canvas.getContext('2d');
+      const inputEl = document.getElementById(`wc-input-${id}`);
+      const formEl = document.getElementById(`wc-form-${id}`);
+
+      let lastImg = null, lastDevW = 0, lastDevH = 0, map = null;
+
+      // Paint one screencast frame. T1's frame-channel shape exposes `dataUrl`
+      // (drops straight into Image.src) + deviceWidth/deviceHeight (the page
+      // viewport in CSS px, needed to map clicks back to page coordinates).
+      function paintFrame(frame) {
+        if (!frame) return;
+        const url = frame.dataUrl || (frame.data ? `data:image/${frame.format || 'jpeg'};base64,${frame.data}` : null);
+        if (!url) return;
+        const img = new Image();
+        img.onload = () => {
+          lastImg = img;
+          lastDevW = frame.deviceWidth || img.naturalWidth;
+          lastDevH = frame.deviceHeight || img.naturalHeight;
+          drawLastFrame();
+        };
+        img.src = url;
+      }
+
+      // Letterbox the last frame into the canvas, tracking the transform so
+      // pointer events can be mapped back to page coordinates.
+      function drawLastFrame() {
+        if (!lastImg) return;
+        const rect = stage.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const cw = Math.max(1, Math.round(rect.width)), ch = Math.max(1, Math.round(rect.height));
+        if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+          canvas.width = Math.round(cw * dpr);
+          canvas.height = Math.round(ch * dpr);
+          canvas.style.width = cw + 'px';
+          canvas.style.height = ch + 'px';
+        }
+        const iw = lastImg.naturalWidth, ih = lastImg.naturalHeight;
+        const scale = Math.min(canvas.width / iw, canvas.height / ih);
+        const dw = iw * scale, dh = ih * scale;
+        const dx = (canvas.width - dw) / 2, dy = (canvas.height - dh) / 2;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(lastImg, dx, dy, dw, dh);
+        map = { dx, dy, scale, iw, ih, dpr };
+      }
+
+      // canvas client px → page CSS px (or null if the click hit the letterbox).
+      function mapToPage(clientX, clientY) {
+        if (!map || !lastDevW || !lastDevH) return null;
+        const rect = canvas.getBoundingClientRect();
+        const px = (clientX - rect.left) * map.dpr, py = (clientY - rect.top) * map.dpr;
+        const ix = (px - map.dx) / map.scale, iy = (py - map.dy) / map.scale;
+        if (ix < 0 || iy < 0 || ix > map.iw || iy > map.ih) return null;
+        return { x: Math.round(ix * (lastDevW / map.iw)), y: Math.round(iy * (lastDevH / map.ih)) };
+      }
+
+      function liveWs() { const e = state.sessions.get(id); return e && e.ws; }
+      // Submit a composer prompt via T2's two-stage assembler (bracketed-paste
+      // body buffered, then a lone CR fires grok.inject). NOT a single raw
+      // {type:'input',data:text} — that has no submit sentinel and buffers
+      // server-side forever (T4 FINDING 13:30).
+      function sendComposerSubmit(text) {
+        const ws = liveWs();
+        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        for (const frame of webChatSubmitFrames(text)) ws.send(JSON.stringify(frame));
+        return true;
+      }
+      function sendCdpEvent(event) {
+        const ws = liveWs();
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'web-chat-input', event }));
+      }
+
+      // Input box → submit the prompt into the live composer via the two-stage
+      // assembler. Clearing the field is gated on the WS send so a prompt is
+      // never silently lost when the socket is down.
+      formEl.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = inputEl.value;
+        if (!text.trim()) return;
+        if (sendComposerSubmit(text)) inputEl.value = '';
+      });
+      inputEl.addEventListener('focus', () => { panel.classList.add('active-input'); state.focusedId = id; });
+      inputEl.addEventListener('blur', () => { panel.classList.remove('active-input'); });
+
+      // Canvas → forward clicks + wheel to the live tab so the human can drive
+      // it in-deck. (Text typing stays in the input box for v1; full keyboard
+      // forwarding is a future enhancement to avoid hijacking deck shortcuts.)
+      canvas.addEventListener('mousedown', (e) => {
+        const pt = mapToPage(e.clientX, e.clientY); if (!pt) return;
+        canvas.focus(); state.focusedId = id;
+        sendCdpEvent({ kind: 'mouse', type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+      });
+      canvas.addEventListener('mouseup', (e) => {
+        const pt = mapToPage(e.clientX, e.clientY); if (!pt) return;
+        sendCdpEvent({ kind: 'mouse', type: 'mouseReleased', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+      });
+      canvas.addEventListener('wheel', (e) => {
+        const pt = mapToPage(e.clientX, e.clientY); if (!pt) return;
+        e.preventDefault();
+        sendCdpEvent({ kind: 'mouse', type: 'mouseWheel', x: pt.x, y: pt.y, deltaX: e.deltaX, deltaY: e.deltaY });
+      }, { passive: false });
+
+      const ws = new WebSocket(`${WS_BASE}?session=${id}`);
+      ws.onmessage = (event) => handleWebChatWsMessage(id, event, paintFrame);
+      ws.onclose = (event) => {
+        const e2 = state.sessions.get(id); if (!e2) return;
+        if (event.code === 4000 || event.code === 4001) return;
+        const p = document.getElementById(`panel-${id}`);
+        if (p && p.classList.contains('exited')) return;
+        const delay = Math.min(1000 * Math.pow(2, (e2._reconnectAttempts || 0)), 10000);
+        e2._reconnectAttempts = (e2._reconnectAttempts || 0) + 1;
+        if (e2._reconnectAttempts <= 5) setTimeout(() => reconnectWebChat(id), delay);
+        else updatePanelMeta(id, { status: 'errored', statusDetail: 'Connection lost' });
+      };
+
+      // Re-letterbox on panel resize (fitAll() also calls our fitAddon.fit()).
+      const resizeObserver = new ResizeObserver(() => { try { drawLastFrame(); } catch (err) { /* ignore */ } });
+      resizeObserver.observe(stage);
+
+      state.sessions.set(id, {
+        session: sessionData,
+        ws,
+        el: panel,
+        isWebChat: true,
+        canvas, ctx, inputEl,
+        paintFrame, drawLastFrame,
+        // No xterm. A no-op-ish fitAddon keeps fitAll()/drawer-resize loops safe
+        // AND re-letterboxes the canvas on a global re-fit.
+        fitAddon: { fit() { drawLastFrame(); } },
+        activeTab: 'overview',
+        drawerOpen: false,
+        commandHistory: [],
+        commandsLoaded: false,
+        memoryHits: [],
+        statusLog: [],
+        webChatLog: [],
+        lastKnownStatus: meta.status,
+      });
+
+      appendStatusLog(id, meta.status, meta.statusDetail || '');
+      setupDrawerListeners(id);
+      renderOverviewTab(id);
+      renderSwitcher();
+      const replyBtn = document.getElementById(`reply-btn-${id}`);
+      if (replyBtn) replyBtn.disabled = state.sessions.size < 2;
+      refreshAllReplyFormsFor(id);
+      refreshPanelIndices();
+      revealNewPanelIfFiltered(meta);
+      refreshDashboardChrome();
+      requestAnimationFrame(() => drawLastFrame());
+
+      return { ws, canvas };
+    }
+
+    // Shared WS dispatch for web-chat panels (used by both initial mount and
+    // reconnect). Mirrors the xterm handler's non-output cases exactly (same
+    // downstream fns) but routes screencast frames → canvas and grok text → an
+    // in-memory transcript instead of writing to an xterm.
+    function handleWebChatWsMessage(id, event, paintFrame) {
+      let msg;
+      try { msg = JSON.parse(event.data); }
+      catch (err) { console.error('[client] web-chat ws parse failed:', err); return; }
+      const entry = state.sessions.get(id);
+      switch (msg.type) {
+        case 'web-chat-frame':
+          if (paintFrame) paintFrame(msg.frame);
+          else if (entry && entry.paintFrame) entry.paintFrame(msg.frame);
+          break;
+        case 'output':
+          // Grok response text. The canvas is the visual; keep a transcript for
+          // potential future drawer rendering. Never write to a (nonexistent) xterm.
+          if (entry) { (entry.webChatLog = entry.webChatLog || []).push(msg.data); }
+          break;
+        case 'meta':
+          updatePanelMeta(id, msg.session.meta);
+          break;
+        case 'proactive_memory':
+          showProactiveToast(id, msg.hit, msg.flashback_event_id);
+          break;
+        case 'exit': {
+          updatePanelMeta(id, { status: 'exited', statusDetail: `Exited (${msg.exitCode})` });
+          const p = document.getElementById(`panel-${id}`);
+          if (p) p.classList.add('exited');
+          refreshAllReplyFormsFor(id);
+          refreshPanelIndices();
+          renderSwitcher();
+          break;
+        }
+        case 'panel_exited':
+          handlePanelExited(msg.sessionId, msg.exitCode);
+          break;
+        case 'status_broadcast':
+          updateGlobalStats(msg.sessions);
+          break;
+        case 'config_changed':
+          if (msg.config) {
+            state.config = { ...state.config, ...msg.config };
+            if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+            if (typeof updateRagIndicator === 'function') updateRagIndicator();
+          }
+          break;
+        case 'projects_changed':
+          if (msg.projects && state.config) {
+            state.config.projects = msg.projects;
+            if (typeof rebuildProjectDropdown === 'function') rebuildProjectDropdown();
+          }
+          break;
+      }
+    }
+
+    function reconnectWebChat(id) {
+      const entry = state.sessions.get(id);
+      if (!entry) return;
+      const ws = new WebSocket(`${WS_BASE}?session=${id}`);
+      ws.onmessage = (event) => handleWebChatWsMessage(id, event, entry.paintFrame);
+      ws.onopen = () => {
+        entry._reconnectAttempts = 0;
+        entry.ws = ws;
+        updatePanelMeta(id, { status: 'active', statusDetail: 'Reconnected' });
+      };
+      ws.onclose = (event) => {
+        const p = document.getElementById(`panel-${id}`);
+        if (p && p.classList.contains('exited')) return;
+        if (event.code === 4001) {
+          updatePanelMeta(id, { status: 'exited', statusDetail: 'Session ended' });
+          if (p) p.classList.add('exited');
+          return;
+        }
+        const delay = Math.min(1000 * Math.pow(2, (entry._reconnectAttempts || 0)), 10000);
+        entry._reconnectAttempts = (entry._reconnectAttempts || 0) + 1;
+        if (entry._reconnectAttempts <= 5) setTimeout(() => reconnectWebChat(id), delay);
+        else updatePanelMeta(id, { status: 'errored', statusDetail: 'Connection lost' });
+      };
     }
 
     // ===== Sprint 65: project-filter chips + ORCH-panel pin + tile lifecycle =====
@@ -1738,8 +2037,10 @@
         entry.el.classList.add('primary');
       }
 
-      // Focus the xterm textarea (without stealing pointer)
-      try { entry.terminal.focus(); } catch (err) { /* ignore */ }
+      // Focus the xterm textarea (without stealing pointer); web-chat panels
+      // focus their inject input instead.
+      if (entry.terminal) { try { entry.terminal.focus(); } catch (err) { /* ignore */ } }
+      else if (entry.inputEl) { try { entry.inputEl.focus(); } catch (err) { /* ignore */ } }
       state.focusedId = id;
 
       // Flash the panel border briefly
@@ -1833,7 +2134,7 @@
         setTimeout(() => {
           try { entry.fitAddon.fit(); } catch (err) { /* ignore */ }
           const ws = entry.ws;
-          if (ws && ws.readyState === WebSocket.OPEN) {
+          if (ws && ws.readyState === WebSocket.OPEN && entry.terminal) {  // PTY resize only; web-chat has no cols/rows
             ws.send(JSON.stringify({
               type: 'resize',
               cols: entry.terminal.cols,
@@ -2054,6 +2355,8 @@
       const entry = state.sessions.get(id);
       if (entry && entry.terminal) {
         try { entry.terminal.focus(); } catch (err) { /* ignore */ }
+      } else if (entry && entry.inputEl) {
+        try { entry.inputEl.focus(); } catch (err) { /* ignore */ }  // web-chat inject box
       }
 
       // Re-fit all visible terminals
@@ -2164,9 +2467,9 @@
 
       const entry = state.sessions.get(id);
       if (entry) {
-        entry.terminal.dispose();
-        entry.ws.close();
-        entry.el.remove();
+        if (entry.terminal) entry.terminal.dispose();  // web-chat panels have no xterm
+        if (entry.ws) entry.ws.close();
+        if (entry.el) entry.el.remove();
         state.sessions.delete(id);
       }
 
@@ -2183,7 +2486,7 @@
       if (!entry) return;
 
       const themeObj = getThemeObject(themeId);
-      entry.terminal.options.theme = themeObj;
+      if (entry.terminal) entry.terminal.options.theme = themeObj;  // no xterm on web-chat panels
 
       // Persist to server (writes to sessions.theme_override server-side)
       api('PATCH', `/api/sessions/${id}`, { theme: themeId });
@@ -2199,7 +2502,7 @@
       const updated = await api('PATCH', '/api/sessions/' + id, { theme: null });
       const resolved = updated && updated.meta && updated.meta.theme;
       if (!resolved) return;
-      entry.terminal.options.theme = getThemeObject(resolved);
+      if (entry.terminal) entry.terminal.options.theme = getThemeObject(resolved);
       const sel = document.getElementById('theme-' + id);
       if (sel && sel.value !== resolved) sel.value = resolved;
     }
@@ -2267,9 +2570,14 @@
       const entry = state.sessions.get(id);
       if (!entry) return;
 
+      // Sprint 72 T3 — web-chat panels have no xterm; route mnestra output to a
+      // no-op writer so askAI still caches Memory-tab hits without crashing on a
+      // missing terminal. (xterm panels render inline exactly as before.)
+      const tw = (s) => { if (entry.terminal) { try { entry.terminal.write(s); } catch (e) { /* ignore */ } } };
+
       // Early return if AI queries are not available
       if (!state.config.aiQueryAvailable) {
-        entry.terminal.write(
+        tw(
           '\r\n\x1b[33m[mnestra] AI queries are not available.\x1b[0m\r\n' +
           '\x1b[33mTo enable, add the following to ~/.termdeck/config.yaml:\x1b[0m\r\n' +
           '\x1b[90m  rag:\r\n' +
@@ -2292,7 +2600,7 @@
         });
 
         if (result.error) {
-          entry.terminal.write(`\r\n\x1b[33m[mnestra] ${result.error}\x1b[0m\r\n`);
+          tw(`\r\n\x1b[33m[mnestra] ${result.error}\x1b[0m\r\n`);
         } else if (result.memories && result.memories.length > 0) {
           // Cache hits for the Memory tab
           if (!entry.memoryHits) entry.memoryHits = [];
@@ -2307,7 +2615,7 @@
           if (entry.drawerOpen && entry.activeTab === 'memory') {
             renderMemoryTab(id);
           }
-          const cols = entry.terminal.cols || 80;
+          const cols = (entry.terminal && entry.terminal.cols) || 80;
           const wrap = (text, indent) => {
             const maxW = cols - indent - 2;
             const words = text.split(/\s+/);
@@ -2325,23 +2633,23 @@
             return lines;
           };
 
-          entry.terminal.write(`\r\n\x1b[36m━━━ Mnestra: ${result.total} memories found ━━━\x1b[0m\r\n`);
+          tw(`\r\n\x1b[36m━━━ Mnestra: ${result.total} memories found ━━━\x1b[0m\r\n`);
           for (const m of result.memories) {
             const score = m.similarity ? `${(m.similarity * 100).toFixed(0)}%` : '';
             const proj = m.project ? m.project : '';
-            entry.terminal.write(`\r\n\x1b[35m● ${m.source_type}\x1b[0m \x1b[90m${proj} ${score}\x1b[0m\r\n`);
+            tw(`\r\n\x1b[35m● ${m.source_type}\x1b[0m \x1b[90m${proj} ${score}\x1b[0m\r\n`);
             const contentLines = wrap(m.content || '(empty)', 2);
             for (const cl of contentLines) {
-              entry.terminal.write(`${cl}\r\n`);
+              tw(`${cl}\r\n`);
             }
           }
-          entry.terminal.write(`\r\n\x1b[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\r\n\r\n`);
+          tw(`\r\n\x1b[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\r\n\r\n`);
         } else {
-          entry.terminal.write(`\r\n\x1b[33m[mnestra] No relevant memories found.\x1b[0m\r\n`);
+          tw(`\r\n\x1b[33m[mnestra] No relevant memories found.\x1b[0m\r\n`);
         }
       } catch (err) {
         console.error('[client] AI query failed:', err);
-        entry.terminal.write(`\r\n\x1b[31m[mnestra] Query failed: ${err.message}\x1b[0m\r\n`);
+        tw(`\r\n\x1b[31m[mnestra] Query failed: ${err.message}\x1b[0m\r\n`);
       }
 
       inputEl.value = '';
@@ -3447,6 +3755,7 @@
         'codex': 'Codex CLI',
         'gemini': 'Gemini CLI',
         'grok': 'Grok CLI',
+        'web-chat': 'Grok (web)',
         'python-server': 'Python Server',
         'one-shot': 'One-shot'
       };
@@ -3542,7 +3851,7 @@
         if (themeSelect && themeSelect.value !== meta.theme) {
           themeSelect.value = meta.theme;
           const entry = state.sessions.get(id);
-          if (entry) {
+          if (entry && entry.terminal) {  // web-chat panels have no xterm to theme
             entry.terminal.options.theme = getThemeObject(meta.theme);
           }
         }
@@ -5017,7 +5326,8 @@
             : (curIdx - 1 + ids.length) % ids.length;
           const entry = state.sessions.get(ids[next]);
           if (entry) {
-            entry.terminal.focus();
+            if (entry.terminal) entry.terminal.focus();
+            else if (entry.inputEl) entry.inputEl.focus();  // web-chat: focus the inject box
             state.focusedId = ids[next];
           }
         }
