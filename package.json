@@ -25,13 +25,14 @@
     "packages/server",
     "packages/client",
     "packages/cli",
-    "packages/stack-installer"
+    "packages/stack-installer",
+    "packages/mcp-bridge"
   ],
   "scripts": {
     "dev": "node packages/server/src/index.js",
     "server": "node packages/server/src/index.js",
     "start": "NODE_ENV=production node packages/cli/src/index.js",
-    "test": "node --test packages/server/tests/**/*.test.js packages/cli/tests/**/*.test.js packages/stack-installer/tests/**/*.test.js",
+    "test": "WEB_CHAT_DRIVER_NO_BROWSER=1 node --test packages/server/tests/**/*.test.js packages/cli/tests/**/*.test.js packages/stack-installer/tests/**/*.test.js packages/mcp-bridge/test/*.test.js packages/web-chat-driver/tests/*.test.js",
     "install:app": "bash install.sh",
     "sync-rumen-functions": "bash scripts/sync-rumen-functions.sh",
     "sync:agents": "node scripts/sync-agent-instructions.js"

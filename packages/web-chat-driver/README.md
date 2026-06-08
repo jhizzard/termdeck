@@ -61,7 +61,7 @@ await handle.close();   // launch mode: awaits + kills the Chrome we spawned. co
 | `port` | `9333` | localhost CDP debug port. T2 allocates a distinct port per panel. |
 | `mode` | `'auto'` | `'auto'` connect-if-up-else-spawn · `'connect'` require a running Chrome (co-drive the human's) · `'launch'` always spawn ours. |
 | `startUrl` | `'about:blank'` | initial URL (e.g. `https://grok.com`). |
-| `headful` | `true` | **posture: keep true.** `false` adds `--headless=new` (CI-only smoke; never for grok.com). |
+| `headful` | `true` | **posture: hard-locked to `true`.** An explicit `false` is **rejected** — `transport.js` throws (`headless is not permitted`); the driver never emits `--headless`. For a display-less / CI box, skip the browser tests with `WEB_CHAT_DRIVER_NO_BROWSER=1` instead of going headless. |
 | `detached` | `false` | spawn Chrome detached so it survives a server restart (then reattach via `mode:'connect'`). |
 | `chromePath` | auto-detected | real Chrome binary. Also via `TERMDECK_CHROME_PATH`. |
 | `args` | `[]` | extra Chrome flags. |
