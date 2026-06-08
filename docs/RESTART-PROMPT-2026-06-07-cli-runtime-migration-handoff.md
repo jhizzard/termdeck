@@ -91,3 +91,25 @@ T4 Codex audit. (Open Q from Brad: also extend `memory_hybrid_search` RETURNS TA
 ```
 cd /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck && claude --resume 8b808d39-8e80-463c-a2cd-59883a9e1018
 ```
+
+---
+
+## 4-CLI 360 verification — EXECUTED 2026-06-08 (live, API-spawned panels)
+
+The "post-sprint GATE" above was run. A fresh orchestrator brought up the TermDeck server (`secrets.env` sourced) and spawned Claude + Codex + Antigravity(`agy`) + Grok-Build via `POST /api/sessions`, then ran a per-CLI MCP-read smoke + a 4-provider demo.
+
+**Result — all 4 run as panels at max-quality modes; MCP-read LIVE for 3 of 4:**
+- **Claude** — `max/effort`; `memory_recall` → 40 results live. ✅
+- **Codex** — `gpt-5.5 xhigh fast`; `memory_recall` → 40 results live. ✅
+- **Grok-Build** — high-effort; discovered + called `mnestra__memory_recall` → 38 results live. ✅ (grok turns are SLOW — ~7 min at high effort.)
+- **Antigravity (`agy`)** — signed in (Gemini 3.5 Flash), responds well; **MCP-read DEFERRED** (finding 1). Capture works (S70 byte-floor exempt).
+
+**4-provider demo** (same task → 4 independent risk takes, 3 memory-grounded): Claude→silent-degradation/false-green in the auditor seat; Codex→runtime-drift (auth lifecycles / fs expectations / prompt semantics) needs lane health probes; agy→filesystem race conditions / no coordinated locking; Grok→[recalled 38, slow]. The diversity is the out-of-distribution value.
+
+**Capture:** test-proven (S70/62/50 fence tests in the green `npm test` glob); all 4 fired `session_ended` on close. Live recall of just-captured summaries didn't surface in the real-time window (async summarize+embed lag + summary abstraction) — belt-and-suspenders over the green tests.
+
+### Findings
+1. **agy MCP-read is language-server-mediated, NOT file-config.** Antigravity's MCP is driven by its embedded exa language-server (`RefreshMcpServers`/`GetMcpServerStates` RPCs, `gemini.GeminiMCPServerConfig`). Ruled out live: de-secreted mnestra blocks at `~/.gemini/config/mcp_config.json` AND appDataDir `~/.gemini/antigravity-cli/mcp_config.json` both → `NO-MNESTRA-TOOL`; `~/.gemini/settings.json` has mnestra yet agy ignores it; no `agy mcp` subcommand; `agy plugin list` empty. **Fix landed:** `agy.js` `mcpConfig` → `null` (auto-wire cleanly skips, Claude-style) + finding documented in the adapter header. Real wiring is a follow-up via the Antigravity language-server registration mechanism. Was always a "non-load-bearing nicety" per S70.
+2. **SECURITY — codex + grok configs inline the service-role + OpenAI keys (+ internal project ref) in cleartext.** `~/.codex/config.toml` + `~/.grok/user-settings.json` carry them raw; Claude + Gemini were de-secreted (`env:{}` + `secrets.env` fallback) on 2026-06-07 but codex + grok were missed — the two that were missed carry the most dangerous secret. Recommend de-secreting both. (Local files; flagged, not touched mid-run.)
+3. **grok launch ergonomics:** bare `grok` types correctly as a `grok` panel; a multi-word command (`grok -c`) gets `/bin/zsh -c …`-wrapped → mistypes as `shell`. Bare grok shows a worktree/session menu, but typing a prompt directly bypasses it into a chat (no worktree created).
+4. **Pre-existing test gap:** `tests/agent-adapter-parity.test.js` fails 2 on S72's `web-chat-grok` (no `spawn` block — by design); that root-level `tests/` dir is NOT in the `npm test` glob, so it went unnoticed. Not a regression; needs a web-chat parity exemption + the root `tests/` folded into a test lane.
