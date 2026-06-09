@@ -1590,6 +1590,57 @@ function createServer(config) {
   // sync), wire screencast→WS, completion→capture, disconnect→close. Fail-soft
   // at every step — a missing/partial/throwing driver degrades the panel to
   // 'errored', never crashes the server.
+  // Render-watchdog: self-heal a wedged web-chat cold-start. On a brand-new
+  // browser profile the first load very occasionally paints nothing (empty
+  // body.innerText) even though attach + screencast are healthy; a full
+  // re-navigation clears it (a reload does NOT). Polls briefly for paint, then
+  // re-navigates up to `attempts` times. Returns true if the page painted (or
+  // we cannot measure — never block readiness on the watchdog itself), false if
+  // it stayed blank. Provider-neutral: "painted" == the body has any visible
+  // text, which empirically separates the white cold-start wedge (innerText
+  // length 0) from a rendered SPA (>0). (Sprint-72 hardening — 2026-06-09.)
+  async function ensureWebChatRendered(session, handle, startUrl, opts = {}) {
+    const settleMs = opts.settleMs || Number(process.env.TERMDECK_WEBCHAT_RENDER_SETTLE_MS) || 8000;
+    const attempts = opts.attempts != null ? opts.attempts
+      : (Number(process.env.TERMDECK_WEBCHAT_RENDER_ATTEMPTS) || 2);
+    const stepMs = opts.stepMs || Number(process.env.TERMDECK_WEBCHAT_RENDER_STEP_MS) || 500;
+    if (!handle || !handle.page || typeof handle.page.evaluate !== 'function') return true;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const painted = async () => {
+      try {
+        return await handle.page.evaluate(
+          () => !!(document && document.body && (document.body.innerText || '').trim().length > 0),
+        );
+      } catch (_e) {
+        return false;
+      }
+    };
+    const settle = async () => {
+      for (let waited = 0; waited < settleMs; waited += stepMs) {
+        if (session._webChatClosed) return true;
+        if (await painted()) return true;
+        await sleep(stepMs);
+      }
+      return painted();
+    };
+    if (await settle()) return true;
+    for (let tries = 1; tries <= attempts; tries++) {
+      if (session._webChatClosed) return true;
+      applyWebChatStatus(session, { status: 'starting', statusDetail: `Recovering blank page (try ${tries}/${attempts})…` });
+      try {
+        if (typeof handle.navigate === 'function') {
+          await handle.navigate(startUrl, { waitUntil: 'domcontentloaded' });
+        } else {
+          await handle.page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        }
+      } catch (_e) {
+        /* navigation hiccup — re-check paint anyway */
+      }
+      if (await settle()) return true;
+    }
+    return false;
+  }
+
   function setupWebChatSession(session) {
     session.pty = null;
     session.pid = null;
@@ -1673,7 +1724,17 @@ function createServer(config) {
         }
       } catch (_e) { /* optional hook — absence is fine */ }
 
-      applyWebChatStatus(session, { status: 'idle', statusDetail: 'Ready' });
+      // Self-heal a flaky blank cold-start before declaring the panel Ready.
+      let rendered = true;
+      try {
+        rendered = await ensureWebChatRendered(session, handle, startUrl);
+      } catch (err) {
+        console.error('[web-chat] render-watchdog error:', err && err.message ? err.message : err);
+      }
+      if (session._webChatClosed) return;
+      applyWebChatStatus(session, rendered
+        ? { status: 'idle', statusDetail: 'Ready' }
+        : { status: 'errored', statusDetail: 'page did not render (blank after retries)' });
     })();
   }
 
@@ -3588,6 +3649,24 @@ if (require.main === module) {
   }
   process.on('SIGINT', () => handleShutdown('SIGINT'));
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+
+  // Fail-soft crash guards (Sprint-72 hardening, 2026-06-09). One bad async
+  // rejection or uncaught error anywhere — a panel handler, a request, a hook —
+  // must NOT crash the whole server and take every live terminal panel (and the
+  // user's work) down with it. We LOG prominently (per-event ISO timestamp, like
+  // the boot banner, so crash boundaries stay greppable) and keep running. This
+  // trades the small risk of continuing in a degraded state for the much larger
+  // cost of losing every panel; a process supervisor is the backstop if the
+  // process ever truly wedges. Shutdown is exempt — let handleShutdown finish.
+  process.on('unhandledRejection', (reason) => {
+    if (shutdownInProgress) return;
+    const msg = (reason && reason.stack) || (reason && reason.message) || String(reason);
+    console.error(`[server] unhandledRejection (kept alive · ${new Date().toISOString()}):\n${msg}`);
+  });
+  process.on('uncaughtException', (err) => {
+    if (shutdownInProgress) return;
+    console.error(`[server] uncaughtException (kept alive · ${new Date().toISOString()}):\n${(err && err.stack) || err}`);
+  });
 
   server.listen(port, host, () => {
     // Sprint 60 v1.0.14 (Item 5) — per-boot banner with ISO timestamp + PID.

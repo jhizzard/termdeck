@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.1 (2026-06-09) — Sprint 72 hardening: self-healing (render-watchdog · crash-guard · supervisor)
+
+Three independent self-healing layers + a config-only bridge-visibility fix, hardening the v1.8.0 web-chat + bridge surfaces for unattended daily-driver runs. No package-surface change; the web-chat driver + bridge stay repo-only/private.
+
+### Added
+
+- **Web-chat render-watchdog (panel-level self-heal).** `setupWebChatSession()` now polls a new web-chat tab for a painted body before declaring it Ready; if a brand-new profile's *first* cold-start paints nothing (the Grok white-screen flake — a cold-start race, **not** CORP-blocked `cdn.grok.com` chunks, which 5 fresh-Chrome repros disproved), it re-navigates up to 2× — a full `navigate`/`goto`, **never** a `reload` (a reload does not clear the wedge) — then degrades the panel to `errored` with a clear detail rather than leaving a silent white panel. Tunable: `TERMDECK_WEBCHAT_RENDER_SETTLE_MS` (8000) / `_ATTEMPTS` (2) / `_STEP_MS` (500). +2 regression tests (blank → self-heals; never-paints → errored); web-chat seam suite now 11/11.
+- **Stack supervisor + run-book (`scripts/termdeck-supervise.sh` + `docs/SELF-HEALING.md`).** Idempotent **detect-by-port** keep-alive for the four daily-driver processes (TermDeck server `:3000` / Mnestra webhook `:37778` / cloudflared tunnel / MCP bridge `:8870`). Adopts an already-running stack (learns the live tunnel URL from the bridge `/healthz` so it never double-spawns), keeps a **stable** operator secret + public-URL state in `~/.termdeck/`, and re-pins the bridge on URL drift. launchd unit `scripts/com.jhizzard.termdeck-supervise.plist` (60s + RunAtLoad) — operator-installed (the sandbox cannot load launchd agents). Detect-by-port because `pgrep -f 'mcp-bridge/src/server.js'` is a false-negative (the bridge argv is just `node src/server.js`).
+
+### Fixed
+
+- **Server crash guard (process-level self-heal).** Fail-soft `unhandledRejection` + `uncaughtException` handlers in the `main()` startup block (not `createServer`, so tests are unaffected and shutdown is exempt) — one bad async error in a panel handler, request, or hook now **logs** (per-event ISO timestamp, greppable like the boot banner) and the server keeps running instead of crashing and taking *every* live panel (and the operator's work) down with it. The supervisor is the backstop if the process ever truly wedges.
+- **Bridge allowlist visibility (operator-config, no code change).** The bridge default-deny project allowlist filtered out panels whose Mnestra row had `project=null` or a home `cwd` (Codex/Claude panels running outside the repo); setting `~/.termdeck/bridge-allowlist.json` to `"*"` (or `TERMDECK_BRIDGE_ALLOWLIST_PROJECTS=*`) restores them (1 → 3 visible panels). Documented in the run-book; no package change.
+
+### Notes
+
+- Patch on v1.8.0. **Wave:** `@jhizzard/termdeck@1.8.0 → 1.8.1` + `@jhizzard/termdeck-stack@1.8.0 → 1.8.1` (audit-trail aligned). No npm `files` change.
+
 ## 1.8.0 (2026-06-08) — Sprints 71 + 72: MCP Bridge (INBOUND) + Grok web-chat panel (OUTBOUND)
 
 Two-direction web-chat integration around shared Mnestra memory: consumer chats can now *pull* your memory + live terminal state through a self-hosted remote MCP server, and a real Grok web chat can be driven *inside* TermDeck as an interactive panel. Both ship repo-only this release (self-hosted / local dogfood); the published package carries the server/client seams.
