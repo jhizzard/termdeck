@@ -21,9 +21,19 @@ function parseStatusMd(filePath) {
   const content = fs.readFileSync(filePath, 'utf8');
   const lines = content.split('\n');
 
-  // Regex per BRIEF (loosened for multiple suffixes):
-  // ^### \[(T\d+(?:-[A-Z0-9-]+)?|ORCH)\] (FINDING|PROPOSE|LANDED|DONE|AUDIT-RED|AUDIT-CONCERN|CHECKPOINT|FINAL-VERDICT|STATUS|RULING) (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ET — (.*?)$
-  const POST_RE = /^### \[(T\d+(?:-[A-Z0-9-]+)?|ORCH)\] (FINDING|PROPOSE|LANDED|DONE|AUDIT-RED|AUDIT-CONCERN|CHECKPOINT|FINAL-VERDICT|STATUS|RULING) (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ET — (.*?)$/;
+  // Canonical post header (global CLAUDE.md § lane post-shape uniformity):
+  //   ### [T<n>] VERB[ (qualifier)] YYYY-MM-DD HH:MM ET — <gist>
+  // The verb is HARD-ANCHORED to the header position (immediately after the
+  // lane tag), so a verb word appearing in a gist/prose — e.g. "DONE" inside a
+  // CHECKPOINT line's gist — is never mis-counted as that verb; it survives
+  // only as gist (capture group 5). Verb vocabulary tracks the REAL lane
+  // vocabulary, incl. FIX-PROPOSED / FIX-LANDED / AUDIT-PASS / AUDIT-FAIL, plus
+  // an optional parenthetical qualifier after the verb (e.g. the real shape
+  // `AUDIT-PASS (cdp/render)`). Order longer compounds before their shorter
+  // prefixes is unnecessary here (all alternatives are anchored + whitespace-
+  // delimited), but FIX-*/AUDIT-* are listed before bare PROPOSE/LANDED for
+  // readability.
+  const POST_RE = /^### \[(T\d+(?:-[A-Z0-9-]+)?|ORCH)\] (FINDING|FIX-PROPOSED|PROPOSE|FIX-LANDED|LANDED|DONE|AUDIT-RED|AUDIT-CONCERN|AUDIT-PASS|AUDIT-FAIL|CHECKPOINT|FINAL-VERDICT|STATUS|RULING)(?:\s+\([^)]*\))? (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) ET — (.*?)$/;
 
   const laneLandeds = {}; // laneTag -> latest LANDED timestamp
   const openReds = []; // List of {tag, timestamp, gist}
@@ -57,7 +67,7 @@ function parseStatusMd(filePath) {
       gist
     };
 
-    if (verb === 'LANDED') {
+    if (verb === 'LANDED' || verb === 'FIX-LANDED') {
       laneLandeds[tag] = timestamp;
     }
 

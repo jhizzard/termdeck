@@ -309,31 +309,24 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// mcpConfig — UNVERIFIED at lane time. The brief specifies the path
-// `~/.gemini/antigravity-cli/mcp_config.json`, which does NOT exist on disk yet,
-// and agy's `settings.json` carries no `mcpServers` key — so agy's actual
-// MCP-registry read path could not be confirmed against the binary. Modeled on
-// the Gemini-family record shape (`mcpServers.NAME = {command,args,env}`, the
-// same schema gemini.js uses) since Antigravity is a Gemini-family CLI. The
-// shared mcp-autowire helper would CREATE this file on panel spawn. This is a
-// non-load-bearing nicety (auto-wiring Mnestra into agy panels); if a future
-// probe shows agy reads MCP from settings.json or another path/shape, correct
-// here. Env-key omission discipline matches gemini.js (concrete-or-omit; agy,
-// like Claude/Gemini, does not shell-expand `${VAR}` in MCP env).
+// mcpConfig — null (Mnestra MCP auto-wire intentionally OFF for agy).
+// VERIFIED 2026-06-08 (live 4-CLI 360): Antigravity's MCP is NOT file-config-
+// driven — agy's MCP servers are managed by its embedded "exa" language-server
+// (RPCs `RefreshMcpServers` / `GetMcpServerStates`; type
+// `gemini.GeminiMCPServerConfig`), not a readable `mcp_config.json`. Ruled out
+// empirically against a LIVE agy panel: a de-secreted mnestra block written to
+// BOTH `~/.gemini/config/mcp_config.json` AND the appDataDir
+// `~/.gemini/antigravity-cli/mcp_config.json` left agy reporting
+// `NO-MNESTRA-TOOL`; `~/.gemini/settings.json` already carries mnestra (gemini
+// reads it) yet agy ignores it; `agy --help` exposes no `mcp` subcommand and
+// `agy plugin list` is empty. A file-based mcpConfig here only targets a dead
+// path, so it is `null` → the shared mcp-autowire helper cleanly skips (exactly
+// the Claude case). Wiring Mnestra into agy is a deferred follow-up via the
+// Antigravity language-server registration mechanism (likely IDE- /
+// `RefreshMcpServers`-driven). This was always a non-load-bearing nicety: agy's
+// PTY panel + the memory CAPTURE path (source_agent=antigravity, Sprint 70) both
+// work; only the agy-side memory READ is deferred.
 // ──────────────────────────────────────────────────────────────────────────
-
-const MNESTRA_ENV_KEYS = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
-
-function buildMnestraBlock({ secrets } = {}) {
-  const env = {};
-  for (const key of MNESTRA_ENV_KEYS) {
-    const value = secrets && secrets[key];
-    if (typeof value === 'string' && value.length > 0 && !/^\$\{[^}]*\}$/.test(value)) {
-      env[key] = value;
-    }
-  }
-  return { mnestra: { command: 'mnestra', args: [], env } };
-}
 
 const antigravityAdapter = {
   name: 'antigravity',
@@ -385,12 +378,10 @@ const antigravityAdapter = {
   // true (bracketed-paste fast path), flip to false if a lane-time test shows
   // the TUI input box eats the paste markers.
   acceptsPaste: true,
-  mcpConfig: {
-    path: '~/.gemini/antigravity-cli/mcp_config.json',
-    format: 'json',
-    mcpServersKey: 'mcpServers',
-    mnestraBlock: buildMnestraBlock,
-  },
+  // See the mcpConfig note above — Antigravity MCP is language-server-mediated,
+  // not file-config; null so mcp-autowire skips (Claude-style) instead of writing
+  // a dead-path file. agy memory READ is a deferred follow-up; CAPTURE works.
+  mcpConfig: null,
 };
 
 module.exports = antigravityAdapter;

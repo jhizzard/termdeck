@@ -62,7 +62,7 @@ function makeFakeDriver(opts = {}) {
   const state = {
     attachCalls: 0, attachArgs: null, injects: [], sendInputs: [],
     completeListeners: [], frameCb: null, disconnectCb: null, closed: false,
-    unsubscribed: 0,
+    unsubscribed: 0, navCalls: 0,
   };
   const handle = {
     page: {}, cdpSession: {},
@@ -73,6 +73,18 @@ function makeFakeDriver(opts = {}) {
     _emitFrame(frame) { if (state.frameCb) state.frameCb(frame); },
     _disconnect() { if (state.disconnectCb) state.disconnectCb(); },
   };
+  // Render simulation for the render-watchdog (opt-in via opts.render). When set,
+  // the handle gains page.evaluate (the paint probe) + navigate (a re-load that
+  // may flip the paint state). Without opts.render the handle keeps page:{} so
+  // the watchdog cannot measure and no-ops — every other test is untouched.
+  if (opts.render) {
+    let painted = opts.render.initial === true;
+    handle.page.evaluate = async () => painted;
+    handle.navigate = async () => {
+      state.navCalls += 1;
+      if (opts.render.paintsOnNav) painted = true;
+    };
+  }
   const driver = {
     cdp: {
       async attach(args) {
@@ -223,6 +235,62 @@ test('web-chat session creates with pty:null, attaches the driver, flips startin
       await closeTestServer(handle);
     }
   });
+});
+
+// ── render-watchdog (Sprint-72 hardening, 2026-06-09) ────────────────────────
+// A brand-new profile's first cold-start occasionally paints nothing (white)
+// even though attach+screencast are healthy; a full re-navigation clears it.
+// The watchdog re-navigates if the page hasn't painted; if it never paints it
+// degrades to 'errored' rather than leaving a silent white panel. Timing knobs
+// (TERMDECK_WEBCHAT_RENDER_*) shrink the 8s settle so these run in ~ms.
+const RENDER_ENV = ['TERMDECK_WEBCHAT_RENDER_SETTLE_MS', 'TERMDECK_WEBCHAT_RENDER_ATTEMPTS', 'TERMDECK_WEBCHAT_RENDER_STEP_MS'];
+async function withFastWatchdog(fn) {
+  const saved = {};
+  for (const k of RENDER_ENV) saved[k] = process.env[k];
+  process.env.TERMDECK_WEBCHAT_RENDER_SETTLE_MS = '120';
+  process.env.TERMDECK_WEBCHAT_RENDER_ATTEMPTS = '2';
+  process.env.TERMDECK_WEBCHAT_RENDER_STEP_MS = '30';
+  try { return await fn(); }
+  finally { for (const k of RENDER_ENV) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
+}
+
+test('render-watchdog: a blank cold-start self-heals — re-navigates and reaches idle/Ready', async () => {
+  await withFastWatchdog(() => withTempHome(async () => {
+    const handle = await bootTestServer();
+    // Cold-start paints nothing; a re-navigation clears it (the real flake).
+    const driver = makeFakeDriver({ render: { initial: false, paintsOnNav: true } });
+    _setWebChatDriverImplForTesting(() => driver);
+    try {
+      const { body } = await postSession(handle.port, { type: 'web-chat', cwd: '/tmp/wc-watchdog-ok', label: 'grok-web' });
+      const settled = await pollStatus(handle.port, body.id, 'idle', 3000);
+      assert.equal(settled, 'idle', 'watchdog recovers the blank page and the panel reaches Ready');
+      assert.ok(driver._state.navCalls >= 1, 'watchdog re-navigated at least once to clear the blank page');
+      const { body: s } = await getSession(handle.port, body.id);
+      assert.equal(s.meta.statusDetail, 'Ready');
+    } finally {
+      _setWebChatDriverImplForTesting(null);
+      await closeTestServer(handle);
+    }
+  }));
+});
+
+test('render-watchdog: a page that never paints degrades to errored (not a silent white panel)', async () => {
+  await withFastWatchdog(() => withTempHome(async () => {
+    const handle = await bootTestServer();
+    const driver = makeFakeDriver({ render: { initial: false, paintsOnNav: false } });
+    _setWebChatDriverImplForTesting(() => driver);
+    try {
+      const { body } = await postSession(handle.port, { type: 'web-chat', cwd: '/tmp/wc-watchdog-fail', label: 'grok-web' });
+      const settled = await pollStatus(handle.port, body.id, 'errored', 3000);
+      assert.equal(settled, 'errored', 'a page that never paints ends errored, never a silent white Ready');
+      assert.equal(driver._state.navCalls, 2, 'watchdog exhausted its re-navigation attempts before erroring');
+      const { body: s } = await getSession(handle.port, body.id);
+      assert.match(s.meta.statusDetail || '', /did not render/i);
+    } finally {
+      _setWebChatDriverImplForTesting(null);
+      await closeTestServer(handle);
+    }
+  }));
 });
 
 test('POST /input two-stage: paste body buffers, lone-\\r submits ONE inject with the full text; status thinking', async () => {

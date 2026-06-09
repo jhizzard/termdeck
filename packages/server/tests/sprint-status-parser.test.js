@@ -90,3 +90,53 @@ test('parseStatusMd with real Maestro Sprint 2 fixture', () => {
   assert.equal(result.lanes['T1'].landed_since_last_red, true);
   assert.equal(result.lanes['T3'].landed_since_last_red, true);
 });
+
+test('parseStatusMd anchors the verb to the header — a verb word in a CHECKPOINT gist is not mis-counted', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-test-'));
+  const statusPath = path.join(tmpDir, 'STATUS.md');
+  // The gist mentions "DONE" in prose; the post verb is CHECKPOINT. The parser
+  // must record CHECKPOINT (header position), never DONE (gist text).
+  const content = `
+### [T1] CHECKPOINT 2026-06-08 13:00 ET — still working; will post DONE when tests pass
+`;
+  fs.writeFileSync(statusPath, content);
+
+  const result = parseStatusMd(statusPath);
+  assert.equal(result.lanes['T1'].last_post.verb, 'CHECKPOINT');
+  assert.match(result.lanes['T1'].last_post.gist, /DONE/); // DONE survives only as gist
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('parseStatusMd recognizes FIX-LANDED as a landing (real lane vocabulary)', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-test-'));
+  const statusPath = path.join(tmpDir, 'STATUS.md');
+  const content = `
+### [T4-CODEX] AUDIT-RED 2026-06-08 13:00 ET — T2 has a bug
+### [T2] FIX-LANDED 2026-06-08 13:30 ET — fixed the bug
+`;
+  fs.writeFileSync(statusPath, content);
+
+  const result = parseStatusMd(statusPath);
+  assert.equal(result.lanes['T2'].last_post.verb, 'FIX-LANDED');
+  assert.equal(result.lanes['T2'].landed_since_last_red, true);
+  assert.equal(result.open_red_count, 0); // the FIX-LANDED cleared the open red
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('parseStatusMd recognizes AUDIT-PASS / AUDIT-FAIL incl. a parenthetical qualifier', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termdeck-test-'));
+  const statusPath = path.join(tmpDir, 'STATUS.md');
+  const content = `
+### [T4-CODEX] AUDIT-PASS (cdp/render) 2026-06-08 13:27 ET — verified
+### [T3] AUDIT-FAIL 2026-06-08 13:37 ET — form buffers forever
+`;
+  fs.writeFileSync(statusPath, content);
+
+  const result = parseStatusMd(statusPath);
+  assert.equal(result.lanes['T4-CODEX'].last_post.verb, 'AUDIT-PASS');
+  assert.equal(result.lanes['T3'].last_post.verb, 'AUDIT-FAIL');
+
+  fs.rmSync(tmpDir, { recursive: true });
+});
