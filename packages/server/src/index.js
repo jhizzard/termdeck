@@ -1698,8 +1698,18 @@ function createServer(config) {
             catch (_e) { /* never disrupt */ }
           }
         };
-        if (handle && typeof handle.screencast === 'function') handle.screencast(onFrame);
-        else if (driver.cdp && typeof driver.cdp.screencast === 'function') driver.cdp.screencast(handle, onFrame);
+        // Render quality (Sprint-72 hardening, 2026-06-09): pass crisp, Retina-friendly
+        // screencast opts. The driver's bare default was a blurry 1280x800 @ jpeg-q60 — fine
+        // on a 1x display, soft on a 2x Mac (the HiDPI canvas then upscales it). Env-tunable
+        // down for slow links: TERMDECK_WEBCHAT_QUALITY / _MAXW / _MAXH / _FORMAT.
+        const scOpts = {
+          format: process.env.TERMDECK_WEBCHAT_FORMAT || 'jpeg',
+          quality: Number(process.env.TERMDECK_WEBCHAT_QUALITY) || 85,
+          maxWidth: Number(process.env.TERMDECK_WEBCHAT_MAXW) || 2560,
+          maxHeight: Number(process.env.TERMDECK_WEBCHAT_MAXH) || 1600,
+        };
+        if (handle && typeof handle.screencast === 'function') handle.screencast(onFrame, scOpts);
+        else if (driver.cdp && typeof driver.cdp.screencast === 'function') driver.cdp.screencast(handle, onFrame, scOpts);
       } catch (err) {
         console.error('[web-chat] screencast wiring failed:', err && err.message ? err.message : err);
       }

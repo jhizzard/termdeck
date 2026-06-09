@@ -66,9 +66,9 @@ function screencast(handle, onFrame, opts = {}) {
 
   const started = cdp.send('Page.startScreencast', {
     format,
-    quality: opts.quality != null ? opts.quality : 60,
-    maxWidth: opts.maxWidth != null ? opts.maxWidth : 1280,
-    maxHeight: opts.maxHeight != null ? opts.maxHeight : 800,
+    quality: opts.quality != null ? opts.quality : 85,
+    maxWidth: opts.maxWidth != null ? opts.maxWidth : 2560,
+    maxHeight: opts.maxHeight != null ? opts.maxHeight : 1600,
     everyNthFrame: opts.everyNthFrame != null ? opts.everyNthFrame : 1,
   });
 

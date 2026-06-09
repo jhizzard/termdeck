@@ -11,6 +11,7 @@ Three independent self-healing layers + a config-only bridge-visibility fix, har
 
 ### Fixed
 
+- **Web-chat (Grok) panel render quality — crisp on Retina.** The server started the CDP screencast with no options, so the driver fell back to a blurry `1280×800 @ jpeg-q60` capture that the HiDPI client canvas then upscaled. The server now requests `2560×1600 @ q85` (driver defaults raised to match), env-tunable down for slow links via `TERMDECK_WEBCHAT_QUALITY` / `_MAXW` / `_MAXH` / `_FORMAT` (`packages/server/src/index.js` + `packages/web-chat-driver/src/cdp/screencast.js`).
 - **Server crash guard (process-level self-heal).** Fail-soft `unhandledRejection` + `uncaughtException` handlers in the `main()` startup block (not `createServer`, so tests are unaffected and shutdown is exempt) — one bad async error in a panel handler, request, or hook now **logs** (per-event ISO timestamp, greppable like the boot banner) and the server keeps running instead of crashing and taking *every* live panel (and the operator's work) down with it. The supervisor is the backstop if the process ever truly wedges.
 - **Bridge allowlist visibility (operator-config, no code change).** The bridge default-deny project allowlist filtered out panels whose Mnestra row had `project=null` or a home `cwd` (Codex/Claude panels running outside the repo); setting `~/.termdeck/bridge-allowlist.json` to `"*"` (or `TERMDECK_BRIDGE_ALLOWLIST_PROJECTS=*`) restores them (1 → 3 visible panels). Documented in the run-book; no package change.
 
