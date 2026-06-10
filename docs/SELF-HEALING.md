@@ -100,6 +100,10 @@ The supervisor will then run the named tunnel (stable URL) and the connectors
 stop breaking on restart. Until a domain is set up, quick tunnels work but the
 URL changes whenever `cloudflared` itself restarts.
 
+The end-to-end install flow (named tunnel + supervisor on launchd/systemd +
+provider connect) is **Tier 5** in [`GETTING-STARTED.md`](./GETTING-STARTED.md);
+Linux units live at `docs/examples/termdeck-supervise.{service,timer}`.
+
 ## Activation
 
 The watchdog + crash guard are **server code** — they take effect on the next

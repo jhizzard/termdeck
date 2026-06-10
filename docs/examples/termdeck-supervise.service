@@ -1,0 +1,25 @@
+# TermDeck stack supervisor — one tick of scripts/termdeck-supervise.sh.
+# Pair with termdeck-supervise.timer (60s cadence); the timer is what keeps the
+# stack alive, this unit is a single idempotent pass.
+#
+# User-scope install (no sudo; survives logout with linger):
+#   mkdir -p ~/.config/systemd/user
+#   cp docs/examples/termdeck-supervise.{service,timer} ~/.config/systemd/user/
+#   # edit ExecStart below if your repo is not at ~/termdeck
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now termdeck-supervise.timer
+#   loginctl enable-linger "$(whoami)"
+#
+# Logs: journalctl --user -u termdeck-supervise.service -n 50
+#       plus the script's own ~/.termdeck/logs/supervise.log
+
+[Unit]
+Description=TermDeck stack supervisor (one idempotent tick)
+
+[Service]
+Type=oneshot
+# systemd's minimal PATH hides npm-global bins (node, mnestra, termdeck) and
+# often cloudflared — prepend the usual homes. Same pitfall as termdeck.service.
+Environment="PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# EDIT to your repo location:
+ExecStart=/bin/bash %h/termdeck/scripts/termdeck-supervise.sh

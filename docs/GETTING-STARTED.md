@@ -1,6 +1,6 @@
 # Getting Started: TermDeck + Mnestra + Rumen
 
-The full stack in four tiers. Each tier is independent — stop wherever you have what you need.
+The full stack in four tiers — plus an optional fifth (the Web-Chat Bridge, so Claude.ai / ChatGPT / Grok can read your stack). Each tier is independent — stop wherever you have what you need.
 
 **Quick path (Quick mode):** Tier 1 takes 2 minutes, zero config. You get a working terminal multiplexer. Stop there if that's all you want. Each subsequent tier adds a heading that says what you gain and what it costs.
 
@@ -408,6 +408,100 @@ Restart TermDeck. Check:
 4. Panel header shows project tag with theme color
 5. Open Claude Code in a panel — it should immediately call `memory_recall`
 6. Ask Claude Code "where is the [project-name] project?" — it should answer from the directory map, not search blindly
+
+---
+
+## Tier 5 (optional): Web-Chat Bridge — Claude.ai / ChatGPT / Grok read your stack (20 minutes)
+
+**What you gain:** The consumer web chats you already pay for connect to your stack through each provider's own sanctioned MCP-connector feature — zero scraping, zero browser automation. A connected chat can `memory_recall` your Mnestra store mid-conversation and (per-call approval-gated) see what your coding terminals are doing. With the named tunnel + supervisor below, the connector URL is **permanent**: it survives reboots and `cloudflared` restarts, so you wire each provider exactly once.
+
+**What it costs:** Free Cloudflare account + any domain whose DNS is hosted on Cloudflare (for the stable hostname), `cloudflared`, ~20 minutes. No recurring cost. Without a domain you can still run an ephemeral quick tunnel, but the URL rotates on every restart and every connector breaks with it — fine for a smoke test, miserable as a daily driver.
+
+**Security model (read before exposing anything):** the Bridge is read-only by construction; every tool result is egress-redacted before it leaves your machine; terminal-state tools are approval-gated; panel visibility is default-deny until you allowlist it; OAuth 2.1 + PKCE with audience-bound tokens gates the endpoint, and an operator secret gates consent. Full invariants in [`packages/mcp-bridge/README.md`](../packages/mcp-bridge/README.md); pre-exposure checklist in [`packages/mcp-bridge/docs/tunnel.md`](../packages/mcp-bridge/docs/tunnel.md).
+
+### Step 1 — One-time: create the named tunnel
+
+Requires a domain whose DNS is on Cloudflare (add one at dash.cloudflare.com first if needed — the free plan is fine).
+
+```bash
+brew install cloudflared          # macOS; Linux: see Cloudflare's package repo
+cloudflared tunnel login          # browser auth — select the zone (domain) to authorize
+cloudflared tunnel create termdeck-bridge
+cloudflared tunnel route dns termdeck-bridge bridge.<your-domain>
+```
+
+`create` prints a tunnel ID and writes credentials to `~/.cloudflared/<tunnel-id>.json`. Then write `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: <tunnel-id>
+credentials-file: /home/<you>/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: bridge.<your-domain>
+    service: http://127.0.0.1:8870
+  - service: http_status:404
+```
+
+### Step 2 — Point the supervisor at the named tunnel
+
+The stack supervisor (`scripts/termdeck-supervise.sh`, see [`SELF-HEALING.md`](./SELF-HEALING.md)) starts and keeps alive all four processes — TermDeck server, Mnestra webhook, the tunnel, and the Bridge — and re-pins the Bridge's OAuth surface to the current public URL. Tell it about the tunnel in `~/.termdeck/supervisor.env`:
+
+```bash
+TERMDECK_TUNNEL_NAME=termdeck-bridge
+TERMDECK_PUBLIC_HOSTNAME=bridge.<your-domain>
+```
+
+The supervisor re-reads this file on every tick — no reinstall needed when it changes.
+
+### Step 3 — Install the supervisor on a 60s timer
+
+macOS (launchd — edit the two absolute paths in the plist if your repo or HOME differ):
+
+```bash
+cp scripts/com.jhizzard.termdeck-supervise.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.jhizzard.termdeck-supervise.plist
+```
+
+Linux (systemd user timer — canonical units at [`docs/examples/termdeck-supervise.service`](./examples/termdeck-supervise.service) + [`.timer`](./examples/termdeck-supervise.timer); they carry the same minimal-PATH fix as `termdeck.service`):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp docs/examples/termdeck-supervise.{service,timer} ~/.config/systemd/user/
+# edit ExecStart in the .service if your repo is not at ~/termdeck
+systemctl --user daemon-reload
+systemctl --user enable --now termdeck-supervise.timer
+loginctl enable-linger "$(whoami)"
+```
+
+The first tick generates a **stable operator secret** at `~/.termdeck/bridge-operator-secret.txt` (the consent passphrase you'll type during each provider's OAuth flow — it never rotates on restart) and brings up tunnel + Bridge pinned to `https://bridge.<your-domain>`.
+
+### Step 4 — Verify public reachability
+
+```bash
+H=https://bridge.<your-domain>
+curl -s "$H/healthz"                                        # {"ok":true,...,"resource":"$H/mcp"}
+curl -s "$H/.well-known/oauth-protected-resource/mcp"       # resource + authorization_servers
+curl -s "$H/.well-known/oauth-authorization-server"         # endpoints, S256 in code_challenge_methods
+curl -si -X POST "$H/mcp" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | head -1   # HTTP/2 401 (unauth must 401)
+```
+
+All four behaving means any provider can discover, register, and complete OAuth against your Bridge.
+
+### Step 5 — Connect the providers
+
+Paste `https://bridge.<your-domain>/mcp` into each provider's connector UI and complete the OAuth flow; when the consent page asks, enter the operator secret from `~/.termdeck/bridge-operator-secret.txt`:
+
+| Provider | Where | Doc |
+|---|---|---|
+| Claude.ai | Settings → Connectors → Add custom connector | [`connect-claude.md`](../packages/mcp-bridge/docs/connect-claude.md) |
+| ChatGPT | Settings → Apps & Connectors → **"New App" dialog** | [`connect-chatgpt.md`](../packages/mcp-bridge/docs/connect-chatgpt.md) |
+| Grok | grok.com → Connectors → New → Custom | [`connect-grok.md`](../packages/mcp-bridge/docs/connect-grok.md) |
+
+(Gemini's web app has no custom-MCP surface — Gemini gets Mnestra locally via the CLI path in Tier 2.)
+
+Prove each connection with a `memory_recall` prompt in that chat. Because the hostname is yours, this wiring never goes stale: reboot the machine and the supervisor brings everything back on the same URL.
+
+### >> STOP HERE — Tiers 1–4 are complete without the Bridge; add it only if you want web chats reading your stack.
 
 ---
 
