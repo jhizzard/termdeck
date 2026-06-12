@@ -144,6 +144,12 @@ test('processPreCompactPayload writes source_type=pre_compact_snapshot under Pre
       assert.equal(body.source_agent, 'claude');
       assert.equal(body.project, 'termdeck', 'project resolved from cwd via PROJECT_MAP');
       assert.ok(body.content.startsWith('[CHECKPOINT mode=pre_compact trigger=auto'), 'header carries mode + trigger');
+      // Sprint 73 T1 v2 — backfill-idempotency marker travels with the
+      // embedder: helpers (session-end v5) export EMBEDDING_MODEL_MARKER, so
+      // the snapshot row must carry it (Sprint 74 T3's re-embed script skips
+      // marked rows).
+      assert.deepEqual(body.metadata, { embedding_model: helpers.EMBEDDING_MODEL_MARKER });
+      assert.equal(helpers.EMBEDDING_MODEL_MARKER, 'text-embedding-3-large@1536');
     } finally {
       mock.restore();
     }

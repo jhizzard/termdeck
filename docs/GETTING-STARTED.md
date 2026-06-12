@@ -419,6 +419,8 @@ Restart TermDeck. Check:
 
 **Security model (read before exposing anything):** the Bridge is read-only by construction; every tool result is egress-redacted before it leaves your machine; terminal-state tools are approval-gated; panel visibility is default-deny until you allowlist it; OAuth 2.1 + PKCE with audience-bound tokens gates the endpoint, and an operator secret gates consent. Full invariants in [`packages/mcp-bridge/README.md`](../packages/mcp-bridge/README.md); pre-exposure checklist in [`packages/mcp-bridge/docs/tunnel.md`](../packages/mcp-bridge/docs/tunnel.md).
 
+> **Shortcut:** `termdeck init --bridge` walks Steps 1–4 below interactively — it scaffolds `~/.cloudflared/config.yml` + `~/.termdeck/supervisor.env`, installs the supervisor script and launchd plist / systemd units from assets vendored in the npm package (backing up anything it replaces; works without a repo checkout), prints the operator-only `cloudflared` / `launchctl` / `systemctl` commands (it never runs those itself), and runs the Step 4 reachability checks (`--verify-only` re-runs just the checks). The manual steps below remain the canonical reference.
+
 ### Step 1 — One-time: create the named tunnel
 
 Requires a domain whose DNS is on Cloudflare (add one at dash.cloudflare.com first if needed — the free plan is fine).

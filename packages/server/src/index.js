@@ -3467,8 +3467,13 @@ function validateSupabase(url, key) {
 
 function validateOpenAI(key) {
   return new Promise((resolve) => {
+    // Probe with the EXACT request shape the bundled hooks use in production
+    // (session-end v5: 3-large @ dimensions:1536, recall-parity with mnestra)
+    // so a passing preflight means the real capture pipeline's call works —
+    // not some other model the account may gate differently.
     const payload = JSON.stringify({
-      model: 'text-embedding-3-small',
+      model: 'text-embedding-3-large',
+      dimensions: 1536,
       input: 'termdeck setup test'
     });
     const req = https.request({

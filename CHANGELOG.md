@@ -1,3 +1,21 @@
+## [1.9.0] - 2026-06-11
+
+### Added
+- `termdeck init --bridge` — guided Tier 5 Web-Chat Bridge setup wizard. Supervisor assets (`termdeck-supervise.sh`, launchd plist, systemd unit + timer) are vendored at `packages/cli/assets/supervise/` and ship in the npm tarball; the wizard stages from vendored assets only (repo-checkout fallback removed) and prints operator `launchctl load -w` / `systemctl enable` steps — never execs them. 43 tests incl. a real packed-tarball pin.
+- `input-guard` module (`packages/client/public/input-guard.js`) — fixes #12 input accumulation: single chokepoint `onData` guard dereferencing live `entry.ws`, reconnect handler dedup, textarea idle-clear. 18 regression tests. Root cause adjudicated by audit: xterm@5.5.0 composition/textarea reconstruction (primary) + reconnect handler stacking (secondary); both guarded.
+
+### Changed
+- Web-chat Grok panels emit `sourceAgent: 'grok-web'` (provenance split from CLI `grok`).
+- Bundled session-end hook → v5, pre-compact hook → v2: allowlist all four web source agents (`claude-web`/`chatgpt-web`/`grok-web`/`gemini-web`) + web-chat byte-floor exemption; embedder flipped to `text-embedding-3-large@1536` for recall parity with Mnestra hybrid search, stamping `metadata.embedding_model` as the backfill marker.
+
+### Fixed
+- Bundled hooks README stale claims (old embedder, obsolete `hooks.Stop` instruction, PROJECT_MAP note) corrected; preflight aligned with hook v5 behavior.
+
+### Notes
+- Shipped as dual-deck Sprints 73 (this repo) + 74 (mnestra) on 2026-06-11; ~90 min wall-clock incl. one RED→GREEN audit remediation cycle. FINAL-VERDICT-2 GREEN (Codex) / FINAL-VERDICT GREEN (Grok). Suite: 649 tests, 644 pass, 0 fail, 5 pre-existing sqlite skips.
+- Companion `@jhizzard/mnestra` release: four web `source_agents` values (migration 025), webhook `source_agent` threading, IPv4 endpoint classifier + doctor probe, re-embed backfill script. 545 existing 3-small-embedded rows pend a LIVE re-embed — run only AFTER installed hooks are refreshed to v5/v2.
+- Sprint 75 carry-overs (spec'd in Sprint 74 STATUS): DATABASE_URL ingress classify+warn + doctor surfacing in termdeck; bridge static-OAuth client (Gemini Enterprise); cloud third bridge origin.
+
 # Changelog
 
 ## 1.8.1 (2026-06-09) — Sprint 72 hardening: self-healing (render-watchdog · crash-guard · supervisor)

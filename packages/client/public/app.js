@@ -361,6 +361,80 @@
       }, { capture: true });
     }
 
+    // ===== termdeck#12 input guard (Sprint 73 T3) =====
+    // Runaway-typed-input defense at the single chokepoint every byte of
+    // human browser input flows through (the onData handler registered in
+    // createTerminalPanel). xterm@5.5.0 reconstructs composition input from
+    // its hidden textarea and can re-emit the accumulated buffer-so-far once
+    // per word boundary on IME/mobile/remote keyboards — the #12 cumulative-
+    // prefix runaway (~110 typed chars became a 3,042-char PTY stream).
+    // Detection logic lives in input-guard.js (UMD, unit-tested from node);
+    // these helpers wire it to panel state and the operator surface.
+    // Suppression is loud (console.error + panel toast), never silent;
+    // oversize chunks can be sent anyway from the toast.
+    function shouldSuppressPanelInput(entry, id, data) {
+      if (!entry._inputGuard) entry._inputGuard = InputGuard.createGuard();
+      const result = InputGuard.check(entry._inputGuard, data, Date.now());
+      if (result.verdict === 'pass') return false;
+      console.error(
+        `[input-guard] suppressed ${result.reason} input on panel ${id} ` +
+        `(chunk ${data.length} chars, chain ${result.chainLength}, ` +
+        `total suppressed ${result.suppressedCount} chunks / ${result.suppressedChars} chars):`,
+        JSON.stringify(data.slice(0, 120))
+      );
+      showInputGuardToast(entry, id, result, data);
+      return true;
+    }
+
+    function showInputGuardToast(entry, id, result, data) {
+      if (!entry || !entry.el) return;
+
+      // One toast per panel: repeated suppressions update the counter line
+      // (a runaway fires per word boundary — stacking toasts would bury the
+      // panel) and refresh the held chunk + auto-dismiss timer.
+      const existing = entry.el.querySelector('.input-guard-toast');
+      if (existing) {
+        const counter = existing.querySelector('.t-meta');
+        if (counter) counter.textContent = `${result.suppressedCount} chunks (${result.suppressedChars} chars) suppressed so far.`;
+        if (result.reason === 'oversize') existing._heldChunk = data;
+        clearTimeout(existing._autoTimer);
+        existing._autoTimer = setTimeout(() => existing.remove(), 60000);
+        return;
+      }
+
+      const toast = document.createElement('div');
+      toast.className = 'input-guard-toast';
+      const why = result.reason === 'oversize'
+        ? 'a single typed chunk was implausibly large'
+        : 'the keyboard started re-sending the whole buffer-so-far per keystroke (xterm composition runaway — termdeck#12)';
+      toast.innerHTML = `
+        <button class="t-dismiss" aria-label="Dismiss">×</button>
+        <div class="t-title">Input guard — runaway typing suppressed</div>
+        <div class="t-body">Blocked because ${why}. Check the terminal's input line before pressing Enter; clear it if it shows repeated text.${result.reason === 'oversize' ? ' If this was intentional, send it below.' : ''}</div>
+        <div class="t-meta">${result.suppressedCount} chunks (${result.suppressedChars} chars) suppressed so far.</div>
+        ${result.reason === 'oversize' ? '<button class="t-send-anyway">Send anyway</button>' : ''}
+      `;
+      if (result.reason === 'oversize') toast._heldChunk = data;
+      entry.el.appendChild(toast);
+
+      toast.querySelector('.t-dismiss').addEventListener('click', () => {
+        clearTimeout(toast._autoTimer);
+        toast.remove();
+      });
+      const sendBtn = toast.querySelector('.t-send-anyway');
+      if (sendBtn) {
+        sendBtn.addEventListener('click', () => {
+          const live = state.sessions.get(id);
+          if (toast._heldChunk && live && live.ws && live.ws.readyState === WebSocket.OPEN) {
+            live.ws.send(JSON.stringify({ type: 'input', data: toast._heldChunk }));
+          }
+          clearTimeout(toast._autoTimer);
+          toast.remove();
+        });
+      }
+      toast._autoTimer = setTimeout(() => toast.remove(), 60000);
+    }
+
     // ===== Create Terminal Panel =====
     function createTerminalPanel(sessionData) {
       const id = sessionData.id;
@@ -592,10 +666,20 @@
         }
       };
 
-      // Terminal input → WebSocket
+      // Terminal input → WebSocket. Registered ONCE per Terminal instance and
+      // never re-registered: xterm's onData ADDS listeners, and the
+      // pre-Sprint-73 reconnect path stacked one leaked handler (closed over
+      // its dead socket) per reconnect — the termdeck#12 cause-B family. The
+      // handler dereferences entry.ws at event time, so reconnectSession just
+      // swaps entry.ws and this same registration follows it.
+      // shouldSuppressPanelInput is the #12 runaway chokepoint — every byte
+      // of human browser input to this PTY flows through this closure.
       terminal.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'input', data }));
+        const entry = state.sessions.get(id);
+        if (!entry || entry._mounting || !entry.ws) return;
+        if (shouldSuppressPanelInput(entry, id, data)) return;
+        if (entry.ws.readyState === WebSocket.OPEN) {
+          entry.ws.send(JSON.stringify({ type: 'input', data }));
         }
       });
 
@@ -607,6 +691,49 @@
       terminal.textarea?.addEventListener('blur', () => {
         panel.classList.remove('active-input');
       });
+
+      // termdeck#12 (Sprint 73 T3) — two defenses on xterm's hidden textarea:
+      //
+      // (a) Paste tracking for the input guard: a DOM `paste` event stamps
+      //     the guard so the following chunk is exempt — pastes are
+      //     deliberate bulk input, and without the stamp a large
+      //     un-bracketed paste would false-trip the oversize detector.
+      //
+      // (b) Idle-clear of the textarea. xterm@5.5.0 clears its helper
+      //     textarea only on non-composition Enter/Ctrl+C keydowns
+      //     (Terminal.ts:1066-1068); on composition keyboards (every keydown
+      //     = keyCode 229: mobile/IME/dictation/remote bridges) that clear
+      //     never fires, the textarea accumulates the whole message, and
+      //     CompositionHelper's replace/substring reconstruction can re-emit
+      //     the accumulated buffer once per word boundary — the #12
+      //     cumulative-prefix runaway. Clearing after a short typing lull
+      //     (never mid-composition; composition state tracked via the public
+      //     compositionstart/end events) bounds what those paths can
+      //     reconstruct to a single typing burst. xterm's own deferred
+      //     textarea reads are setTimeout(0) — far inside the 250ms debounce
+      //     — so the clear cannot race them.
+      const guardTa = terminal.textarea;
+      if (guardTa) {
+        let composing = false;
+        let idleClearTimer = null;
+        const armIdleClear = () => {
+          if (idleClearTimer) clearTimeout(idleClearTimer);
+          idleClearTimer = setTimeout(() => {
+            idleClearTimer = null;
+            if (!composing && guardTa.value) guardTa.value = '';
+          }, 250);
+        };
+        guardTa.addEventListener('compositionstart', () => { composing = true; });
+        guardTa.addEventListener('compositionend', () => { composing = false; armIdleClear(); });
+        guardTa.addEventListener('keydown', armIdleClear);
+        guardTa.addEventListener('input', armIdleClear);
+        guardTa.addEventListener('paste', () => {
+          const entry = state.sessions.get(id);
+          if (!entry) return;
+          if (!entry._inputGuard) entry._inputGuard = InputGuard.createGuard();
+          InputGuard.notePaste(entry._inputGuard, Date.now());
+        });
+      }
 
       // Store reference
       state.sessions.set(id, {
@@ -2443,12 +2570,11 @@
         }
       };
 
-      // Re-wire terminal input
-      entry.terminal.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'input', data }));
-        }
-      });
+      // No input re-wiring (Sprint 73 T3, termdeck#12): the single onData
+      // handler registered at panel creation dereferences entry.ws at event
+      // time, so the `entry.ws = ws` assignment in onopen above is all a
+      // reconnect needs. Pre-Sprint-73 this function re-ran terminal.onData()
+      // here, leaking one handler (closed over its dead socket) per reconnect.
     }
 
     function halfPanel(id) {

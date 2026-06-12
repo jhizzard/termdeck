@@ -1,6 +1,16 @@
 /**
  * TermDeck session-end memory hook (Mnestra-direct, no rag-system dependency).
  *
+ * @termdeck/stack-installer-hook v5
+ *
+ * ^ The stamp lives HERE, at the top of the docblock — NOT below the changelog
+ *   notes. Both readers (stack-installer's installSessionEndHook and
+ *   init-mnestra's refreshBundledHookIfNewer) scan only the first 4096 bytes
+ *   of the file for the marker; Sprint 73 T1's v4 note grew the header past
+ *   4 KB and a stamp positioned below the notes fell out of the scan window,
+ *   making the bundled hook read as "unsigned" and silently disabling every
+ *   refresh path. Keep the stamp above the fold; let the changelog grow below.
+ *
  * Vendored into ~/.claude/hooks/memory-session-end.js by @jhizzard/termdeck-stack.
  * Wired into ~/.claude/settings.json under hooks.SessionEnd — fires once per
  * Claude Code session close (`/exit`, Ctrl+D, terminal close, or process kill).
@@ -34,7 +44,9 @@
  *      JSONL, Codex JSONL, Gemini single-JSON, or auto-detect when sessionType
  *      is absent. Builds a coarse summary from the resulting message list
  *      (last ~30 message excerpts).
- *   7. Embeds the summary via OpenAI text-embedding-3-small.
+ *   7. Embeds the summary via OpenAI text-embedding-3-large at
+ *      dimensions:1536 — recall-parity: MUST match mnestra's query-side
+ *      embedder (engram src/embeddings.ts) or rows are semantically blind.
  *   8. POSTs ONE row to Supabase /rest/v1/memory_items with source_type='session_summary'.
  *   9. (Sprint 51.6 T3) POSTs ONE row to Supabase /rest/v1/memory_sessions with
  *      Prefer: resolution=merge-duplicates so SessionEnd-fires-twice resolves
@@ -43,9 +55,11 @@
  *  10. Logs every step to ~/.claude/hooks/memory-hook.log.
  *
  * Version stamp (Sprint 51.6 T3 — hook upgrade gap fix):
- *   The marker `@termdeck/stack-installer-hook v<N>` below is read by both
- *   stack-installer's installSessionEndHook (version-aware overwrite under
- *   --yes) and `termdeck init --mnestra` (refreshBundledHookIfNewer step).
+ *   The marker `@termdeck/stack-installer-hook v<N>` at the TOP of this
+ *   docblock is read by both stack-installer's installSessionEndHook
+ *   (version-aware overwrite under --yes) and `termdeck init --mnestra`
+ *   (refreshBundledHookIfNewer step) — both scan only the first 4096 bytes,
+ *   which is why it sits above these notes (see the warning beside it).
  *   Bump the integer whenever a change to this file should overwrite an
  *   already-installed copy on the user's machine — e.g. a new write path,
  *   a new transcript parser, a default PROJECT_MAP change. Comment-only
@@ -61,12 +75,39 @@
  *       to bundled-v2 always passes the `installed >= bundled` short-circuit
  *       at init-mnestra.js:550 and reaches the refresh path.
  *
- * @termdeck/stack-installer-hook v3
+ *   v4 (Sprint 73 T1 — grok-web provenance + web-chat byte-floor exemption):
+ *     - ALLOWED_SOURCE_AGENTS gains the four web-surface tags ('grok-web',
+ *       'claude-web', 'chatgpt-web', 'gemini-web') per the Sprint 74 ORCH
+ *       one-churn addendum; only 'grok-web' has a live producer today (the
+ *       web-chat-grok adapter). New alias 'web-chat-grok' → 'grok-web'
+ *       (registry-name safety net, mirrors 'agy' → 'antigravity').
+ *     - Byte-floor exemption extended from antigravity-only to a sessionType
+ *       set {antigravity, web-chat}: both materialize compact synthesized
+ *       envelopes (<5 KB for short-but-substantive sessions); the gate is
+ *       parsed content (>= 1 assistant turn), not raw bytes.
+ *     - ATOMIC with mnestra migration 024 (Sprint 74 T1): rows tagged
+ *       'grok-web' are unfilterable via MCP source_agents until that ships.
+ *     - Stamp moved to the TOP of the docblock (the readers' 4096-byte head
+ *       scan missed it below these notes — see the warning at the stamp).
+ *
+ *   v5 (Sprint 73 T1, ORCH handoff — embedding recall-parity):
+ *     - embedText flipped text-embedding-3-small → text-embedding-3-large at
+ *       dimensions:1536, matching mnestra's recall query embedder (engram
+ *       src/embeddings.ts) EXACTLY. The two models do not share a vector
+ *       space, so rows embedded 3-small score semantic noise against 3-large
+ *       queries — Sprint 74 T3 quantified 544 production rows half-blind.
+ *       `dimensions:1536` is LOAD-BEARING: 3-large is natively 3072-dim and
+ *       the DB column is vector(1536) — without the param every insert 400s
+ *       and capture is silently lost (hooks are fail-soft).
+ *     - memory_items rows now stamp metadata.embedding_model =
+ *       'text-embedding-3-large@1536' — the marker Sprint 74 T3's re-embed
+ *       backfill keys idempotency on (unmarked rows get re-embedded; marked
+ *       rows are skipped). memory_items.metadata exists from migration 001.
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
  *   - SUPABASE_SERVICE_ROLE_KEY      service-role key (NOT the anon key — needs INSERT on memory_items)
- *   - OPENAI_API_KEY            sk-... for text-embedding-3-small
+ *   - OPENAI_API_KEY            sk-... for text-embedding-3-large (dimensions:1536)
  *
  * Optional:
  *   - TERMDECK_HOOK_DEBUG=1            verbose logging
@@ -148,6 +189,12 @@ const MIN_TRANSCRIPT_BYTES = parseInt(process.env.TERMDECK_HOOK_MIN_BYTES || '50
 // filter; sub-5KB drips still get dropped. Env-configurable for operators who
 // want the legacy permissive-to-zero floor or a higher cutoff than 1.
 const MIN_TRANSCRIPT_MESSAGES = parseInt(process.env.TERMDECK_HOOK_MIN_MESSAGES || '1', 10);
+// Sprint 70 T1 (antigravity) + Sprint 73 T1 (web-chat) — sessionTypes whose
+// transcripts are synthesized COMPACT envelopes (no verbose on-disk JSONL), so
+// the raw-byte floor would wrongly drop short-but-substantive sessions. These
+// skip the MIN_TRANSCRIPT_BYTES gate and are gated on parsed content instead
+// (>= 1 assistant turn) — see the exemption branch in processStdinPayload.
+const BYTE_FLOOR_EXEMPT_SESSION_TYPES = new Set(['antigravity', 'web-chat']);
 const DEBUG = process.env.TERMDECK_HOOK_DEBUG === '1';
 
 function log(msg) {
@@ -602,7 +649,7 @@ function buildSummary(transcriptPath, sessionType) {
   const summary =
     `Session with ${messages.length} messages.\n\n` +
     tail.map((m) => `[${m.role}] ${m.content}`).join('\n');
-  // OpenAI text-embedding-3-small accepts up to 8192 tokens (~32K chars).
+  // OpenAI v3 embedding models accept up to 8192 tokens (~32K chars).
   // 7000 chars is a safe headroom that survives multibyte expansion.
 
   // Sprint 51.7 T2: merge transcript-derived metadata so the caller (
@@ -618,6 +665,23 @@ function buildSummary(transcriptPath, sessionType) {
   };
 }
 
+// Sprint 73 T1 (ORCH handoff, v5) — recall-parity embedding contract.
+// MUST match mnestra's query-side embedder (engram src/embeddings.ts:
+// text-embedding-3-large at dimensions:1536) EXACTLY. OpenAI embedding models
+// do NOT share a vector space — rows embedded with a different model than the
+// query score semantic noise in memory_hybrid_search (Sprint 74 T3 measured
+// 544 production rows half-blind from the 3-small era). `dimensions` is
+// LOAD-BEARING: 3-large natively emits 3072 dims and memory_items.embedding
+// is vector(1536); omitting it turns every insert into a fail-soft 400 (rows
+// silently lost). EMBEDDING_MODEL_MARKER is written to
+// metadata.embedding_model on each row — Sprint 74 T3's re-embed backfill
+// keys its idempotent selection on it (rows without the marker get
+// re-embedded; rows with it are skipped). Bump the marker string in lockstep
+// with any future model/dims change.
+const EMBEDDING_MODEL = 'text-embedding-3-large';
+const EMBEDDING_DIMENSIONS = 1536;
+const EMBEDDING_MODEL_MARKER = `${EMBEDDING_MODEL}@${EMBEDDING_DIMENSIONS}`;
+
 async function embedText(text, openaiKey) {
   try {
     const res = await fetch('https://api.openai.com/v1/embeddings', {
@@ -626,7 +690,11 @@ async function embedText(text, openaiKey) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${openaiKey}`,
       },
-      body: JSON.stringify({ model: 'text-embedding-3-small', input: text }),
+      body: JSON.stringify({
+        model: EMBEDDING_MODEL,
+        dimensions: EMBEDDING_DIMENSIONS,
+        input: text,
+      }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -653,15 +721,27 @@ async function embedText(text, openaiKey) {
 // binary is `agy` but the canonical provenance tag is `antigravity`, so the
 // alias map below folds `agy` → `antigravity` before the allowlist check —
 // an agy panel's memories must not be mis-tagged `claude`.
+//
+// Sprint 73 T1: the Grok WEB panel (web-chat-grok adapter, sessionType
+// 'web-chat') is distinguishable from the Grok CLI — canonical tag 'grok-web'.
+// Per the Sprint 74 ORCH one-churn addendum, the other three web-surface tags
+// ('claude-web', 'chatgpt-web', 'gemini-web') are forward-declared in the same
+// v4 bump; they have NO termdeck producer yet — inert acceptance-gate entries
+// so the next web-chat adapter doesn't need another stamp/refresh cycle.
+// ATOMIC with mnestra migration 024 (Sprint 74 T1), which adds the same four
+// to the read-side source_agents enum + recall filter.
 const ALLOWED_SOURCE_AGENTS = new Set([
   'claude', 'codex', 'gemini', 'grok', 'orchestrator', 'antigravity',
+  'grok-web', 'claude-web', 'chatgpt-web', 'gemini-web',
 ]);
 
-// Alias → canonical source_agent. Keeps the binary name (`agy`) and any older
-// callers from being dropped to 'claude' by the allowlist gate. Applied (after
-// lowercasing) before the ALLOWED_SOURCE_AGENTS membership test.
+// Alias → canonical source_agent. Keeps the binary name (`agy`), the adapter
+// REGISTRY name (`web-chat-grok` ≠ provenance tag), and any older callers from
+// being dropped to 'claude' by the allowlist gate. Applied (after lowercasing)
+// before the ALLOWED_SOURCE_AGENTS membership test.
 const SOURCE_AGENT_ALIASES = {
   agy: 'antigravity',
+  'web-chat-grok': 'grok-web',
 };
 
 function normalizeSourceAgent(raw) {
@@ -690,6 +770,9 @@ async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, pr
         project,
         source_session_id: sessionId || null,
         source_agent: normalizeSourceAgent(sourceAgent),
+        // v5 — backfill-idempotency marker (see EMBEDDING_MODEL_MARKER).
+        // memory_items.metadata exists from migration 001 (jsonb default '{}').
+        metadata: { embedding_model: EMBEDDING_MODEL_MARKER },
       }),
     });
     if (!res.ok) {
@@ -825,24 +908,26 @@ async function processStdinPayload(input) {
   try { stat = statSync(transcriptPath); }
   catch (e) { log(`cannot-stat-transcript: ${transcriptPath} — ${e.message}`); return; }
 
-  // Sprint 70 T1 (A1 RED fix — ORCH 2026-06-07 19:21 ET). The raw-byte floor is
-  // calibrated for verbose on-disk JSONL (claude/codex/gemini/grok session files
-  // run 10s of KB even when short). Antigravity has no on-disk transcript — its
-  // capture is a synthesized COMPACT stdout-tee envelope (cleaned, de-chromed
-  // content only), so a genuinely-substantive short agy session is legitimately
-  // <5KB and the byte floor would wrongly drop it (false zero-row). Exempt
-  // sessionType==='antigravity' from the byte floor and gate on parsed CONTENT
-  // instead — require >= 1 assistant turn so an empty / no-model-output capture
-  // still no-ops. Do NOT lower the global floor; it correctly filters trivial
-  // verbose sessions for every other agent.
-  if (sessionType === 'antigravity') {
-    let agyRaw = '';
-    try { agyRaw = readFileSync(transcriptPath, 'utf8'); }
+  // Sprint 70 T1 (A1 RED fix — ORCH 2026-06-07 19:21 ET) + Sprint 73 T1. The
+  // raw-byte floor is calibrated for verbose on-disk JSONL (claude/codex/
+  // gemini/grok session files run 10s of KB even when short). Antigravity and
+  // web-chat have no on-disk transcript — their captures are synthesized
+  // COMPACT envelopes (agy: cleaned, de-chromed stdout-tee; web-chat: the
+  // in-memory turn buffer — 48/49 live Sprint-72 envelopes measured <5 KB), so
+  // a genuinely-substantive short session is legitimately <5KB and the byte
+  // floor would wrongly drop it (false zero-row). Exempt those sessionTypes
+  // from the byte floor and gate on parsed CONTENT instead — require >= 1
+  // assistant turn so an empty / no-model-output capture still no-ops. Do NOT
+  // lower the global floor; it correctly filters trivial verbose sessions for
+  // every other agent.
+  if (BYTE_FLOOR_EXEMPT_SESSION_TYPES.has(sessionType)) {
+    let exemptRaw = '';
+    try { exemptRaw = readFileSync(transcriptPath, 'utf8'); }
     catch (e) { log(`cannot-read-transcript: ${transcriptPath} — ${e.message}`); return; }
-    const agyTurns = selectTranscriptParser(sessionType).parser(agyRaw);
-    const assistantTurns = agyTurns.filter((m) => m && m.role === 'assistant').length;
+    const exemptTurns = selectTranscriptParser(sessionType).parser(exemptRaw);
+    const assistantTurns = exemptTurns.filter((m) => m && m.role === 'assistant').length;
     if (assistantTurns < 1) {
-      debug(`antigravity-no-assistant-turn: ${agyTurns.length} parsed, 0 assistant — skipping`);
+      debug(`${sessionType}-no-assistant-turn: ${exemptTurns.length} parsed, 0 assistant — skipping`);
       return;
     }
   } else if (stat.size < MIN_TRANSCRIPT_BYTES) {
@@ -943,6 +1028,15 @@ if (require.main === module) {
     // Sprint 50 T2 — source_agent provenance plumbing.
     normalizeSourceAgent,
     ALLOWED_SOURCE_AGENTS,
+    // Sprint 73 T1 — compact-envelope sessionTypes exempt from the byte floor.
+    BYTE_FLOOR_EXEMPT_SESSION_TYPES,
+    // Sprint 73 T1 (v5) — recall-parity embedding contract. The pre-compact
+    // hook reads EMBEDDING_MODEL_MARKER via loadHelpers and stamps it only
+    // when defined, so a stale session-end beside a new pre-compact can never
+    // false-mark rows.
+    EMBEDDING_MODEL,
+    EMBEDDING_DIMENSIONS,
+    EMBEDDING_MODEL_MARKER,
     // Sprint 51.7 T2 — transcript-metadata extractor for memory_sessions.
     parseTranscriptMetadata,
     FACT_TOOL_NAMES,

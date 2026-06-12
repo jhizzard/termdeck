@@ -1956,6 +1956,69 @@
       to { opacity: 1; transform: translateY(0); }
     }
 
+    /* ===== Input-guard toast (Sprint 73 T3, termdeck#12) =====
+       Same chrome as .proactive-toast but red-accented (it reports suppressed
+       input, not a memory hit) and not cursor-pointer (clicking it does
+       nothing; actions are the explicit buttons). */
+    .input-guard-toast {
+      position: absolute;
+      right: 10px;
+      bottom: 44px;
+      max-width: 320px;
+      padding: 8px 10px 8px 12px;
+      background: rgba(23, 15, 15, 0.95);
+      border: 1px solid var(--tg-accent-dim);
+      border-left: 3px solid #f7768e;
+      border-radius: var(--tg-radius-sm);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+      color: var(--tg-text);
+      font-size: 11px;
+      z-index: 26;
+      animation: toast-in 0.18s ease;
+    }
+    .input-guard-toast .t-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: #f7768e;
+      margin-bottom: 3px;
+    }
+    .input-guard-toast .t-body {
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--tg-text);
+    }
+    .input-guard-toast .t-meta {
+      margin-top: 4px;
+      font-size: 9px;
+      color: var(--tg-text-dim);
+    }
+    .input-guard-toast .t-dismiss {
+      position: absolute;
+      top: 2px;
+      right: 4px;
+      background: none;
+      border: none;
+      color: var(--tg-text-dim);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 4px;
+    }
+    .input-guard-toast .t-dismiss:hover { color: var(--tg-text); }
+    .input-guard-toast .t-send-anyway {
+      margin-top: 6px;
+      padding: 2px 8px;
+      background: none;
+      border: 1px solid #f7768e;
+      border-radius: var(--tg-radius-sm);
+      color: #f7768e;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .input-guard-toast .t-send-anyway:hover {
+      background: rgba(247, 118, 142, 0.15);
+    }
+
     /* ===== Flashback modal (Sprint 16 T2) ===== */
     .flashback-modal {
       display: none;
