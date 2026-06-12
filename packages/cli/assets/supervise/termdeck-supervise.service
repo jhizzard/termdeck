@@ -1,0 +1,27 @@
+# TermDeck stack supervisor — one tick of termdeck-supervise.sh.
+# Staged by `termdeck init --bridge` from the vendored package asset
+# (packages/cli/assets/supervise/) with the __TERMDECK_*__ tokens resolved
+# for this machine at stage time. Structural source of truth:
+# docs/examples/termdeck-supervise.service in the repo — keep in lockstep
+# (pinned by packages/cli/tests/init-bridge.test.js).
+#
+# Pair with termdeck-supervise.timer (60s cadence); the timer is what keeps
+# the stack alive, this unit is a single idempotent pass. The wizard copies
+# both files into ~/.config/systemd/user/ but NEVER enables them; the
+# operator runs:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now termdeck-supervise.timer
+#   loginctl enable-linger "$(whoami)"
+#
+# Logs: journalctl --user -u termdeck-supervise.service -n 50
+#       plus the script's own ~/.termdeck/logs/supervise.log
+
+[Unit]
+Description=TermDeck stack supervisor (one idempotent tick)
+
+[Service]
+Type=oneshot
+# systemd's minimal PATH hides npm-global bins (node, mnestra, termdeck) and
+# often cloudflared — prepend the usual homes. Same pitfall as termdeck.service.
+Environment="PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/bin/bash __TERMDECK_SUPERVISE_SCRIPT__

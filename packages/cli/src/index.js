@@ -5,6 +5,7 @@
 //   termdeck [--port 3000] [--no-open]
 //   termdeck init --mnestra [flags]   # Tier 2 memory setup (wired to init-mnestra.js)
 //   termdeck init --rumen  [flags]   # Tier 3 async learning deploy
+//   termdeck init --bridge [flags]   # Tier 5 web-chat bridge (named tunnel + supervisor)
 //
 // Note (Sprint 3): the `--mnestra` flag name matches the current init-mnestra.js
 // filename. When the main orchestrator completes the Mnestra → Mnestra rename
@@ -223,7 +224,7 @@ if (args[0] === 'init') {
   // silently picking the first. The `--auto` / `--mcp-supabase` flags are
   // NOT in this list — they're handled by init.js (the orchestrator) and
   // can co-exist with init.js's own flag set.
-  const MODES = ['--project', '--mnestra', '--rumen'];
+  const MODES = ['--project', '--mnestra', '--rumen', '--bridge'];
   const presentModes = MODES.filter((m) => args.slice(1).includes(m));
   if (presentModes.length > 1) {
     console.error(`[cli] init: pass only one of ${MODES.join(' | ')}; got ${presentModes.join(' + ')}`);
@@ -257,6 +258,16 @@ if (args[0] === 'init') {
     });
     return;
   }
+  // Sprint 73 T2: Tier 5 web-chat bridge wizard. MUST dispatch here, above
+  // the leading-dash catch-all below — otherwise `init --bridge` would
+  // silently route into the unified init.js orchestrator.
+  if (mode === '--bridge') {
+    run(path.join(__dirname, 'init-bridge.js'), rest).catch((err) => {
+      console.error('[cli] init --bridge failed:', err && err.stack || err);
+      process.exit(1);
+    });
+    return;
+  }
 
   // Sprint 64 T1: default (no mode) OR `--auto` / `--mcp-supabase` → route to
   // the unified orchestrator at init.js. It runs init-mnestra + init-rumen +
@@ -282,11 +293,12 @@ if (args[0] === 'init') {
     });
     return;
   }
-  console.error('Usage: termdeck init [--auto] | --mnestra | --rumen | --project <name>');
+  console.error('Usage: termdeck init [--auto] | --mnestra | --rumen | --bridge | --project <name>');
   console.error('  termdeck init                       Unified setup (Mnestra + Rumen + doctor)');
   console.error('  termdeck init --auto                Auto-provision via Supabase MCP (alias: --mcp-supabase)');
   console.error('  termdeck init --mnestra             Configure Tier 2 memory (Supabase + Mnestra)');
   console.error('  termdeck init --rumen               Deploy Tier 3 async learning (Rumen)');
+  console.error('  termdeck init --bridge              Scaffold Tier 5 web-chat bridge (named tunnel + supervisor)');
   console.error('  termdeck init --project <name>      Scaffold a new project with CLAUDE.md + orchestration docs');
   console.error('  termdeck init --help                Show full flag reference');
   process.exit(1);
@@ -388,6 +400,7 @@ for (let i = 0; i < args.length; i++) {
     termdeck --session-logs     Write per-session markdown logs to ~/.termdeck/sessions/
     termdeck init --mnestra     Configure Tier 2 memory (Supabase + Mnestra)
     termdeck init --rumen       Deploy Tier 3 async learning (Rumen)
+    termdeck init --bridge      Scaffold Tier 5 web-chat bridge (named tunnel + supervisor)
     termdeck init --project NAME  Scaffold a new project with CLAUDE.md + orchestration docs (--dry-run, --force)
     termdeck forge              Generate Claude skills from memories (experimental)
     termdeck doctor             Diagnose stack — npm versions + Supabase schema (use --no-schema to skip the DB probe)

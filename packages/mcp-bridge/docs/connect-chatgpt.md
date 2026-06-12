@@ -1,8 +1,9 @@
 # Connect ChatGPT to the MCP Bridge
 
-Connect **ChatGPT** to your self-hosted Bridge via **Developer Mode** custom
-connectors, so a ChatGPT conversation can pull your Mnestra memory and see live
-TermDeck terminal state — read-only, egress-redacted, approval-gated.
+Connect **ChatGPT** to your self-hosted Bridge via the **"New App"** dialog
+(Settings → Apps & Connectors), so a ChatGPT conversation can pull your Mnestra
+memory and see live TermDeck terminal state — read-only, egress-redacted,
+approval-gated.
 
 > Same security posture as the other providers: **read-only** tools only, every
 > result **egress-redacted**, the four terminal-state tools **approval-gated**,
@@ -18,16 +19,19 @@ TermDeck terminal state — read-only, egress-redacted, approval-gated.
 2. **Mnestra reachable** (`MNESTRA_WEBHOOK_URL`, default
    `http://localhost:37778/mnestra`) and **TermDeck running**
    (`TERMDECK_BASE_URL`, default `http://127.0.0.1:3000`).
-3. A **ChatGPT plan with Developer Mode / custom connectors** (Plus / Pro /
-   Business, where available).
+3. A **ChatGPT plan with custom apps/connectors** (Plus / Pro / Business, where
+   available).
 
-## Enable Developer Mode + connect
+## Add the Bridge as a custom app
 
-1. In ChatGPT, open **Settings → Connectors**.
-2. Open **Advanced** and enable **Developer Mode** (this is what exposes the
-   "add a custom MCP connector by URL" option).
-3. **Create / Add** a custom connector and paste the MCP endpoint URL:
-   **`https://<your-tunnel-host>/mcp`**.
+> ChatGPT's UI for this has churned: the flow proven live on 2026-06-09 is the
+> **"New App" dialog**, not the older "Connectors → Advanced → Developer Mode"
+> path some docs still describe. If your account shows the older UI, the same
+> URL + OAuth flow applies — only the entry point differs.
+
+1. In ChatGPT, open **Settings → Apps & Connectors**.
+2. Click **New App** (the create/add-custom-app dialog).
+3. Paste the MCP endpoint URL: **`https://<your-tunnel-host>/mcp`**.
 4. **Authenticate.** Two supported paths:
    - **OAuth 2.1 + PKCE (recommended).** ChatGPT reads the Bridge's auth metadata
      (`/.well-known/oauth-protected-resource/mcp`), performs Dynamic Client

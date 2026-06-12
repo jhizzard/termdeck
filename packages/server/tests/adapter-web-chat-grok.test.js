@@ -22,10 +22,10 @@ const { AGENT_ADAPTERS, detectAdapter, getAdapterForSessionType } = registry;
 
 // ── identity + registry non-interference ──────────────────────────────────
 
-test('adapter identity: sessionType web-chat, name web-chat-grok, sourceAgent grok (ORCH zero-touch), subscription', () => {
+test('adapter identity: sessionType web-chat, name web-chat-grok, sourceAgent grok-web (Sprint 73 T1), subscription', () => {
   assert.equal(adapter.sessionType, 'web-chat');
   assert.equal(adapter.name, 'web-chat-grok');
-  assert.equal(adapter.sourceAgent, 'grok'); // ORCH Blocker-3 decision — not 'grok-web'
+  assert.equal(adapter.sourceAgent, 'grok-web'); // Sprint 73 T1 flip — distinct web provenance, atomic with hook v4 + mnestra mig 024
   assert.equal(adapter.costBand, 'subscription');
   assert.equal(typeof adapter.resolveTranscriptPath, 'function',
     'resolveTranscriptPath MUST be a function or onPanelClose/periodic-capture skip web-chat');

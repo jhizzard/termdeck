@@ -398,7 +398,7 @@ test('WS {type:\'web-chat-input\'} forwards a raw CDP event to the driver (direc
   });
 });
 
-test('close (DELETE) fires the SessionEnd hook ONCE with sessionType=web-chat, source_agent=grok, + a tempfile envelope of BOTH turns', async () => {
+test('close (DELETE) fires the SessionEnd hook ONCE with sessionType=web-chat, source_agent=grok-web, + a tempfile envelope of BOTH turns', async () => {
   await withTempHome(async (home) => {
     installFakeHook(home, 'memory-session-end.js');
     const handle = await bootTestServer();
@@ -423,7 +423,7 @@ test('close (DELETE) fires the SessionEnd hook ONCE with sessionType=web-chat, s
       const { hookPath, payload } = calls[0];
       assert.equal(hookPath, path.join(home, '.claude', 'hooks', 'memory-session-end.js'));
       assert.equal(payload.sessionType, 'web-chat');
-      assert.equal(payload.source_agent, 'grok', 'ORCH zero-touch provenance — grok, not grok-web, not claude');
+      assert.equal(payload.source_agent, 'grok-web', 'Sprint 73 T1 provenance — grok-web (distinct from CLI grok), not claude');
       assert.equal(payload.session_id, body.id);
 
       tmpfile = payload.transcript_path;
@@ -494,7 +494,7 @@ test('periodic-capture timer fires the pre-compact hook for a web-chat panel (se
       assert.ok(periodicCalls.length >= 1, 'periodic-capture hook fired for the web-chat panel');
       assert.equal(periodicCalls[0].payload.sessionType, 'web-chat');
       assert.equal(periodicCalls[0].payload.mode, 'periodic_checkpoint');
-      assert.equal(periodicCalls[0].payload.source_agent, 'grok');
+      assert.equal(periodicCalls[0].payload.source_agent, 'grok-web');
     } finally {
       _setSpawnPeriodicCaptureHookImplForTesting(null);
       _setWebChatDriverImplForTesting(null);

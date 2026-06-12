@@ -1,0 +1,14 @@
+# 60s cadence for termdeck-supervise.service — see that unit's header for the
+# install recipe. Enable the TIMER, not the service:
+#   systemctl --user enable --now termdeck-supervise.timer
+
+[Unit]
+Description=Run the TermDeck stack supervisor every 60s
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

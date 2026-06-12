@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TermDeck stack supervisor — runs termdeck-supervise.sh every 60s and at
+  login, keeping the server / Mnestra webhook / cloudflared tunnel / MCP
+  bridge alive.
+
+  Staged by `termdeck init --bridge` from the vendored package asset
+  (packages/cli/assets/supervise/) with the __TERMDECK_*__ tokens resolved
+  for this machine at stage time. Structural source of truth:
+  scripts/com.jhizzard.termdeck-supervise.plist in the repo — keep the dict
+  keys in lockstep (pinned by packages/cli/tests/init-bridge.test.js).
+
+  The wizard copies this file into ~/Library/LaunchAgents/ but NEVER loads
+  it; the operator runs:
+    launchctl load -w ~/Library/LaunchAgents/com.jhizzard.termdeck-supervise.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jhizzard.termdeck-supervise</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__TERMDECK_SUPERVISE_SCRIPT__</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>__TERMDECK_HOME__/.termdeck/logs/supervise.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__TERMDECK_HOME__/.termdeck/logs/supervise.err.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

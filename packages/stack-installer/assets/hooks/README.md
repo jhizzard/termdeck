@@ -2,13 +2,14 @@
 
 The `@jhizzard/termdeck-stack` installer can drop `memory-session-end.js`
 into `~/.claude/hooks/` and wire it into `~/.claude/settings.json` under
-`hooks.Stop`. The installer prompts you before doing this; default is
-yes.
+`hooks.SessionEnd`. The installer prompts you before doing this; default
+is yes. (Early versions wired `hooks.Stop`, which fires every assistant
+turn — the wizard migrates that to `SessionEnd` automatically.)
 
 ## What the hook does
 
-On every Claude Code session close, Claude Code fires its `Stop` hook
-with a JSON payload on stdin:
+On every Claude Code session close, Claude Code fires its `SessionEnd`
+hook with a JSON payload on stdin:
 
 ```json
 { "transcript_path": "/path/to/session.jsonl", "cwd": "/path/where/you/were/working", "session_id": "..." }
@@ -17,20 +18,28 @@ with a JSON payload on stdin:
 The hook:
 
 1. Skips transcripts smaller than 5 KB (no signal in tiny sessions —
-   override via `TERMDECK_HOOK_MIN_BYTES`).
+   override via `TERMDECK_HOOK_MIN_BYTES`). Compact-envelope session
+   types (`antigravity`, `web-chat`) are exempt from the byte floor and
+   gate on parsed content instead (≥ 1 assistant turn).
 2. Validates env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
    `OPENAI_API_KEY`); if any are missing, logs the missing list and
    exits cleanly without blocking the session close.
 3. Detects the project from `cwd` against a built-in regex table; falls
-   back to `"global"` when nothing matches. **The default table is
-   intentionally empty** — see "Customizing the project map" below to
-   add your own entries.
+   back to `"global"` when nothing matches. The hook ships with a
+   default most-specific-first table — see "Customizing the project
+   map" below to extend it with your own entries.
 4. Builds a coarse session summary from the last ~30 messages of the
    transcript (~7 KB cap to stay inside OpenAI's embedding-input
    budget).
-5. Embeds the summary via OpenAI `text-embedding-3-small` (1,536-dim).
+5. Embeds the summary via OpenAI `text-embedding-3-large` at
+   `dimensions: 1536` — deliberately identical to Mnestra's recall-query
+   embedder, so rows and queries share one vector space (rows embedded
+   with any other model rank as semantic noise in hybrid search).
 6. POSTs **one row** to Supabase `/rest/v1/memory_items` with
-   `source_type='session_summary'`.
+   `source_type='session_summary'` (stamped
+   `metadata.embedding_model='text-embedding-3-large@1536'`), plus a
+   companion upsert to `/rest/v1/memory_sessions` keyed on
+   `session_id`.
 7. Logs every step to `~/.claude/hooks/memory-hook.log`.
 
 The hook is **fail-soft**: any error (network, parse, env-var-missing,
@@ -70,9 +79,9 @@ If any of the three is missing the log line will name them:
 
 ## Customizing the project map
 
-The hook ships with an **empty `PROJECT_MAP`** by default — every
-session lands under `project: 'global'` until you add entries. To add
-your own:
+The hook ships with a default `PROJECT_MAP` (most-specific-first); a
+session lands under `project: 'global'` only when no entry matches its
+`cwd`. To add your own entries:
 
 1. Open `~/.claude/hooks/memory-session-end.js` after the installer
    has dropped it.
@@ -146,8 +155,8 @@ before overwriting; choose accordingly.
 Two options:
 
 1. Edit `~/.claude/settings.json` and remove the entry under
-   `hooks.Stop` that references `memory-session-end.js`. Leave the
-   file in place; it simply won't fire.
+   `hooks.SessionEnd` that references `memory-session-end.js`. Leave
+   the file in place; it simply won't fire.
 2. Or delete `~/.claude/hooks/memory-session-end.js` AND remove the
    `settings.json` entry. (Removing only the file leaves a broken
    `command` in settings — Claude Code will log a missing-file error
@@ -162,6 +171,7 @@ re-prompt to install. Decline at the prompt to stay opted out.
 |---|---|
 | `TERMDECK_HOOK_DEBUG=1` | Verbose `[debug]` lines in the log |
 | `TERMDECK_HOOK_MIN_BYTES=10000` | Override the 5 KB skip threshold |
+| `TERMDECK_HOOK_MIN_MESSAGES=5` | Override the parsed-message floor (default 1) |
 
 ## Log file
 

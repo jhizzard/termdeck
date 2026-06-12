@@ -728,15 +728,27 @@ test('buildSummary returns null for missing transcript file', () => {
   assert.equal(buildSummary('/nonexistent/transcript.jsonl'), null);
 });
 
-test('buildSummary returns null when fewer than 5 messages', () => {
+// Sprint 64 T2 lowered MIN_TRANSCRIPT_MESSAGES from the hard-coded 5 to a
+// default of 1 (Brad's grok-canary silent-skip; the 5 KB byte floor is the
+// primary noise filter now). This test previously pinned the LEGACY 5-message
+// gate and sat stale-red from Sprint 64 until Sprint 73 T1 tripped over it.
+// The env-var override path is covered by
+// packages/server/tests/hook-min-messages-threshold.test.js.
+test('buildSummary builds for a 2-message transcript (default floor is 1 since Sprint 64) and nulls on empty', () => {
   const lines = [
     { message: { role: 'user', content: 'hi' } },
     { message: { role: 'assistant', content: 'hello' } },
   ].map(JSON.stringify).join('\n');
   const p = freshTmpFile(lines);
   try {
-    assert.equal(buildSummary(p), null);
+    const built = buildSummary(p);
+    assert.ok(built, '2 messages >= default floor 1 — summary must build');
+    assert.equal(built.messagesCount, 2);
   } finally { fs.unlinkSync(p); }
+  const empty = freshTmpFile('');
+  try {
+    assert.equal(buildSummary(empty), null, '0 parsed messages < floor 1 — still null');
+  } finally { fs.unlinkSync(empty); }
 });
 
 test('buildSummary builds header + tail of message excerpts', () => {
@@ -917,7 +929,11 @@ test('embedText calls OpenAI with the right shape and returns embedding', withMo
     assert.equal(opts.headers['Authorization'], 'Bearer sk-fake');
     assert.equal(opts.headers['Content-Type'], 'application/json');
     const body = JSON.parse(opts.body);
-    assert.equal(body.model, 'text-embedding-3-small');
+    // Sprint 73 T1 v5 — recall-parity: must match mnestra's query embedder
+    // (3-large @ 1536) exactly; dimensions is load-bearing (3-large is
+    // natively 3072-dim, the DB column is vector(1536)).
+    assert.equal(body.model, 'text-embedding-3-large');
+    assert.equal(body.dimensions, 1536);
     assert.equal(body.input, 'sample summary');
     return { ok: true, json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }) };
   },
@@ -993,15 +1009,21 @@ test('postMemoryItem returns false on fetch exception', withMockedFetch(
 
 // ── Sprint 50 T2 — source_agent provenance ─────────────────────────────
 
-test('normalizeSourceAgent accepts the canonical 6 agents', () => {
-  for (const a of ['claude', 'codex', 'gemini', 'grok', 'orchestrator', 'antigravity']) {
+test('normalizeSourceAgent accepts the canonical 10 agents', () => {
+  for (const a of [
+    'claude', 'codex', 'gemini', 'grok', 'orchestrator', 'antigravity',
+    'grok-web', 'claude-web', 'chatgpt-web', 'gemini-web',
+  ]) {
     assert.equal(normalizeSourceAgent(a), a);
   }
   // ALLOWED_SOURCE_AGENTS is the live write-side set. Sprint 70 T3 added
-  // 'antigravity' (Antigravity `agy` panels). NOTE: the mnestra MCP read-side
-  // `source_agents` zod enum mirror is a documented Sprint 70 follow-up (still
-  // {claude,codex,gemini,grok} there) — write-side leads, read-side widens later.
-  assert.equal(ALLOWED_SOURCE_AGENTS.size, 6);
+  // 'antigravity' (Antigravity `agy` panels). Sprint 73 T1 added the four
+  // web-surface tags per the Sprint 74 ORCH one-churn addendum — only
+  // 'grok-web' has a live producer (the web-chat-grok adapter); the other
+  // three are inert forward-declarations. The mnestra MCP read-side
+  // `source_agents` zod enum gains the same four via migration 024
+  // (Sprint 74 T1 — atomic release partner).
+  assert.equal(ALLOWED_SOURCE_AGENTS.size, 10);
 });
 
 // Sprint 70 T3 — the Antigravity binary is `agy` but the canonical provenance
@@ -1014,6 +1036,21 @@ test('normalizeSourceAgent aliases agy → antigravity (case-insensitive)', () =
   // The canonical form passes through unchanged.
   assert.equal(normalizeSourceAgent('antigravity'), 'antigravity');
   assert.equal(normalizeSourceAgent('ANTIGRAVITY'), 'antigravity');
+});
+
+// Sprint 73 T1 — the web-chat Grok adapter's REGISTRY name is `web-chat-grok`
+// but the canonical provenance tag is `grok-web`. Same safety-net shape as
+// agy → antigravity: any caller passing the registry name (instead of the
+// adapter's explicit sourceAgent field) must not be dropped to 'claude'.
+test('normalizeSourceAgent aliases web-chat-grok → grok-web; hyphenated canonical survives unmangled', () => {
+  assert.equal(normalizeSourceAgent('web-chat-grok'), 'grok-web');
+  assert.equal(normalizeSourceAgent('WEB-CHAT-GROK'), 'grok-web');
+  assert.equal(normalizeSourceAgent('  Web-Chat-Grok  '), 'grok-web');
+  // The canonical hyphenated form passes through trim+lowercase unchanged.
+  assert.equal(normalizeSourceAgent('grok-web'), 'grok-web');
+  assert.equal(normalizeSourceAgent('GROK-WEB'), 'grok-web');
+  // CLI grok is NOT folded into grok-web — the whole point is distinguishing them.
+  assert.equal(normalizeSourceAgent('grok'), 'grok');
 });
 
 test('normalizeSourceAgent defaults to "claude" for absent / empty / unknown', () => {
@@ -1167,7 +1204,8 @@ test('processStdinPayload end-to-end: env present + good transcript → embed + 
     await setEnv();
     assert.equal(calls.length, 3, 'expected 1 OpenAI + 1 memory_items + 1 memory_sessions');
     assert.match(calls[0].url, /openai\.com\/v1\/embeddings/);
-    assert.equal(calls[0].body.model, 'text-embedding-3-small');
+    assert.equal(calls[0].body.model, 'text-embedding-3-large');
+    assert.equal(calls[0].body.dimensions, 1536, 'dimensions:1536 is load-bearing — vector(1536) column');
 
     // memory_items POST (existing).
     const itemCall = calls.find((c) => /\/rest\/v1\/memory_items$/.test(c.url));

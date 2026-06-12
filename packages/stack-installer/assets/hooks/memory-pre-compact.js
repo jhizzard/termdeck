@@ -1,6 +1,13 @@
 /**
  * TermDeck pre-compact memory hook (Mnestra-direct, no rag-system dependency).
  *
+ * @termdeck/stack-installer-hook v2
+ *
+ * ^ Stamp lives at the TOP of the docblock — both readers scan only the first
+ *   4096 bytes (Sprint 73 T1 hit this on the session-end hook when its
+ *   changelog grew past 4 KB and the stamp fell out of the window, silently
+ *   disabling every refresh path). Keep it above the fold.
+ *
  * Vendored into ~/.claude/hooks/memory-pre-compact.js by @jhizzard/termdeck-stack.
  * Wired into ~/.claude/settings.json under hooks.PreCompact — fires BEFORE
  * Claude Code compacts conversation context, capturing the in-flight session
@@ -32,7 +39,9 @@
  *   - Load ~/.termdeck/secrets.env on env-var gaps (Sprint 47.5 discipline).
  *   - Parse transcript via the adapter parser exported by
  *     memory-session-end.js (Sprint 38 module-export contract; no duplication).
- *   - Embed via OpenAI text-embedding-3-small.
+ *   - Embed via the session-end hook's embedText (text-embedding-3-large at
+ *     dimensions:1536 since v5 there — recall-parity with mnestra's query
+ *     embedder; this hook has NO embed call of its own).
  *   - POST ONE row to /rest/v1/memory_items with
  *     source_type='pre_compact_snapshot', category='workflow'.
  *
@@ -43,18 +52,27 @@
  * fail-soft.
  *
  * Version stamp (Sprint 64 T3.2 — initial cut):
- *   The marker `@termdeck/stack-installer-hook v<N>` below is read by both
- *   stack-installer's installPreCompactHook (version-aware overwrite under
- *   --yes) and `termdeck init --mnestra` (refreshBundledPreCompactHookIfNewer
- *   step). Bump the integer whenever a change here should overwrite an
+ *   The marker `@termdeck/stack-installer-hook v<N>` at the TOP of this
+ *   docblock is read by both stack-installer's installPreCompactHook
+ *   (version-aware overwrite under --yes) and `termdeck init --mnestra`
+ *   (refreshBundledPreCompactHookIfNewer step) — both scan only the first
+ *   4096 bytes. Bump the integer whenever a change here should overwrite an
  *   already-installed copy. Comment-only tweaks do not need a bump.
  *
- * @termdeck/stack-installer-hook v1
+ *   v2 (Sprint 73 T1, ORCH handoff — embedding recall-parity marker):
+ *     - Snapshot rows now stamp metadata.embedding_model with the marker
+ *       exported by the session-end hook (v5: 'text-embedding-3-large@1536')
+ *       — Sprint 74 T3's re-embed backfill keys idempotency on it. The marker
+ *       is stamped ONLY when the loaded helpers export it: an older installed
+ *       session-end (still embedding 3-small) exports none, the row stays
+ *       unmarked, and the backfill correctly re-embeds it — a false marker on
+ *       a mis-embedded row would permanently hide it from repair.
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
  *   - SUPABASE_SERVICE_ROLE_KEY      service-role key (needs INSERT on memory_items)
- *   - OPENAI_API_KEY            sk-... for text-embedding-3-small
+ *   - OPENAI_API_KEY            sk-... for the embed model (see embedText in
+ *                               the session-end hook — 3-large@1536 since v5)
  *
  * Optional:
  *   - TERMDECK_HOOK_DEBUG=1               verbose logging
@@ -126,6 +144,7 @@ async function postPreCompactSnapshot({
   content, embedding,
   project, sessionId,
   sourceAgent,
+  embeddingModelMarker,
 }) {
   try {
     const res = await fetch(`${supabaseUrl}/rest/v1/memory_items`, {
@@ -144,6 +163,12 @@ async function postPreCompactSnapshot({
         project,
         source_session_id: sessionId || null,
         source_agent: sourceAgent,
+        // v2 — backfill-idempotency marker, present ONLY when the loaded
+        // helpers export one (i.e. the embed actually ran on that model).
+        // See the v2 header note for the stale-helpers rationale.
+        ...(embeddingModelMarker
+          ? { metadata: { embedding_model: embeddingModelMarker } }
+          : {}),
       }),
     });
     if (!res.ok) {
@@ -240,6 +265,9 @@ async function processPreCompactPayload(input, helpers) {
     supabaseUrl: env.supabaseUrl,
     supabaseKey: env.supabaseKey,
     content, embedding, project, sessionId, sourceAgent,
+    // Marker travels with the embedder: undefined on a pre-v5 session-end
+    // hook (3-small embeds → row stays unmarked → backfill repairs it).
+    embeddingModelMarker: helpers.EMBEDDING_MODEL_MARKER || null,
   });
 
   if (ok) {

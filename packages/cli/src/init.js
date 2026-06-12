@@ -102,6 +102,7 @@ const HELP = [
   'Sub-mode wizards (callable independently for advanced users):',
   '  termdeck init --mnestra   Configure Tier 2 memory (Supabase + Mnestra)',
   '  termdeck init --rumen     Deploy Tier 3 async learning (Rumen)',
+  '  termdeck init --bridge    Scaffold the Tier 5 Web-Chat Bridge (named tunnel + supervisor)',
   '  termdeck init --project   Scaffold a new project with CLAUDE.md + orchestration docs',
   '',
   'Get a Personal Access Token at: https://supabase.com/dashboard/account/tokens',

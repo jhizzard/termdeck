@@ -13,8 +13,8 @@
 // Grok's reasoning model, which the CLI rejects (`reasoningEffort` → HTTP 400;
 // see grok-models.js). Same provider, different runtime + different cost
 // realization, so it is a separate `sessionType:'web-chat'`. Provenance is
-// tagged `sourceAgent:'grok'` this sprint (ORCH zero-touch decision — see the
-// "source_agent attribution" section); a distinct 'grok-web' tag is deferred.
+// tagged `sourceAgent:'grok-web'` (Sprint 73 T1 — see the "source_agent
+// attribution" section), distinguishing web rows from Grok-CLI rows in Mnestra.
 //
 // ── The one hard constraint: NO node-pty, NO on-disk transcript ──────────────
 // There is no PTY stream and no conversation file on disk. The server seam
@@ -39,22 +39,22 @@
 // error) — index.js does not route web-chat text through `_detectErrors`.
 //
 // ── source_agent attribution ─────────────────────────────────────────────────
-// `sourceAgent:'grok'` (ORCH decision 2026-06-08, Blocker 3): we reuse the
-// already-allow-listed 'grok' tag so this sprint touches ZERO release-sensitive
-// surface — the bundled hooks in packages/stack-installer/assets/hooks/* (Brad
-// runs the installed copy) stay pristine. The provenance is still accurate
-// (it IS Grok producing the content); it just doesn't yet distinguish web from
-// CLI. A distinct 'grok-web' tag — which WOULD require adding 'grok-web' to the
-// hook's ALLOWED_SOURCE_AGENTS (else normalizeSourceAgent coerces the row to
-// 'claude') + a hook-version-stamp bump + an install refresh — is deferred to a
-// follow-up. onPanelClose emits `adapter.sourceAgent || adapter.name`.
+// `sourceAgent:'grok-web'` (Sprint 73 T1 — flips the Sprint 72 ORCH zero-touch
+// decision that shipped 'grok' to keep that sprint off the release-sensitive
+// hook surface). Web and CLI Grok rows are now distinguishable in Mnestra:
+// onPanelClose/periodic emit `adapter.sourceAgent || adapter.name`, the bundled
+// hook allow-lists 'grok-web' (stamp v4, plus a `web-chat-grok` registry-name
+// alias as the agy→antigravity-style safety net), and mnestra's source_agents
+// enum + recall filter gain 'grok-web' via migration 024 (Sprint 74 T1 —
+// ATOMIC release partner; neither side ships without the other, else rows are
+// unfilterable or, on a stale installed hook, coerced to 'claude').
 //
-// Byte-floor note (also deferred with grok-web): the bundled hook skips
-// transcripts < 5 KB unless sessionType is specifically exempted (only
-// 'antigravity' is today). Our materialized envelope is compact, so a SHORT
-// (<5 KB) web-chat session is currently dropped — substantive auditor/worker
-// sessions (the real use case) run well past 5 KB and capture normally. The
-// exemption is a hook edit, so it rides the same deferred follow-up.
+// Byte-floor (shipped with the flip, hook v4): the bundled hook skips
+// transcripts < 5 KB unless the sessionType is exempted. Our materialized
+// envelope is compact — synthesized turn content, no JSONL metadata bloat;
+// 48/49 live Sprint-72 envelopes were <5 KB — so 'web-chat' is exempted
+// alongside 'antigravity', gated on parsed content (≥1 assistant turn)
+// instead of raw bytes.
 //
 // Contract — see ./claude.js header for the full annotated adapter shape.
 
@@ -211,11 +211,11 @@ function bootPromptTemplate(lane = {}, sprint = {}) {
 const webChatGrokAdapter = {
   name: 'web-chat-grok',
   sessionType: 'web-chat',
-  // ORCH decision 2026-06-08 (Blocker 3): reuse the already-allow-listed 'grok'
-  // tag so this sprint touches zero release-sensitive hook surface. A distinct
-  // 'grok-web' tag is deferred (needs a hook allowlist edit + version bump).
-  // See the "source_agent attribution" header for the full rationale.
-  sourceAgent: 'grok',
+  // Sprint 73 T1 — distinct web provenance (was 'grok', the Sprint 72 ORCH
+  // zero-touch decision). Pairs ATOMICALLY with hook v4 (ALLOWED_SOURCE_AGENTS
+  // + byte-floor exemption) and mnestra migration 024 (Sprint 74 T1). See the
+  // "source_agent attribution" header for the full rationale.
+  sourceAgent: 'grok-web',
   // Sprint 50 T3 — human-readable label for launcher buttons + panel headers.
   displayName: 'Grok (Web)',
   // Provider URL the CDP driver navigates the dedicated-profile tab to on
