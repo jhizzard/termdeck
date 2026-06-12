@@ -1,20 +1,26 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mnestra client — READ-ONLY wrapper over the Mnestra webhook server.
+// Mnestra client — wrapper over the Mnestra webhook server.
 //
 // Transport: POST ${MNESTRA_WEBHOOK_URL | http://localhost:37778/mnestra} with
 //   { op, ...args }. The webhook supports remember/recall/search/status/index/
-//   timeline/get; this client ONLY ever emits the READ ops 'recall', 'search',
-//   'status'. There is deliberately NO generic `post(op)` exported and NO write
-//   op (no 'remember' / 'forget'), so the Bridge is read-only-by-construction.
+//   timeline/get/propose; this client emits the READ ops 'recall', 'search',
+//   'status' — plus, since Sprint 76, exactly ONE write op: 'propose', which
+//   appends to engram's QUARANTINED memory_inbox (status='pending', invisible
+//   to every recall path until Rumen promotes it). There is deliberately NO
+//   generic `post(op)` exported and NO canonical-write op (no 'remember' /
+//   no 'forget' — those names cannot even mount past policy.assertReadOnly),
+//   so the Bridge stays read-only-plus-one-quarantined-proposal-channel by
+//   construction.
 //
 // We mirror the proven `packages/server/src/mnestra-bridge/index.js` queryWebhook
 // path rather than importing that 318-line bridge — it additionally carries a
 // `direct` mode (OpenAI key in-process) and an `mcp` mode (child-process spawn),
 // capabilities we keep OUT of the egress-sensitive Bridge process on purpose.
 //
-// Each returned row is projected to a bounded allowlist of fields (normalizeRow)
+// Each returned row is projected to a bounded allowlist of fields (normalizeRow
+// for reads; { id, status } only for propose — never the full inbox row back)
 // so the SHAPE of what egresses is fixed here, before redaction runs downstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -90,6 +96,42 @@ function createMnestraClient(opts = {}) {
 
     async status() {
       return readOp('status', {});
+    },
+
+    // The ONE write op (Sprint 76): submit a proposal to the quarantined
+    // memory_inbox via the webhook 'propose' op (engram T1 contract:
+    // { op:'propose', source_agent, text, project_hint?, metadata? } →
+    // 200 { ok, id, status:'pending' } | 400 { ok:false, error }).
+    // `op` is hardcoded — this is NOT a generic post(op), and no other write
+    // op exists on this client. sourceAgent arrives server-derived from the
+    // tool layer (never caller-supplied). Webhook 400s are rethrown with the
+    // webhook's reason so the connector sees WHY a proposal was refused.
+    async propose({ sourceAgent, text, projectHint, metadata } = {}) {
+      if (!sourceAgent || !String(sourceAgent).trim()) {
+        throw new Error('memory_propose requires a resolved source agent');
+      }
+      if (!text || !String(text).trim()) {
+        throw new Error('memory_propose requires non-empty text');
+      }
+      const args = { source_agent: String(sourceAgent), text: String(text) };
+      if (projectHint != null && String(projectHint).trim()) args.project_hint = String(projectHint);
+      if (metadata != null) args.metadata = metadata;
+      let body;
+      try {
+        body = await requestJson(webhookUrl, { method: 'POST', body: { op: 'propose', ...args }, ...reqOpts });
+      } catch (err) {
+        if (err && err.status === 400) {
+          // requestJson already folded the webhook's { error } reason into the
+          // message — reframe it as a refusal so the connector can relay why.
+          throw new Error(`proposal refused by the memory inbox: ${err.message}`);
+        }
+        throw err;
+      }
+      if (!body || body.ok !== true || !body.id) {
+        throw new Error('memory inbox returned an unexpected propose response');
+      }
+      // Bounded projection — id + status only, never the full row back.
+      return { id: String(body.id), status: body.status ? String(body.status) : 'pending' };
     },
   };
 }

@@ -115,7 +115,15 @@ function registerTools(mcpServer, { tools = [], policy = null } = {}) {
     policy.assertReadOnly(t); // throws if the tool declares a write/delete/exec capability
 
     const annotations = Object.assign({ destructiveHint: false }, t.annotations || {});
-    annotations.readOnlyHint = true; // this server is read-only, full stop
+    // Read-only, full stop — EXCEPT the policy's explicit quarantined proposal
+    // channel (Sprint 76): assertReadOnly above has already verified that a
+    // PROPOSE_TOOLS member declares the exact honest shape (readOnlyHint:false,
+    // destructiveHint:false, ...). Stamping readOnlyHint:true over it would
+    // turn the one sanctioned write tool into a LIE at the connector UI —
+    // exactly the deception the Sprint 71 audit forbade. Everything else still
+    // gets the unconditional read-only stamp.
+    const isProposeChannel = !!(policy.PROPOSE_TOOLS instanceof Set && policy.PROPOSE_TOOLS.has(t.name));
+    if (!isProposeChannel) annotations.readOnlyHint = true;
 
     const requiresApproval =
       typeof policy.requiresApproval === 'function' ? policy.requiresApproval(t.name) : !!t.approval;
@@ -143,6 +151,21 @@ function createBridgeServer({ tools = [], policy = null, auth, options = {} } = 
   // Stateful by default (matches Anthropic's reference connector server).
   const stateful =
     options.stateful != null ? options.stateful : process.env.TERMDECK_BRIDGE_STATEFUL !== '0';
+  // Memory-only mode (cloud origin: no TermDeck server, no panels). Tool
+  // assembly is governed in bootstrap()/loadTools(); here the resolved flag
+  // only drives the /healthz `mode` flavor field. Option > env, explicit
+  // false beats env (same resolution style as `stateful`).
+  const memoryOnly =
+    options.memoryOnly != null
+      ? !!options.memoryOnly
+      : process.env.TERMDECK_BRIDGE_MEMORY_ONLY === '1';
+  // Optional operator-chosen, NON-SECRET origin label (e.g. imac/air/cloud) so
+  // a load-balancer verification step can tell which origin answered /healthz.
+  // Absent from /healthz unless configured.
+  const originLabel =
+    options.originLabel != null
+      ? String(options.originLabel)
+      : process.env.TERMDECK_BRIDGE_ORIGIN_LABEL || null;
   const allowedHosts =
     options.allowedHosts ||
     (process.env.TERMDECK_BRIDGE_ALLOWED_HOSTS
@@ -182,18 +205,22 @@ function createBridgeServer({ tools = [], policy = null, auth, options = {} } = 
     }),
   );
 
-  // health — public, no secrets.
-  app.get('/healthz', (req, res) =>
-    res.json({
+  // health — public, no secrets. `mode` is the origin FLAVOR (full vs
+  // memory-only); `origin` (only when configured) identifies WHICH origin.
+  app.get('/healthz', (req, res) => {
+    const body = {
       ok: true,
       name,
       version,
+      mode: memoryOnly ? 'memory-only' : 'full',
       tools: tools.length,
       auth: auth.info && auth.info.staticBearerEnabled ? 'oauth+static' : 'oauth',
       resource: resourceUrl.href,
       ts: new Date().toISOString(),
-    }),
-  );
+    };
+    if (originLabel) body.origin = originLabel;
+    return res.json(body);
+  });
 
   // operator consent gate, then the OAuth AS (authorize/token/register/revoke +
   // PRM /.well-known/oauth-protected-resource + AS metadata). These routers parse
@@ -246,6 +273,8 @@ function createBridgeServer({ tools = [], policy = null, auth, options = {} } = 
     info: auth.info,
     toolCount: tools.length,
     stateful,
+    memoryOnly,
+    originLabel,
     listen(port, host, cb) {
       return app.listen(port, host, cb);
     },
@@ -371,16 +400,33 @@ function loadClients(config) {
   if (!mod) return null;
   return typeof mod.createClients === 'function' ? mod.createClients(config) : mod;
 }
-function loadTools({ policy, clients }) {
+function loadTools({ policy, clients, auth, memoryOnly }) {
   const mod = safeRequire('./tools');
   if (!mod || typeof mod.buildTools !== 'function') return [];
-  return mod.buildTools({ withEgressRedaction, policy, clients });
+  // Connector identity source for the proposal channel (Sprint 76): the OAuth
+  // clients store resolves a per-request client_id → client record
+  // (client_name). FAIL-CLOSED: when absent, buildTools simply does not mount
+  // memory_propose — no identity source, no write channel.
+  const identity = auth && auth.provider && auth.provider.clientsStore
+    && typeof auth.provider.clientsStore.getClient === 'function'
+    ? { getClient: (id) => auth.provider.clientsStore.getClient(id) }
+    : null;
+  return mod.buildTools({ withEgressRedaction, policy, clients, identity, memoryOnly });
 }
 
 // ── bootstrap: wire real (or injected) deps and build the server ─────────────
 function bootstrap(options = {}) {
   const auth = options.auth || createBridgeAuth(options.authOptions || {});
   const policy = options.policy !== undefined ? options.policy : loadPolicy();
+  // Memory-only flag resolved ONCE here (option > env, explicit false beats
+  // env) and passed to BOTH tool assembly and createBridgeServer, so the
+  // mounted tool set and the /healthz `mode` cannot diverge on this path.
+  // (Injected `options.tools` bypass assembly by design — a test/advanced
+  // seam, not an operator surface; the env flag governs the real entrypoint.)
+  const memoryOnly =
+    options.memoryOnly != null
+      ? !!options.memoryOnly
+      : process.env.TERMDECK_BRIDGE_MEMORY_ONLY === '1';
   const clients =
     options.clients !== undefined
       ? options.clients
@@ -397,7 +443,7 @@ function bootstrap(options = {}) {
   let tools = options.tools;
   if (tools === undefined) {
     try {
-      tools = loadTools({ policy, clients });
+      tools = loadTools({ policy, clients, auth, memoryOnly });
     } catch (e) {
       logEvent({ evt: 'tools_load_error', msg: e && e.message });
       tools = [];
@@ -412,7 +458,12 @@ function bootstrap(options = {}) {
     tools = [];
   }
 
-  return createBridgeServer({ tools, policy, auth, options: options.serverOptions || {} });
+  return createBridgeServer({
+    tools,
+    policy,
+    auth,
+    options: Object.assign({}, options.serverOptions || {}, { memoryOnly }),
+  });
 }
 
 function printBootBanner(server) {
@@ -422,7 +473,7 @@ function printBootBanner(server) {
     `    issuer / base : ${server.issuerUrl.href}`,
     `    resource (mcp): ${server.resourceUrl.href}`,
     `    PRM metadata  : ${server.resourceMetadataUrl}`,
-    `    tools mounted : ${server.toolCount}   transport: ${server.stateful ? 'stateful' : 'stateless'}`,
+    `    tools mounted : ${server.toolCount}   transport: ${server.stateful ? 'stateful' : 'stateless'}   mode: ${server.memoryOnly ? 'memory-only' : 'full'}`,
   ];
   if (server.info && server.info.ephemeralOperator) {
     lines.push(

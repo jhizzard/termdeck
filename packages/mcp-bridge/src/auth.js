@@ -15,6 +15,12 @@
 //     skipLocalPkceValidation).
 //   • RFC 7591 Dynamic Client Registration — implementing clientsStore.registerClient
 //     auto-enables the /register endpoint in mcpAuthRouter.
+//   • Static client registration (Sprint 75 / T1) — pre-seeded confidential
+//     clients for connectors that cannot DCR (the Gemini Enterprise custom MCP
+//     connector takes an admin-entered client_id/client_secret): config/env-
+//     sourced, in-memory only (never persisted), timing-safe secret gate ahead
+//     of the SDK's token handler, optional operator-set per-client PKCE
+//     relaxation (allow_no_pkce — ORCH-approved 2026-06-12, see consentRouter).
 //   • RFC 8707 audience binding — access tokens carry aud=<canonical resource URI>;
 //     verifyAccessToken rejects any token whose aud isn't this exact resource.
 //   • Short-lived access tokens (default 1h) + rotating refresh tokens (OAuth 2.1
@@ -36,7 +42,14 @@ const {
   InvalidGrantError,
   InvalidTokenError,
   InvalidTargetError,
+  InvalidClientError,
+  InvalidRequestError,
+  OAuthError,
+  ServerError,
 } = require('@modelcontextprotocol/sdk/server/auth/errors.js');
+// The SDK's redirect-URI matcher (exact match + RFC 8252 loopback-port
+// relaxation) — reused so static clients get identical semantics.
+const { redirectUriMatches } = require('@modelcontextprotocol/sdk/server/auth/handlers/authorize.js');
 
 // ── encoding / crypto helpers ───────────────────────────────────────────────
 function b64url(buf) {
@@ -144,6 +157,104 @@ function createFileStore(file) {
   return { state, save };
 }
 
+// ── static (pre-seeded) OAuth clients ────────────────────────────────────────
+// Connectors that cannot do RFC 7591 DCR (the Gemini Enterprise custom MCP
+// connector takes an admin-entered client_id/client_secret) authenticate
+// against records resolved here. Static clients are confidential-ONLY (a
+// secret is required), live in memory layered above the persisted DCR store,
+// and are NEVER written to bridge-auth.json — the config is the secret's
+// single source of truth. `allow_no_pkce` is operator-config-only by
+// construction: nothing a registration endpoint accepts can create or mutate
+// a static record.
+function resolveStaticClients(options = {}) {
+  let entries = options.staticClients;
+  if (entries == null) {
+    const envId = process.env.TERMDECK_BRIDGE_STATIC_CLIENT_ID;
+    entries = envId
+      ? [
+          {
+            client_id: envId,
+            client_secret: process.env.TERMDECK_BRIDGE_STATIC_CLIENT_SECRET,
+            redirect_uris: String(process.env.TERMDECK_BRIDGE_STATIC_CLIENT_REDIRECT_URIS || '')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean),
+            allow_no_pkce: process.env.TERMDECK_BRIDGE_STATIC_CLIENT_ALLOW_NO_PKCE === '1',
+          },
+        ]
+      : [];
+  }
+  const map = new Map();
+  for (const entry of entries) {
+    const id = entry && entry.client_id;
+    if (!id || typeof id !== 'string') {
+      throw new Error('static client: client_id is required');
+    }
+    if (id.startsWith('mcp_')) {
+      throw new Error(`static client "${id}": ids must not start with "mcp_" (reserved for DCR)`);
+    }
+    if (map.has(id)) {
+      throw new Error(`static client "${id}": duplicate client_id`);
+    }
+    if (!entry.client_secret || typeof entry.client_secret !== 'string') {
+      throw new Error(
+        `static client "${id}": client_secret is required (static clients are confidential-only)`,
+      );
+    }
+    const uris = Array.isArray(entry.redirect_uris)
+      ? entry.redirect_uris.filter((u) => typeof u === 'string' && u)
+      : [];
+    if (!uris.length) {
+      throw new Error(`static client "${id}": at least one redirect_uri is required`);
+    }
+    for (const u of uris) {
+      if (!URL.canParse(u)) throw new Error(`static client "${id}": invalid redirect_uri "${u}"`);
+    }
+    map.set(
+      id,
+      Object.freeze({
+        client_id: id,
+        client_secret: entry.client_secret,
+        client_name: entry.client_name || id,
+        redirect_uris: Object.freeze(uris.slice()),
+        grant_types: Object.freeze(['authorization_code', 'refresh_token']),
+        response_types: Object.freeze(['code']),
+        token_endpoint_auth_method: 'client_secret_post', // + Basic via the /token shim
+        client_secret_expires_at: 0, // non-expiring
+        ...(entry.scope ? { scope: entry.scope } : {}),
+        _static: true,
+        _allowNoPkce: !!entry.allow_no_pkce,
+      }),
+    );
+  }
+  return map;
+}
+
+// RFC 6749 §2.3.1 client_secret_basic: client_id and client_secret are
+// form-urlencoded inside the base64 Basic credentials. Null for anything
+// malformed — the caller falls back to the SDK's body-only path.
+function parseBasicAuth(header) {
+  if (typeof header !== 'string') return null;
+  const m = /^Basic\s+([A-Za-z0-9+/=_-]+)$/i.exec(header.trim());
+  if (!m) return null;
+  let decoded;
+  try {
+    decoded = Buffer.from(m[1], 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+  const i = decoded.indexOf(':');
+  if (i < 0) return null;
+  try {
+    return {
+      client_id: decodeURIComponent(decoded.slice(0, i)),
+      client_secret: decodeURIComponent(decoded.slice(i + 1)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ── the factory ──────────────────────────────────────────────────────────────
 function createBridgeAuth(options = {}) {
   const issuerUrl = new URL(
@@ -191,6 +302,9 @@ function createBridgeAuth(options = {}) {
       : process.env.TERMDECK_BRIDGE_AUTO_APPROVE === '1';
   const staticBearer =
     options.staticBearer || process.env.TERMDECK_BRIDGE_STATIC_BEARER || null;
+  // Pre-seeded confidential clients (e.g. Gemini Enterprise). In-memory only —
+  // never written to the state file; the config is the secret's only home.
+  const staticClients = resolveStaticClients(options);
 
   const codes = new Map(); // code -> { client_id, redirect_uri, code_challenge, scope, resource, exp }
   const accessDenylist = new Set(); // jti of best-effort-revoked access tokens
@@ -306,19 +420,31 @@ function createBridgeAuth(options = {}) {
 <h2 style="color:#f85149">Authorization error</h2><p>${htmlEscape(msg)}</p></body>`;
   }
 
-  // ── DCR clients store ──
+  // ── clients store (in-memory static layer over the persisted DCR store) ──
   const clientsStore = {
     async getClient(clientId) {
-      return state.clients[clientId];
+      // Static records win and never touch the persisted store.
+      return staticClients.get(clientId) || state.clients[clientId];
     },
     async registerClient(client) {
-      const clientId = 'mcp_' + randToken(18);
+      // DCR ids are server-minted in their own `mcp_` namespace; static ids
+      // may not use the prefix (boot validation) and the loop covers the
+      // residual collision odds.
+      let clientId;
+      do {
+        clientId = 'mcp_' + randToken(18);
+      } while (staticClients.has(clientId) || state.clients[clientId]);
       const isPublic = (client.token_endpoint_auth_method || 'none') === 'none';
       const full = {
         ...client,
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
       };
+      // Static-only attributes can never enter via a registration payload
+      // (ORCH condition: allow_no_pkce is operator-config-only, structurally).
+      delete full.allow_no_pkce;
+      delete full._allowNoPkce;
+      delete full._static;
       if (!isPublic) {
         full.client_secret = randToken(24);
         full.client_secret_expires_at = 0; // non-expiring
@@ -477,8 +603,229 @@ function createBridgeAuth(options = {}) {
     },
   };
 
-  // ── consent route (mounted at app root by server.js) ──
+  // ── consent route + static-client gates (mounted at app root by server.js) ──
+  // consentRouter mounts BEFORE mcpAuthRouter (server.js), so the two static-
+  // client intercepts below see /authorize and /token traffic first and
+  // next() everything that is not theirs — the SDK path for DCR clients is
+  // byte-for-byte untouched.
   const consentRouter = express.Router();
+
+  function sendOAuthError(res, err, status) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res
+      .status(status || (err instanceof ServerError ? 500 : 400))
+      .json(err.toResponseObject());
+  }
+
+  // Fixed-window limiter for the static /token branch only — requests this
+  // middleware terminates never reach the SDK's own express-rate-limit, so
+  // the branch mirrors the SDK token endpoint's posture (50 / 15 min / IP).
+  const staticTokenHits = new Map(); // ip -> { count, reset }
+  function staticTokenRateLimited(req) {
+    const now = Date.now();
+    const key = req.ip || (req.socket && req.socket.remoteAddress) || 'global';
+    let rec = staticTokenHits.get(key);
+    if (!rec || now >= rec.reset) {
+      rec = { count: 0, reset: now + 15 * 60_000 };
+      staticTokenHits.set(key, rec);
+    }
+    rec.count++;
+    if (staticTokenHits.size > 5000) {
+      for (const [k, v] of staticTokenHits) if (now >= v.reset) staticTokenHits.delete(k);
+    }
+    return rec.count > 50;
+  }
+
+  // ── static-client gate at /token ──
+  // Three jobs, static clients only:
+  //   1. client_secret_basic → client_secret_post normalization (the SDK's
+  //      clientAuth reads the POST body only; RFC 6749 §2.3.1 requires Basic
+  //      support for confidential clients, and the Gemini Enterprise
+  //      connector may send either).
+  //   2. Timing-safe client_secret verification (crypto.timingSafeEqual via
+  //      timingSafeEqualStr). The SDK compares with a plain `!==`
+  //      (clientAuth.js:49, SDK v1.29.0) — THIS gate is the load-bearing
+  //      check; the SDK's compare only ever runs on already-verified secrets.
+  //   3. The opt-in PKCE-less authorization_code grant: honored ONLY after
+  //      (2) passed on this very request, ONLY for `allow_no_pkce` static
+  //      clients, ONLY for codes that were ISSUED challenge-less. Same
+  //      provider.exchangeAuthorizationCode as the SDK path (one-time use,
+  //      redirect_uri + RFC 8707 resource checks identical).
+  consentRouter.use('/token', express.urlencoded({ extended: false }));
+  consentRouter.post('/token', async (req, res, next) => {
+    try {
+      const body = req.body || {};
+
+      let viaBasic = false;
+      const basic = parseBasicAuth(req.headers && req.headers.authorization);
+      if (basic && staticClients.has(basic.client_id)) {
+        if ((body.client_id && String(body.client_id) !== basic.client_id) || body.client_secret) {
+          // RFC 6749 §2.3: a request MUST NOT use more than one auth method.
+          return sendOAuthError(res, new InvalidRequestError('multiple client authentication methods'));
+        }
+        body.client_id = basic.client_id;
+        body.client_secret = basic.client_secret;
+        req.body = body; // the SDK's body-only clientAuth sees the credentials too
+        viaBasic = true;
+      }
+
+      const sc = typeof body.client_id === 'string' ? staticClients.get(body.client_id) : undefined;
+      if (!sc) return next(); // not a static client — SDK path, untouched
+
+      if (staticTokenRateLimited(req)) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(429).json({
+          error: 'too_many_requests',
+          error_description: 'rate limit exceeded for token requests',
+        });
+      }
+
+      // Load-bearing, timing-safe secret gate. The message is deliberately
+      // distinguishable from the SDK's "Invalid client_secret" so tests can
+      // pin WHICH layer rejected.
+      if (
+        typeof body.client_secret !== 'string' ||
+        !timingSafeEqualStr(body.client_secret, sc.client_secret)
+      ) {
+        if (viaBasic) {
+          // RFC 6749 §5.2: header-authenticated failures answer 401 + scheme.
+          res.setHeader('WWW-Authenticate', 'Basic realm="termdeck-mcp-bridge"');
+          return sendOAuthError(res, new InvalidClientError('invalid client credentials (static gate)'), 401);
+        }
+        return sendOAuthError(
+          res,
+          new InvalidClientError(
+            body.client_secret
+              ? 'invalid client_secret (static gate)'
+              : 'client_secret is required (static gate)',
+          ),
+        );
+      }
+
+      if (sc._allowNoPkce && body.grant_type === 'authorization_code' && body.code_verifier == null) {
+        if (typeof body.code !== 'string' || !body.code) {
+          return sendOAuthError(res, new InvalidRequestError('code is required'));
+        }
+        if (body.redirect_uri != null && typeof body.redirect_uri !== 'string') {
+          return sendOAuthError(res, new InvalidRequestError('redirect_uri must be a string'));
+        }
+        let resource;
+        if (body.resource != null) {
+          if (typeof body.resource !== 'string' || !URL.canParse(body.resource)) {
+            return sendOAuthError(res, new InvalidRequestError('resource must be a valid URL'));
+          }
+          resource = new URL(body.resource);
+        }
+        pruneCodes();
+        const rec = codes.get(body.code);
+        if (rec && rec.code_challenge) {
+          // The code was issued WITH PKCE — its verifier is genuinely
+          // required; the SDK is the single rejection authority for that.
+          return next();
+        }
+        // Unknown/expired codes surface invalid_grant from the provider —
+        // clearer to a PKCE-less client than the SDK schema's invalid_request.
+        const tokens = await provider.exchangeAuthorizationCode(
+          sc,
+          body.code,
+          undefined,
+          body.redirect_uri || undefined,
+          resource,
+        );
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json(tokens);
+      }
+
+      return next(); // verified static client, standard grant shape → SDK
+    } catch (e) {
+      if (e instanceof OAuthError) return sendOAuthError(res, e);
+      return sendOAuthError(res, new ServerError('Internal Server Error'));
+    }
+  });
+
+  // ── opt-in PKCE-less /authorize for static clients ──
+  // ⚠️ DELIBERATE OAuth 2.1 PKCE RELAXATION — ORCH-approved 2026-06-12 with
+  // four binding conditions (Sprint 75 STATUS.md):
+  //   (1) allow_no_pkce is operator-config-only; registration payloads are
+  //       structurally stripped of it (registerClient) and this intercept
+  //       reads ONLY the in-memory static map — a DCR record can never reach it.
+  //   (2) honored only for a CONFIDENTIAL client: the code minted here is
+  //       worthless without the client_secret, which /token verifies
+  //       timing-safely on the same request that redeems the code.
+  //   (3) our comparison is crypto.timingSafeEqual (timingSafeEqualStr) — the
+  //       SDK's `!==` never gates a static secret.
+  //   (4) cross-redemption is closed both ways: a code issued WITH a
+  //       challenge defers to the SDK (verifier required), and a
+  //       challenge-less code fails any verifier presented against it
+  //       (verifyChallenge(v, undefined) === false → invalid_grant).
+  // Static clients WITH a code_challenge, and every non-static client, fall
+  // through to the SDK's authorize handler (PKCE enforced exactly as before).
+  consentRouter.use('/authorize', express.urlencoded({ extended: false }));
+  consentRouter.all('/authorize', async (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'POST') return next();
+    const params = (req.method === 'POST' ? req.body : req.query) || {};
+    const sc = typeof params.client_id === 'string' ? staticClients.get(params.client_id) : undefined;
+    if (!sc || !sc._allowNoPkce || params.code_challenge != null) return next();
+
+    res.setHeader('Cache-Control', 'no-store');
+
+    // Phase 1 (mirrors the SDK): validate redirect_uri BEFORE anything may
+    // redirect — errors here are direct responses, never sent to the URI.
+    let redirectUri = typeof params.redirect_uri === 'string' ? params.redirect_uri : undefined;
+    if (params.redirect_uri != null && redirectUri === undefined) {
+      return sendOAuthError(res, new InvalidRequestError('redirect_uri must be a string'));
+    }
+    if (redirectUri !== undefined) {
+      const requested = redirectUri;
+      if (!sc.redirect_uris.some((registered) => redirectUriMatches(requested, registered))) {
+        return sendOAuthError(res, new InvalidRequestError('Unregistered redirect_uri'));
+      }
+    } else if (sc.redirect_uris.length === 1) {
+      redirectUri = sc.redirect_uris[0];
+    } else {
+      return sendOAuthError(
+        res,
+        new InvalidRequestError('redirect_uri must be specified when client has multiple registered URIs'),
+      );
+    }
+
+    // Phase 2 (mirrors the SDK): remaining errors redirect to the validated URI.
+    const stateParam = typeof params.state === 'string' ? params.state : undefined;
+    const redirectError = (err) => {
+      const u = new URL(redirectUri);
+      u.searchParams.set('error', err.errorCode);
+      u.searchParams.set('error_description', err.message);
+      if (stateParam) u.searchParams.set('state', stateParam);
+      return res.redirect(302, u.href);
+    };
+    if (params.state != null && stateParam === undefined) {
+      return redirectError(new InvalidRequestError('state must be a string'));
+    }
+    if (params.response_type !== 'code') {
+      return redirectError(new InvalidRequestError('response_type must be "code"'));
+    }
+    if (params.scope != null && typeof params.scope !== 'string') {
+      return redirectError(new InvalidRequestError('scope must be a string'));
+    }
+    let resource;
+    if (params.resource != null) {
+      if (typeof params.resource !== 'string' || !URL.canParse(params.resource)) {
+        return redirectError(new InvalidRequestError('resource must be a valid URL'));
+      }
+      resource = new URL(params.resource);
+    }
+    const scopes = typeof params.scope === 'string' ? params.scope.split(' ').filter(Boolean) : [];
+    try {
+      await provider.authorize(
+        sc,
+        { state: stateParam, scopes, redirectUri, codeChallenge: undefined, resource },
+        res,
+      );
+    } catch (e) {
+      return redirectError(e instanceof OAuthError ? e : new ServerError('Internal Server Error'));
+    }
+  });
+
   consentRouter.use('/oauth/consent', express.urlencoded({ extended: false }));
   consentRouter.post('/oauth/consent', (req, res) => {
     const body = req.body || {};
@@ -534,6 +881,7 @@ function createBridgeAuth(options = {}) {
       refreshTtlSec,
       autoApprove,
       staticBearerEnabled: !!staticBearer,
+      staticClientIds: Array.from(staticClients.keys()), // ids only — never secrets
       ephemeralOperator,
       // server.js prints this once at boot ONLY when ephemeral, so the operator
       // can complete consent. Never logged when operator-set via env/option.

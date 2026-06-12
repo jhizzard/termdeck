@@ -186,6 +186,104 @@ function normalizeDatabaseUrl(url) {
   return { url: u.toString(), modified: true };
 }
 
+// ── DATABASE_URL endpoint-shape classification (Sprint 75 T2) ──────────────
+//
+// Ported from engram src/db-endpoint.ts (Sprint 74 T2 — Brad's Dell R730
+// field report, 2026-06-09). Supabase's direct endpoint
+// `db.<project-ref>.supabase.co` — which also hosts the Dedicated Pooler on
+// :6543 — publishes ONLY an AAAA record. On a host without IPv6 (many CI
+// runners and VPSes) pg clients don't fail fast; they hang until a pool
+// timeout. The IPv4-compatible alternative is the Shared Pooler:
+//
+//   postgres://postgres.<project-ref>:<pw>@aws-<n>-<region>.pooler.supabase.com:6543/postgres
+//
+// This classifier lets every DATABASE_URL ingress warn BEFORE the first
+// hang. It never rewrites or rejects anything — `looksLikePostgresUrl`
+// stays the blocking validator; direct URLs remain accepted because
+// IPv6-capable hosts use them legitimately. Warn ≠ reject.
+
+const LOCAL_DB_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
+
+// Classify a raw DATABASE_URL string by endpoint family. Returns
+// { kind, host?, port?, username?, poolerUserMismatch? } where kind is one of:
+//   'absent'        — nothing usable provided
+//   'invalid'       — set but not parseable as postgres:// / postgresql://
+//   'direct'        — db.<project-ref>.supabase.co|in (IPv6-only: AAAA, no A
+//                     record; covers BOTH :5432 direct and :6543 Dedicated
+//                     Pooler — same hostname, same IPv4 unreachability)
+//   'shared-pooler' — *.pooler.supabase.com (IPv4-compatible)
+//   'local'         — loopback/local Postgres
+//   'other'         — self-hosted, RDS, IPv6 literal, … (no Supabase concerns)
+// poolerUserMismatch is true when the host is the Shared Pooler but the
+// username lacks the mandatory `.<project-ref>` suffix — the documented
+// "Tenant or user not found" failure.
+function classifyDbEndpoint(raw) {
+  if (raw === undefined || raw === null || typeof raw !== 'string') {
+    return { kind: 'absent' };
+  }
+  const trimmed = stripSurroundingQuotes(raw.trim());
+  if (trimmed === '') return { kind: 'absent' };
+
+  let u;
+  try {
+    u = new URL(trimmed);
+  } catch (_err) {
+    return { kind: 'invalid' };
+  }
+  if (u.protocol !== 'postgres:' && u.protocol !== 'postgresql:') {
+    return { kind: 'invalid' };
+  }
+
+  // Normalize: lowercase, drop a trailing FQDN dot.
+  const host = u.hostname.toLowerCase().replace(/\.$/, '');
+  let username = '';
+  try {
+    username = decodeURIComponent(u.username);
+  } catch (_err) {
+    username = u.username;
+  }
+  const base = { host, port: u.port, username };
+
+  if (LOCAL_DB_HOSTS.has(host)) return { kind: 'local', ...base };
+
+  if (/^db\.[a-z0-9-]+\.supabase\.(co|in)$/.test(host)) {
+    return { kind: 'direct', ...base };
+  }
+
+  if (host.endsWith('.pooler.supabase.com')) {
+    // Shared Pooler logins are `postgres.<project-ref>` — a dotless
+    // username means the URL was hand-assembled from direct-connection
+    // parts and will fail with "Tenant or user not found".
+    const poolerUserMismatch = username !== '' && !username.includes('.');
+    return { kind: 'shared-pooler', ...base, poolerUserMismatch };
+  }
+
+  return { kind: 'other', ...base };
+}
+
+// Warning lines for a classification — [] when there is nothing to say.
+// Wording kept byte-similar to engram's doctor probe messages so grep /
+// troubleshooting stays consistent across the stack. Print-only: callers
+// write these to stdout after a PASSING validation and never change exit
+// codes on their account.
+function directEndpointWarningLines(classification) {
+  if (!classification || typeof classification !== 'object') return [];
+  if (classification.kind === 'direct') {
+    return [
+      '⚠ this is the IPv6-only endpoint (db.<project-ref>.supabase.co — AAAA-only DNS, no IPv4)',
+      'on IPv4-only hosts pg clients hang until a pool/connect timeout',
+      'IPv4-safe: Connect modal → Transaction pooler → toggle ON "Use IPv4 connection (Shared Pooler)"',
+      'postgres://postgres.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:6543/postgres'
+    ];
+  }
+  if (classification.kind === 'shared-pooler' && classification.poolerUserMismatch) {
+    return [
+      `⚠ Shared Pooler host but username "${classification.username}" — pooler logins must be postgres.<project-ref>; fails with "Tenant or user not found"`
+    ];
+  }
+  return [];
+}
+
 // Mask all but the last 4 chars of a secret for logging.
 function maskSecret(value) {
   if (!value || typeof value !== 'string') return '';
@@ -202,5 +300,7 @@ module.exports = {
   isTransactionPoolerUrl,
   normalizeDatabaseUrl,
   maskSecret,
-  stripSurroundingQuotes
+  stripSurroundingQuotes,
+  classifyDbEndpoint,
+  directEndpointWarningLines
 };

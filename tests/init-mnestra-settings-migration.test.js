@@ -74,7 +74,9 @@ test('hoisted HOOK_COMMAND + HOOK_TIMEOUT_SECONDS match stack-installer', () => 
   if (stackInstaller.HOOK_COMMAND) assert.equal(HOOK_COMMAND, stackInstaller.HOOK_COMMAND);
   if (stackInstaller.HOOK_TIMEOUT_SECONDS) assert.equal(HOOK_TIMEOUT_SECONDS, stackInstaller.HOOK_TIMEOUT_SECONDS);
   // Either way: shape is correct.
-  assert.equal(HOOK_COMMAND, 'node ~/.claude/hooks/memory-session-end.js');
+  // Sprint 75 T2: hook commands are now ABSOLUTE (quoted) — the literal-~
+  // shape broke on Windows and only worked on POSIX via shell expansion.
+  assert.equal(HOOK_COMMAND, `node "${path.join(os.homedir(), '.claude', 'hooks', 'memory-session-end.js')}"`);
   assert.equal(HOOK_TIMEOUT_SECONDS, 30);
 });
 

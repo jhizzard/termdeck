@@ -346,6 +346,16 @@ async function _runSchemaCheck(opts = {}) {
   let client = optsObj._pgClient || null;
   let ownsClient = false;
   if (!client) {
+    // Sprint 75 T2 (part C): classify + warn BEFORE the connect attempt —
+    // a direct-endpoint URL on an IPv4-only host doesn't fail fast, it
+    // hangs until a pool timeout, so the warning must print first.
+    // Warn-only; fail-soft if the helper is unavailable.
+    try {
+      const urlHelper = require(path.join(SETUP_DIR, 'supabase-url'));
+      for (const line of urlHelper.directEndpointWarningLines(urlHelper.classifyDbEndpoint(secrets.DATABASE_URL))) {
+        process.stdout.write(`  ${line}\n`);
+      }
+    } catch (_e) { /* warn-only — never block the doctor pass */ }
     try {
       client = await pgRunner.connect(secrets.DATABASE_URL);
       ownsClient = true;
@@ -524,6 +534,7 @@ function renderSchemaResult(result, c) {
   if (result.connectError) {
     out.push(`  ${c.yellow('✗')} could not connect: ${result.connectError}`);
     out.push(`  ${c.dim('Check DATABASE_URL in ~/.termdeck/secrets.env, then re-run.')}`);
+    out.push(`  ${c.dim('If this host is IPv4-only and the URL is the db.<project-ref> direct endpoint, that is the cause — switch to the Shared Pooler.')}`);
     return out.join('\n');
   }
   for (const section of result.sections) {

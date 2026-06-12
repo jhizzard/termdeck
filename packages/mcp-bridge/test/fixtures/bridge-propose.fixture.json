@@ -1,0 +1,7 @@
+{
+  "clients": {
+    "mcp_filemapped": "claude-web",
+    "mcp_padded": " GROK-WEB ",
+    "mcp_invalid": "chatgpt-web2"
+  }
+}

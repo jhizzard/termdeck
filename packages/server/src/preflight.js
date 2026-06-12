@@ -10,6 +10,9 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// Sprint 75 T2 (part C): endpoint-shape classifier — used to explain
+// connect failures against the IPv6-only direct endpoint. Warn-only.
+const { classifyDbEndpoint } = require('./setup/supabase-url');
 
 // Cache preflight results for 60s
 let _cachedResult = null;
@@ -352,10 +355,16 @@ async function runPreflight(config) {
       name: 'rumen_recent', passed: false,
       detail: `check failed — ${err.message}`,
     })),
-    checkDatabase().catch((err) => ({
-      name: 'database_url', passed: false,
-      detail: `connection failed — ${err.message}`,
-    })),
+    checkDatabase().catch((err) => {
+      // Sprint 75 T2 (part C): a connect failure against the IPv6-only
+      // direct endpoint (db.<project-ref>.supabase.co) on an IPv4-only
+      // host presents as a timeout — name the likely cause in the detail.
+      let detail = `connection failed — ${err.message}`;
+      if (classifyDbEndpoint(process.env.DATABASE_URL).kind === 'direct') {
+        detail += ' (DATABASE_URL is the IPv6-only db.<project-ref> direct endpoint — on IPv4-only hosts pg clients hang until a pool/connect timeout; use the Shared Pooler URL)';
+      }
+      return { name: 'database_url', passed: false, detail };
+    }),
     checkProjectPaths(config).catch((err) => ({
       name: 'project_paths', passed: false,
       detail: `check failed — ${err.message}`,
@@ -413,7 +422,7 @@ const REMEDIATION = {
   mnestra_reachable: 'Start Mnestra with `mnestra serve`',
   mnestra_has_memories: 'Run `mnestra ingest` to populate the memory store',
   rumen_recent: 'Check Rumen Edge Function deployment or run `termdeck init --rumen`',
-  database_url: 'Set DATABASE_URL in ~/.termdeck/secrets.env',
+  database_url: 'Set DATABASE_URL in ~/.termdeck/secrets.env (IPv4-only hosts: use the Shared Pooler URL)',
   project_paths: 'Fix paths in ~/.termdeck/config.yaml → projects',
   shell_sanity: 'Check $SHELL and your login profile (~/.zshrc or ~/.bashrc)',
   graph_health: 'Run T2 inference cron or apply migrations 009/010 to populate edges',

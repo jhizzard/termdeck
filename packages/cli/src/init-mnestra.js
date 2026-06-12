@@ -72,8 +72,9 @@ const HELP = [
   '  --skip-verify     Skip the final memory_status_aggregation() sanity call',
   '',
   'What this does:',
-  '  1. Prompts for Supabase URL, service_role key, direct Postgres connection',
-  '     string, OpenAI API key, and (optional) Anthropic API key — or reuses',
+  '  1. Prompts for Supabase URL, service_role key, Postgres connection',
+  '     string (Shared Pooler; IPv4-safe), OpenAI API key, and (optional)',
+  '     Anthropic API key — or reuses',
   '     saved values if a complete set already exists in secrets.env.',
   '  2. Writes ~/.termdeck/secrets.env IMMEDIATELY (merge-aware) so a later',
   '     pg connect or migration failure does not lose what you typed in.',
@@ -157,6 +158,11 @@ function inputsFromEnv() {
 
   const dbErr = urlHelper.looksLikePostgresUrl(required.DATABASE_URL);
   if (dbErr) throw new Error(`DATABASE_URL: ${dbErr}`);
+  // Sprint 75 T2 (part B): warn-only — a direct-endpoint URL passes
+  // validation (warn ≠ reject) but gets the IPv4 trap warning printed once.
+  for (const line of urlHelper.directEndpointWarningLines(urlHelper.classifyDbEndpoint(required.DATABASE_URL))) {
+    process.stdout.write(`  ${line}\n`);
+  }
 
   const srErr = urlHelper.looksLikeServiceRole(required.SUPABASE_SERVICE_ROLE_KEY);
   if (srErr) throw new Error(`SUPABASE_SERVICE_ROLE_KEY: ${srErr}`);
@@ -188,7 +194,7 @@ TermDeck Mnestra Setup
 
 This wizard configures TermDeck's Tier 2 memory layer (Mnestra) by:
   1. Asking for your Supabase URL and service_role key
-  2. Asking for a direct Postgres connection string
+  2. Asking for a Postgres connection string (Shared Pooler)
   3. Asking for an OpenAI API key (embeddings)
   4. Asking for an Anthropic API key (optional, summaries)
   5. Writing ~/.termdeck/secrets.env (before any database work, so a
@@ -253,6 +259,12 @@ async function collectInputs({ yes, reset }) {
       process.stdout.write(
         `Found saved secrets in ~/.termdeck/secrets.env (project ${ref}, db ${masked}).\n`
       );
+      // Sprint 75 T2 (part B): highest-value warn site — an operator whose
+      // EARLIER install stored a direct-endpoint URL (the Brad case) would
+      // otherwise sail through reuse with zero feedback. Warn-only.
+      for (const line of urlHelper.directEndpointWarningLines(urlHelper.classifyDbEndpoint(found.inputs.databaseUrl))) {
+        process.stdout.write(`  ${line}\n`);
+      }
       const reuse = yes ? true : await prompts.confirm('  Reuse saved secrets?', { defaultYes: true });
       if (reuse) {
         process.stdout.write('  Reusing saved secrets. Skipping prompts.\n\n');
@@ -284,11 +296,19 @@ async function collectInputs({ yes, reset }) {
   );
 
   process.stdout.write(
-    '? Direct Postgres connection string\n' +
-    `  (Supabase dashboard → Project Settings → Database → Connection String → Transaction pooler)\n` +
-    '  postgres://postgres.REF:PW@... '
+    '? Postgres connection string (Shared Pooler)\n' +
+    '  (Supabase dashboard → Connect (green button) → Transaction pooler →\n' +
+    '   toggle ON "Use IPv4 connection (Shared Pooler)" — the OFF default shows an\n' +
+    '   IPv6-only URL that hangs on IPv4-only hosts)\n' +
+    '  postgres://postgres.<project-ref>:PW@aws-<n>-<region>.pooler.supabase.com:6543/postgres '
   );
   const databaseUrl = await promptSecretWithValidation(urlHelper.looksLikePostgresUrl);
+  // Sprint 75 T2 (part B): warn-only endpoint-shape feedback. The validator
+  // above ACCEPTS direct URLs (IPv6-capable hosts use them legitimately);
+  // this prints the IPv4 trap warning without changing acceptance.
+  for (const line of urlHelper.directEndpointWarningLines(urlHelper.classifyDbEndpoint(databaseUrl))) {
+    process.stdout.write(`  ${line}\n`);
+  }
 
   process.stdout.write('? OpenAI API key (starts sk-proj- or sk-): ');
   const openaiKey = await promptSecretWithValidation(urlHelper.looksLikeOpenAiKey);
@@ -713,13 +733,34 @@ function refreshBundledHookIfNewer(opts = {}) {
 // actually run after upgrading the package.
 
 const SETTINGS_JSON_PATH = path.join(require('os').homedir(), '.claude', 'settings.json');
-const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
+
+// Sprint 75 T2 — hook commands are written into ~/.claude/settings.json with
+// ABSOLUTE paths. The pre-1.10 literal `node ~/.claude/hooks/...` shape relied
+// on shell tilde expansion — it worked on macOS/Linux only by luck of how the
+// harness invokes hook commands, and is a hard break on Windows (audit item 4).
+// Computed at CALL time (not require time) from os.homedir() so a process that
+// re-points HOME (tests, sandboxed installs) gets the right path. The path is
+// double-quoted so a home dir containing spaces (`/Users/First Last/`) still
+// produces a command the harness shell can execute. Lockstep twin lives in
+// packages/stack-installer/src/index.js (`_hookCommandFor`) — INSTALLER-
+// PITFALLS Class N: change both or neither.
+function _hookCommandFor(filename) {
+  return `node "${path.join(require('os').homedir(), '.claude', 'hooks', filename)}"`;
+}
+
+// True when an entry's command still carries the legacy tilde shape and
+// should be rewritten to the absolute form.
+function _isTildeHookCommand(command) {
+  return typeof command === 'string' && command.includes('~/');
+}
+
+const HOOK_COMMAND = _hookCommandFor('memory-session-end.js');
 const HOOK_TIMEOUT_SECONDS = 30;
 
 // Sprint 64 T3 — PreCompact hook (Investigation 2 of CRITICAL-READ-FIRST-
 // 2026-05-07.md). Lives alongside the SessionEnd hook; refreshes via the
 // same Sprint 51.6 T3 version-stamp gate.
-const PRECOMPACT_HOOK_COMMAND = 'node ~/.claude/hooks/memory-pre-compact.js';
+const PRECOMPACT_HOOK_COMMAND = _hookCommandFor('memory-pre-compact.js');
 const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
 
 function _isSessionEndHookEntry(entry) {
@@ -734,7 +775,8 @@ function _isSessionEndHookEntry(entry) {
 // `packages/stack-installer/src/index.js:451` byte-for-byte (modulo
 // constants pulled from this file's scope).
 function _mergeSessionEndHookEntry(settings, opts = {}) {
-  const command = opts.command || HOOK_COMMAND;
+  // Command computed at call time (Sprint 75 T2) — see _hookCommandFor.
+  const command = opts.command || _hookCommandFor('memory-session-end.js');
   const timeout = opts.timeout != null ? opts.timeout : HOOK_TIMEOUT_SECONDS;
   const entry = { type: 'command', command, timeout };
 
@@ -759,10 +801,29 @@ function _mergeSessionEndHookEntry(settings, opts = {}) {
 
   if (!Array.isArray(settings.hooks.SessionEnd)) settings.hooks.SessionEnd = [];
 
+  // Sprint 75 T2 — rewrite a stale literal-`~` command (written by installers
+  // ≤ v1.9.x) to the absolute form. The "already wired?" predicate matches by
+  // hook FILENAME substring, so without this rewrite a legacy entry would be
+  // reported already-installed and keep its `~` forever. Idempotent: absolute
+  // commands (and user-custom commands without `~/`) are never touched.
+  let tildeMigrated = false;
+  for (const group of settings.hooks.SessionEnd) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (_isSessionEndHookEntry(e) && _isTildeHookCommand(e.command)) {
+        e.command = command;
+        tildeMigrated = true;
+      }
+    }
+  }
+
   for (const group of settings.hooks.SessionEnd) {
     if (!group || !Array.isArray(group.hooks)) continue;
     if (group.hooks.some(_isSessionEndHookEntry)) {
-      return { settings, status: migrated ? 'migrated-from-stop' : 'already-installed' };
+      const status = tildeMigrated ? 'migrated-tilde-path'
+        : migrated ? 'migrated-from-stop'
+        : 'already-installed';
+      return { settings, status };
     }
   }
 
@@ -788,17 +849,30 @@ function _isPreCompactHookEntry(entry) {
 }
 
 function _mergePreCompactHookEntry(settings, opts = {}) {
-  const command = opts.command || PRECOMPACT_HOOK_COMMAND;
+  // Command computed at call time (Sprint 75 T2) — see _hookCommandFor.
+  const command = opts.command || _hookCommandFor('memory-pre-compact.js');
   const timeout = opts.timeout != null ? opts.timeout : PRECOMPACT_HOOK_TIMEOUT_SECONDS;
   const entry = { type: 'command', command, timeout };
 
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
   if (!Array.isArray(settings.hooks.PreCompact)) settings.hooks.PreCompact = [];
 
+  // Sprint 75 T2 — same stale literal-`~` rewrite as the SessionEnd merge.
+  let tildeMigrated = false;
+  for (const group of settings.hooks.PreCompact) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (_isPreCompactHookEntry(e) && _isTildeHookCommand(e.command)) {
+        e.command = command;
+        tildeMigrated = true;
+      }
+    }
+  }
+
   for (const group of settings.hooks.PreCompact) {
     if (!group || !Array.isArray(group.hooks)) continue;
     if (group.hooks.some(_isPreCompactHookEntry)) {
-      return { settings, status: 'already-installed' };
+      return { settings, status: tildeMigrated ? 'migrated-tilde-path' : 'already-installed' };
     }
   }
 
@@ -934,10 +1008,14 @@ function runSettingsJsonMigration({ dryRun = false } = {}) {
       ok(r.backup ? `installed (SessionEnd; backup: ${path.basename(r.backup)})` : 'installed (SessionEnd)');
     } else if (r.status === 'migrated-from-stop') {
       ok(r.backup ? `migrated Stop → SessionEnd (was firing on every turn; backup: ${path.basename(r.backup)})` : 'migrated Stop → SessionEnd (was firing on every turn)');
+    } else if (r.status === 'migrated-tilde-path') {
+      ok(r.backup ? `rewrote legacy ~ command to absolute path (backup: ${path.basename(r.backup)})` : 'rewrote legacy ~ command to absolute path');
     } else if (r.status === 'would-installed') {
       ok('would install (SessionEnd) (dry-run)');
     } else if (r.status === 'would-migrated-from-stop') {
       ok('would migrate Stop → SessionEnd (dry-run)');
+    } else if (r.status === 'would-migrated-tilde-path') {
+      ok('would rewrite legacy ~ command to absolute path (dry-run)');
     } else if (r.status === 'malformed') {
       ok(`(skipped: settings.json malformed: ${r.error})`);
     } else {
@@ -964,8 +1042,12 @@ function runSettingsJsonMigration({ dryRun = false } = {}) {
       ok('already wired (PreCompact)');
     } else if (r.status === 'installed') {
       ok(r.backup ? `installed (PreCompact; backup: ${path.basename(r.backup)})` : 'installed (PreCompact)');
+    } else if (r.status === 'migrated-tilde-path') {
+      ok(r.backup ? `rewrote legacy ~ command to absolute path (backup: ${path.basename(r.backup)})` : 'rewrote legacy ~ command to absolute path');
     } else if (r.status === 'would-installed') {
       ok('would install (PreCompact) (dry-run)');
+    } else if (r.status === 'would-migrated-tilde-path') {
+      ok('would rewrite legacy ~ command to absolute path (dry-run)');
     } else if (r.status === 'malformed') {
       ok(`(skipped: settings.json malformed: ${r.error})`);
     } else {
@@ -1162,7 +1244,10 @@ async function main(argv) {
   } catch (err) {
     fail(err.message);
     process.stderr.write(
-      '\nDouble-check the connection string from Supabase → Project Settings → Database → Connection String.\n'
+      '\nDouble-check the connection string: Supabase dashboard → Connect → Transaction pooler →\n' +
+      'toggle ON "Use IPv4 connection (Shared Pooler)". If the connect HUNG (timeout rather than\n' +
+      'auth error), the URL is probably the IPv6-only db.<project-ref> endpoint and this host has\n' +
+      'no IPv6 route — use the Shared Pooler URL.\n'
     );
     printResumeHint();
     return 3;
@@ -1233,3 +1318,9 @@ module.exports._isSessionEndHookEntry = _isSessionEndHookEntry;
 module.exports.SETTINGS_JSON_PATH = SETTINGS_JSON_PATH;
 module.exports.HOOK_COMMAND = HOOK_COMMAND;
 module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;
+// Sprint 75 T2 — absolute-path hook-command builders (lockstep twin in
+// packages/stack-installer/src/index.js; exported for tests).
+module.exports._hookCommandFor = _hookCommandFor;
+module.exports._isTildeHookCommand = _isTildeHookCommand;
+module.exports._mergePreCompactHookEntry = _mergePreCompactHookEntry;
+module.exports.migrateSettingsJsonPreCompactEntry = migrateSettingsJsonPreCompactEntry;
