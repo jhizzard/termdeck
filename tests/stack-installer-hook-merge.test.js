@@ -206,8 +206,11 @@ test('merge detects pre-existing hook in any matcher group regardless of matcher
     },
   };
   const { status } = _mergeSessionEndHookEntry(settings);
-  assert.equal(status, 'already-installed');
+  // Sprint 75 T2: the seeded command carries the legacy `~` shape, so the
+  // merge both detects it (no new group) AND rewrites it absolute.
+  assert.equal(status, 'migrated-tilde-path');
   assert.equal(settings.hooks.SessionEnd.length, 1, 'no new group added when already present');
+  assert.equal(settings.hooks.SessionEnd[0].hooks[0].command, HOOK_COMMAND, 'legacy ~ command rewritten to the absolute form');
 });
 
 test('merge preserves unrelated top-level keys and unrelated hooks (PreToolUse, etc)', () => {

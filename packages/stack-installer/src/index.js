@@ -51,7 +51,28 @@ const SETTINGS_JSON = path.join(HOME, '.claude', 'settings.json');
 const HOOK_DEST_DIR = path.join(HOME, '.claude', 'hooks');
 const HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-session-end.js');
 const HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-session-end.js');
-const HOOK_COMMAND = 'node ~/.claude/hooks/memory-session-end.js';
+
+// Sprint 75 T2 — hook commands are written into ~/.claude/settings.json with
+// ABSOLUTE paths. The pre-1.10 literal `node ~/.claude/hooks/...` shape relied
+// on shell tilde expansion — it worked on macOS/Linux only by luck of how the
+// harness invokes hook commands, and is a hard break on Windows (audit item 4).
+// Computed at CALL time (not require time) from os.homedir() so a process that
+// re-points HOME (tests, sandboxed installs) gets the right path. The path is
+// double-quoted so a home dir containing spaces (`/Users/First Last/`) still
+// produces a command the harness shell can execute. Lockstep twin lives in
+// packages/cli/src/init-mnestra.js (`_hookCommandFor`) — INSTALLER-PITFALLS
+// Class N: change both or neither.
+function _hookCommandFor(filename) {
+  return `node "${path.join(os.homedir(), '.claude', 'hooks', filename)}"`;
+}
+
+// True when an entry's command still carries the legacy tilde shape and
+// should be rewritten to the absolute form.
+function _isTildeHookCommand(command) {
+  return typeof command === 'string' && command.includes('~/');
+}
+
+const HOOK_COMMAND = _hookCommandFor('memory-session-end.js');
 const HOOK_TIMEOUT_SECONDS = 30;
 
 // Sprint 64 T3 — PreCompact hook (Investigation 2 of
@@ -62,7 +83,7 @@ const HOOK_TIMEOUT_SECONDS = 30;
 // module-export contract.
 const PRECOMPACT_HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-pre-compact.js');
 const PRECOMPACT_HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-pre-compact.js');
-const PRECOMPACT_HOOK_COMMAND = 'node ~/.claude/hooks/memory-pre-compact.js';
+const PRECOMPACT_HOOK_COMMAND = _hookCommandFor('memory-pre-compact.js');
 const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
 const SECRETS_PATH = path.join(HOME, '.termdeck', 'secrets.env');
 
@@ -461,7 +482,8 @@ function _isSessionEndHookEntry(entry) {
 // the registration; the migration branch below heals existing installs from
 // `@jhizzard/termdeck-stack@<=0.5.0` that wired the hook under `Stop`.
 function _mergeSessionEndHookEntry(settings, opts = {}) {
-  const command = opts.command || HOOK_COMMAND;
+  // Command computed at call time (Sprint 75 T2) — see _hookCommandFor.
+  const command = opts.command || _hookCommandFor('memory-session-end.js');
   const timeout = opts.timeout != null ? opts.timeout : HOOK_TIMEOUT_SECONDS;
   const entry = { type: 'command', command, timeout };
 
@@ -486,10 +508,29 @@ function _mergeSessionEndHookEntry(settings, opts = {}) {
 
   if (!Array.isArray(settings.hooks.SessionEnd)) settings.hooks.SessionEnd = [];
 
+  // Sprint 75 T2 — rewrite a stale literal-`~` command (written by installers
+  // ≤ v1.9.x) to the absolute form. The "already wired?" predicate matches by
+  // hook FILENAME substring, so without this rewrite a legacy entry would be
+  // reported already-installed and keep its `~` forever. Idempotent: absolute
+  // commands (and user-custom commands without `~/`) are never touched.
+  let tildeMigrated = false;
+  for (const group of settings.hooks.SessionEnd) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (_isSessionEndHookEntry(e) && _isTildeHookCommand(e.command)) {
+        e.command = command;
+        tildeMigrated = true;
+      }
+    }
+  }
+
   for (const group of settings.hooks.SessionEnd) {
     if (!group || !Array.isArray(group.hooks)) continue;
     if (group.hooks.some(_isSessionEndHookEntry)) {
-      return { settings, status: migrated ? 'migrated-from-stop' : 'already-installed' };
+      const status = tildeMigrated ? 'migrated-tilde-path'
+        : migrated ? 'migrated-from-stop'
+        : 'already-installed';
+      return { settings, status };
     }
   }
 
@@ -517,17 +558,30 @@ function _isPreCompactHookEntry(entry) {
 // Mutates the input. matcher='*' is the documented wildcard for PreCompact —
 // fires on both auto-compact (token-limit-driven) AND manual /compact triggers.
 function _mergePreCompactHookEntry(settings, opts = {}) {
-  const command = opts.command || PRECOMPACT_HOOK_COMMAND;
+  // Command computed at call time (Sprint 75 T2) — see _hookCommandFor.
+  const command = opts.command || _hookCommandFor('memory-pre-compact.js');
   const timeout = opts.timeout != null ? opts.timeout : PRECOMPACT_HOOK_TIMEOUT_SECONDS;
   const entry = { type: 'command', command, timeout };
 
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
   if (!Array.isArray(settings.hooks.PreCompact)) settings.hooks.PreCompact = [];
 
+  // Sprint 75 T2 — same stale literal-`~` rewrite as the SessionEnd merge.
+  let tildeMigrated = false;
+  for (const group of settings.hooks.PreCompact) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (_isPreCompactHookEntry(e) && _isTildeHookCommand(e.command)) {
+        e.command = command;
+        tildeMigrated = true;
+      }
+    }
+  }
+
   for (const group of settings.hooks.PreCompact) {
     if (!group || !Array.isArray(group.hooks)) continue;
     if (group.hooks.some(_isPreCompactHookEntry)) {
-      return { settings, status: 'already-installed' };
+      return { settings, status: tildeMigrated ? 'migrated-tilde-path' : 'already-installed' };
     }
   }
 
@@ -731,6 +785,16 @@ async function installSessionEndHook(opts = {}) {
     if (merged.status === 'already-installed') {
       statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json SessionEnd hook', 'already installed');
       settingsStatus = 'already-installed';
+    } else if (merged.status === 'migrated-tilde-path') {
+      // Sprint 75 T2 — legacy `node ~/.claude/...` command rewritten absolute.
+      if (dryRun) {
+        statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would rewrite legacy ~ hook command to absolute path in ${settingsPath}`);
+        settingsStatus = 'would-migrate-tilde';
+      } else {
+        _writeSettingsJson(settingsPath, merged.settings);
+        statusLine(`${ANSI.green}↻${ANSI.reset}`, 'settings.json SessionEnd hook', 'rewrote legacy ~ command to absolute path');
+        settingsStatus = 'migrated-tilde';
+      }
     } else if (merged.status === 'migrated-from-stop') {
       if (dryRun) {
         statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would migrate Stop hook → SessionEnd in ${settingsPath}`);
@@ -847,6 +911,16 @@ async function installPreCompactHook(opts = {}) {
     if (merged.status === 'already-installed') {
       statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json PreCompact hook', 'already installed');
       settingsStatus = 'already-installed';
+    } else if (merged.status === 'migrated-tilde-path') {
+      // Sprint 75 T2 — legacy `node ~/.claude/...` command rewritten absolute.
+      if (dryRun) {
+        statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would rewrite legacy ~ pre-compact command to absolute path in ${settingsPath}`);
+        settingsStatus = 'would-migrate-tilde';
+      } else {
+        _writeSettingsJson(settingsPath, merged.settings);
+        statusLine(`${ANSI.green}↻${ANSI.reset}`, 'settings.json PreCompact hook', 'rewrote legacy ~ command to absolute path');
+        settingsStatus = 'migrated-tilde';
+      }
     } else if (dryRun) {
       statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would merge PreCompact hook into ${settingsPath}`);
       settingsStatus = 'would-install';
@@ -1037,6 +1111,10 @@ module.exports._hookSignatureUpgradeAvailable = _hookSignatureUpgradeAvailable;
 module.exports.HOOK_SIGNATURE_REGEX = HOOK_SIGNATURE_REGEX;
 module.exports.installSessionEndHook = installSessionEndHook;
 module.exports.HOOK_COMMAND = HOOK_COMMAND;
+// Sprint 75 T2 — absolute-path hook-command builders (lockstep twin in
+// packages/cli/src/init-mnestra.js; exported for tests).
+module.exports._hookCommandFor = _hookCommandFor;
+module.exports._isTildeHookCommand = _isTildeHookCommand;
 module.exports.HOOK_SOURCE = HOOK_SOURCE;
 module.exports.HOOK_DEST = HOOK_DEST;
 module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;

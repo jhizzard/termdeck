@@ -1,3 +1,18 @@
+## [1.10.0] - 2026-06-12
+
+### Added
+- mcp-bridge: static OAuth client registration alongside DCR — operator-seeded confidential clients with timing-safe secret verification; conditioned PKCE-less path (operator-set static config only, confidential clients only, downgrade-impossible by construction). Enables the Gemini Enterprise custom MCP connector (`packages/mcp-bridge/docs/connect-gemini-enterprise.md`).
+- mcp-bridge: `TERMDECK_BRIDGE_MEMORY_ONLY` — memory-tools-only mode for panel-less origins (cloud third origin); `/healthz` reports `mode` + optional `TERMDECK_BRIDGE_ORIGIN_LABEL`. Runbooks: `docs/cloud-origin.md`, `docs/load-balancer.md` (multi-origin HA: per-machine tunnels + Cloudflare LB failover).
+- mcp-bridge: `memory_propose` tool (Sprint 76) — web-connector proposal channel with honest non-read-only annotations, server-side connector identity (fail-closed), reject-not-scrub redaction, rate/size caps. DARK-GATED default-OFF behind `TERMDECK_BRIDGE_ENABLE_PROPOSE` (absent flag = tool absent).
+- DATABASE_URL ingress hardening: endpoint classifier + warn at every ingress (wizard, --from-env, saved-secrets reuse) + doctor surfacing (IPv4-only-host direct-endpoint trap).
+
+### Fixed
+- Installer wrote literal `node ~/.claude/hooks/...` into Claude Code settings.json — now absolute, quoted, with idempotent legacy-tilde migration, in BOTH stack-installer and `init-mnestra` refresh (latent all-platform bug; Windows-audit item 4).
+
+### Notes
+- Dual-deck Sprints 75+76, FINAL-VERDICTs GREEN (Codex 13:27 / Grok 14:12 ET). Root suite 764/759/0/5-skip. Companion releases: @jhizzard/mnestra@0.6.0 (migration 026 memory_inbox + memory_propose RPC, five-gate + quarantine falsified end-to-end), @jhizzard/rumen (inbox promotion pass). Migration 026 NOT yet applied to any prod DB; propose flag OFF everywhere — activation is an operator decision.
+- Sprint 78 ultra-plan staged at docs/sprint-78-memory-doctrine-loop/.
+
 ## [1.9.0] - 2026-06-11
 
 ### Added

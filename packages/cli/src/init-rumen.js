@@ -212,6 +212,13 @@ function preflight() {
     ok();
   }
 
+  // Sprint 75 T2 (part B): warn-only endpoint-shape feedback — the same
+  // stored URL feeds the Edge Function secrets, so a direct-endpoint URL
+  // (IPv6-only) carried over from an earlier install gets flagged here too.
+  for (const line of urlHelper.directEndpointWarningLines(urlHelper.classifyDbEndpoint(secrets.DATABASE_URL))) {
+    process.stdout.write(`  ${line}\n`);
+  }
+
   // OPENAI_API_KEY is optional: when present, Rumen's Relate phase generates
   // real embeddings for semantic+keyword hybrid search. When absent, Rumen
   // falls back to keyword-only matching (still works, but loses cross-project

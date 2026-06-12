@@ -64,6 +64,21 @@
 
 const http = require('http');
 const https = require('https');
+// Sprint 75 T2 (part C): endpoint-shape classifier — could-not-connect
+// envelopes name the IPv6-only direct endpoint as the likely cause when
+// DATABASE_URL has that shape. Warn-only suffix; never changes categories.
+const { classifyDbEndpoint } = require('./setup/supabase-url');
+
+// Suffix appended to connect-failure details when DATABASE_URL is the
+// IPv6-only direct endpoint (db.<project-ref>.supabase.co — AAAA-only DNS).
+function directEndpointSuffix(databaseUrl) {
+  try {
+    if (classifyDbEndpoint(databaseUrl).kind === 'direct') {
+      return ' (DATABASE_URL is the IPv6-only db.<project-ref> direct endpoint — on IPv4-only hosts pg clients hang until a pool/connect timeout; use the Shared Pooler URL)';
+    }
+  } catch (_e) { /* warn-only */ }
+  return '';
+}
 
 const TTL_SECONDS = 30;
 const TTL_MS = TTL_SECONDS * 1000;
@@ -276,9 +291,10 @@ async function runPgChecks({ databaseUrl, _pgClient }) {
     } else {
       // URL set but connect failed → classify by code (timeout vs unreachable).
       const cat = classifyDbFailure(connectEnvelope || {});
-      const why = connectEnvelope && connectEnvelope.error
+      const why = (connectEnvelope && connectEnvelope.error
         ? `could not connect to Postgres using DATABASE_URL — ${connectEnvelope.error}`
-        : 'could not connect to Postgres using DATABASE_URL';
+        : 'could not connect to Postgres using DATABASE_URL')
+        + directEndpointSuffix(databaseUrl);
       pushPgUnavailableChecks(checks, 'mnestra-pg', cat, why, 'pg unavailable — connect failed');
     }
     return checks;
@@ -479,7 +495,9 @@ async function checkRumenPool(config, options) {
     return warnCheck('rumen-pool', CATEGORIES.DEPENDENCY_DOWN, 'SELECT 1 returned unexpected result');
   } catch (err) {
     const cat = classifyDbFailure(err);
-    return warnCheck('rumen-pool', cat, err && err.message ? err.message : String(err));
+    const detail = (err && err.message ? err.message : String(err))
+      + directEndpointSuffix(dbUrl);
+    return warnCheck('rumen-pool', cat, detail);
   } finally {
     try { await pool.end(); } catch (_e) { /* ignore */ }
   }

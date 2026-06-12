@@ -243,6 +243,54 @@ function runWizard(home, args, { extraEnv = {}, timeoutMs = 30000 } = {}) {
   });
 }
 
+// ── 7. Sprint 75 T2 (part A) — wizard prompt-copy pins ─────────────────────
+//
+// The Supabase dashboard no longer surfaces the connection string under
+// Project Settings → Database; the Connect modal's "Use IPv4 connection
+// (Shared Pooler)" toggle is the canonical path, and the OFF default shows
+// an IPv6-only URL that hangs on IPv4-only hosts (Brad R730 field report).
+// Pin the wizard copy so a future edit can't silently revert to the dead
+// dashboard path.
+
+test('wizard copy: "Use IPv4 connection" present, "Project Settings → Database" gone (Sprint 75 part A)', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'cli', 'src', 'init-mnestra.js'), 'utf8');
+  assert.match(src, /Use IPv4 connection \(Shared Pooler\)/,
+    'prompt must name the Connect-modal IPv4 toggle');
+  assert.ok(!src.includes('Project Settings → Database'),
+    'dead dashboard path must not appear anywhere in the wizard copy');
+  assert.ok(!src.includes('Direct Postgres connection string'),
+    'prompt must no longer ask for a "Direct" connection string');
+});
+
+// ── 8. Sprint 75 T2 (part B) — --from-env warn-once drive ─────────────────
+//
+// Drive the real CLI with a direct-endpoint DATABASE_URL. The warn lines
+// must print EXACTLY once (the --from-env ingress) and the exit code must
+// be unchanged from the non-direct shape (3 = pg connect failure) — the
+// warn-never-blocks invariant at the wizard level.
+
+test('CLI --from-env: direct-endpoint URL warns exactly once and exit code is unchanged', async () => {
+  const home = freshTmpDir('termdeck-endpoint-warn-cli-');
+  try {
+    const directEnv = {
+      ...VALID_ENV,
+      // Placeholder ref — resolves to NXDOMAIN, so the pg connect fails
+      // fast without touching any real project. Exit 3 either way.
+      DATABASE_URL: 'postgres://postgres:badpw@db.abcdefghijklmnopqrst.supabase.co:5432/postgres',
+    };
+    const r = await runWizard(home, ['--from-env'], { extraEnv: directEnv });
+
+    assert.equal(r.code, 3, `warn must not change the exit code (expected 3 = pg connect fail); got ${r.code}; output:\n${r.merged}`);
+
+    const warnHits = r.out.split('⚠ this is the IPv6-only endpoint').length - 1;
+    assert.equal(warnHits, 1, `direct-endpoint warning must print exactly once; saw ${warnHits}; output:\n${r.out}`);
+    assert.match(r.out, /Use IPv4 connection \(Shared Pooler\)/, 'warning names the Connect-modal toggle');
+    assert.match(r.out, /aws-<n>-<region>\.pooler\.supabase\.com/, 'warning shows the pooler URL shape with placeholders');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('CLI: stamp-equal content drift on BOTH hooks → both refreshed before DB phase', async () => {
   const home = freshTmpDir('termdeck-content-drift-cli-');
   try {
