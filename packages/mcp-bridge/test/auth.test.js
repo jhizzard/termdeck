@@ -189,3 +189,72 @@ test('normalizeResource tolerates trailing slash + case (per spec note)', () => 
   assert.equal(normalizeResource('https://Ex.COM/mcp/'), normalizeResource('https://ex.com/mcp'));
   assert.notEqual(normalizeResource('https://ex.com/mcp'), normalizeResource('https://ex.com/other'));
 });
+
+test('exchangeRefreshToken rejects a token bound to a STALE resource with invalid_target (v1.10.2)', async () => {
+  // The recurring "stale OAuth grant bound to a dead tunnel URL → confusing 400 /
+  // couldn't connect your account" failure. We forge a refresh-token record whose
+  // bound resource is a PREVIOUS Bridge address (an ephemeral tunnel that has
+  // since rotated) directly into the store, then attempt to redeem it against a
+  // Bridge whose current canonical resource differs. It must reject at refresh
+  // time with invalid_target — NOT silently mint an audience-mismatched access
+  // token that fails verifyAccessToken downstream.
+  const a = mkAuth({ autoApprove: true });
+  const client = { client_id: 'stale-client' };
+
+  // Mint a real refresh token (bound to the CURRENT resource), then rewrite its
+  // stored `resource` to a stale tunnel URL to simulate a post-rotation file.
+  const res = fakeRes();
+  await a.provider.authorize(
+    client,
+    { redirectUri: 'https://client.example/cb', codeChallenge: 'x', scopes: ['mcp:read'], resource: a.resourceUrl },
+    res,
+  );
+  const code = new URL(res.location).searchParams.get('code');
+  const t1 = await a.provider.exchangeAuthorizationCode(client, code, undefined, 'https://client.example/cb', a.resourceUrl);
+
+  // Reach into the test-only internal store and re-bind the stored record.
+  const refreshMap = a._internal.state.refresh;
+  const hashes = Object.keys(refreshMap);
+  assert.equal(hashes.length, 1, 'exactly one refresh token stored');
+  refreshMap[hashes[0]].resource = 'https://stale-tunnel.example/mcp';
+
+  // Redeem WITHOUT a resource param (the connector often omits it) — the guard
+  // must still fire off the STORED bound resource, not just the request param.
+  let thrown = null;
+  try {
+    await a.provider.exchangeRefreshToken(client, t1.refresh_token, undefined, undefined);
+  } catch (e) {
+    thrown = e;
+  }
+  assert.ok(thrown, 'a stale-bound refresh token is rejected');
+  assert.equal(thrown.errorCode, 'invalid_target', 'rejection is RFC 8707 invalid_target');
+  assert.match(thrown.message, /disconnect and reconnect/i, 'message is operator-actionable');
+  // The current-resource href appears so the operator knows what to reconnect to.
+  assert.ok(thrown.message.includes(a.resourceUrl.href), 'names the current resource');
+});
+
+test('exchangeRefreshToken still SUCCEEDS for a token bound to the CURRENT resource (no false-positive)', async () => {
+  // The stale-resource guard must not break healthy flows: a token minted and
+  // redeemed against the same (current) resource rotates normally.
+  const a = mkAuth({ autoApprove: true });
+  const client = { client_id: 'healthy-client' };
+  const res = fakeRes();
+  await a.provider.authorize(
+    client,
+    { redirectUri: 'https://client.example/cb', codeChallenge: 'x', scopes: ['mcp:read'], resource: a.resourceUrl },
+    res,
+  );
+  const code = new URL(res.location).searchParams.get('code');
+  const t1 = await a.provider.exchangeAuthorizationCode(client, code, undefined, 'https://client.example/cb', a.resourceUrl);
+
+  const t2 = await a.provider.exchangeRefreshToken(client, t1.refresh_token, undefined, a.resourceUrl);
+  assert.ok(t2.access_token && t2.refresh_token, 'current-resource refresh rotates normally');
+  // And the freshly minted access token still verifies (no audience mismatch).
+  const info = await a.provider.verifyAccessToken(t2.access_token);
+  assert.equal(info.resource.href, a.resourceUrl.href);
+
+  // Belt-and-suspenders: omitting the resource param on a current-bound token
+  // also succeeds (the common connector behavior).
+  const t3 = await a.provider.exchangeRefreshToken(client, t2.refresh_token, undefined, undefined);
+  assert.ok(t3.access_token && t3.refresh_token, 'omitted-resource refresh on a current token still works');
+});

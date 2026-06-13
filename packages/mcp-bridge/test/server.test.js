@@ -165,7 +165,12 @@ test('stale/unknown session id on a non-initialize request → 404 (so the clien
   }
 });
 
-test('no session id + non-initialize request → 400 (genuine bad request preserved)', async () => {
+test('no session id + non-initialize request → recoverable 404 "initialize required" (v1.10.2)', async () => {
+  // v1.10.2: the old behavior here was a dead-end 400 / -32000 ("Bad Request"),
+  // which some connectors treat as fatal and surface as "couldn't connect your
+  // account" rather than re-initializing. Soften it to the SAME recoverable
+  // shape as an unknown session id (404 / -32001 "Session not found: initialize
+  // required") so a spec-following client re-runs initialize and recovers.
   const s = startServer();
   await s.ready;
   try {
@@ -178,8 +183,56 @@ test('no session id + non-initialize request → 400 (genuine bad request preser
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     });
-    assert.equal(r.status, 400, 'no session id + non-initialize stays a 400');
-    await r.body?.cancel();
+    assert.equal(r.status, 404, 'no session id + non-initialize now answers a recoverable 404');
+    const body = await r.json();
+    assert.equal(body.error.code, -32001, 'JSON-RPC code mirrors the unknown-session recovery code');
+    assert.match(body.error.message, /initialize required/, 'message tells the client to re-initialize');
+  } finally {
+    s.http.close();
+  }
+});
+
+test('valid initialize still opens a session and unknown-session id still 404s (happy path intact, v1.10.2)', async () => {
+  // Guards change #2 against regressing the two paths it must NOT touch: a real
+  // initialize must still open a session, and an unknown session id must still
+  // 404 (both verified end-to-end so the dispatch ordering is exercised).
+  const s = startServer();
+  await s.ready;
+  try {
+    // (a) a genuine initialize opens a session and returns an Mcp-Session-Id.
+    const init = await fetch(`${s.base()}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: 'Bearer test-bearer',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } },
+      }),
+    });
+    assert.equal(init.status, 200, 'initialize succeeds');
+    const sid = init.headers.get('mcp-session-id');
+    assert.ok(sid, 'initialize returns an Mcp-Session-Id');
+    await init.body?.cancel();
+
+    // (b) an unknown session id on a non-initialize request still 404s.
+    const unknown = await fetch(`${s.base()}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: 'Bearer test-bearer',
+        'Mcp-Session-Id': 'definitely-not-a-real-session',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+    });
+    assert.equal(unknown.status, 404, 'unknown session id still 404s');
+    const ubody = await unknown.json();
+    assert.equal(ubody.error.code, -32001);
   } finally {
     s.http.close();
   }

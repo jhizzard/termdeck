@@ -319,13 +319,23 @@ function wireStateful(app, { bearer, mcpLimiter, mcpJson, buildMcpServer }) {
         // tunnel cycles — returning 400 strands the client replaying a dead sid.
         return res.status(404).json({
           jsonrpc: '2.0',
-          error: { code: -32001, message: 'Session not found' },
+          error: { code: -32001, message: 'Session not found: initialize required' },
           id: null,
         });
       } else {
-        return res.status(400).json({
+        // A bearer-authenticated POST with NO session id that is also NOT an
+        // initialize request. The old behavior answered a dead-end 400 / -32000
+        // ("Bad Request"), which some connectors treat as fatal and surface as
+        // "couldn't connect your account" instead of re-initializing. Mirror the
+        // RECOVERABLE shape used for an unknown session id above (404 / -32001
+        // "Session not found") so a spec-following client re-runs initialize and
+        // recovers on its own. We answer 404 (not 400) for the same reason: the
+        // requested session simply does not exist yet — a fresh initialize will
+        // create one. The happy path (valid sid) and the initialize path above
+        // are untouched.
+        return res.status(404).json({
           jsonrpc: '2.0',
-          error: { code: -32000, message: 'Bad Request: no valid session ID, or not an initialize request' },
+          error: { code: -32001, message: 'Session not found: initialize required' },
           id: null,
         });
       }
@@ -504,11 +514,67 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
-if (require.main === module) {
+// ── CLI dispatch ─────────────────────────────────────────────────────────────
+// `node src/server.js` (or the documented systemd ExecStart) with no subcommand
+// — or the explicit `serve` — starts the HTTP server. A small set of maintenance
+// subcommands run and exit instead. Keeping these on the SAME entry point means
+// the supervisor's `node src/server.js` invocation is unchanged and operators do
+// not need a second bin.
+function runCli(argv) {
+  const args = argv || [];
+  const sub = args[0] && !args[0].startsWith('-') ? args[0] : null;
+
+  if (sub === 'prune-stale-clients') {
+    // Lazy-require so a missing/again-loaded prune module can never affect the
+    // serve path, and so the server has zero extra startup cost.
+    const { runPrune } = require('./prune');
+    try {
+      const result = runPrune(args.slice(1));
+      // Exit non-zero in dry-run ONLY if there is stale state to surface, so a
+      // health check / CI can detect "needs pruning" without --apply mutating.
+      const needsPrune =
+        result.fileFound && (result.staleClients > 0 || result.staleRefreshTokens > 0);
+      process.exit(result.mode === 'dry-run' && needsPrune ? 2 : 0);
+    } catch (err) {
+      logEvent({ evt: 'prune_error', msg: err && err.message });
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'help' || args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(
+      [
+        'TermDeck MCP Bridge',
+        '',
+        'Usage:',
+        '  node src/server.js [serve]                 start the HTTP MCP server (default)',
+        '  node src/server.js prune-stale-clients     dry-run: list DCR clients + refresh',
+        '                                             tokens bound to a non-current resource',
+        '  node src/server.js prune-stale-clients --apply   remove them (atomic, backs up first)',
+        '',
+        'prune-stale-clients flags:',
+        '  --apply        write the changes (default is dry-run, no writes)',
+        '  --json         machine-readable output',
+        '  --file <path>  override the state file (default ~/.termdeck/bridge-auth.json)',
+        '  --resource <url>  override the canonical resource (default derived from',
+        '                    TERMDECK_BRIDGE_PUBLIC_URL)',
+        '',
+      ].join('\n'),
+    );
+    process.exit(0);
+    return;
+  }
+
+  // default (no subcommand, or `serve`) → start the server
   main().catch((err) => {
     logEvent({ evt: 'fatal', msg: err && err.message });
     process.exit(1);
   });
+}
+
+if (require.main === module) {
+  runCli(process.argv.slice(2));
 }
 
 module.exports = {
@@ -520,4 +586,5 @@ module.exports = {
   createRateLimiter,
   resolveInputSchema,
   logEvent,
+  runCli,
 };

@@ -534,6 +534,26 @@ function createBridgeAuth(options = {}) {
       if (!found || found.rec.client_id !== client.client_id) {
         throw new InvalidGrantError('invalid or expired refresh token');
       }
+      // Stale-resource guard (v1.10.2). A refresh token records the canonical
+      // resource it was minted against (mintRefreshToken stamps resourceUrl.href).
+      // If the Bridge's current canonical resource has since changed — the
+      // classic case is an ephemeral tunnel URL rotating, so TERMDECK_BRIDGE_PUBLIC_URL
+      // now derives a DIFFERENT resource than when this grant was issued — then
+      // rotating this token would silently mint an access token bound to the NEW
+      // aud while the connector still believes it is talking to the OLD resource.
+      // That mismatch surfaces downstream as a confusing 400 / "couldn't connect
+      // your account". Reject it HERE with an actionable, attributable signal
+      // instead: invalid_target (RFC 6749 §5.2 / RFC 8707) telling the operator
+      // to disconnect + reconnect the connector so a fresh grant is bound to the
+      // current resource. Tokens whose bound resource still matches are untouched.
+      const boundResource = found.rec.resource;
+      if (boundResource && normalizeResource(boundResource) !== normalizeResource(resourceUrl.href)) {
+        throw new InvalidTargetError(
+          'this grant is bound to a previous Bridge address that is no longer current; ' +
+            'disconnect and reconnect the connector to re-authorize against ' +
+            `${resourceUrl.href}`,
+        );
+      }
       let scope = found.rec.scope;
       if (scopes && scopes.length) {
         const granted = new Set(found.rec.scope.split(' ').filter(Boolean));
