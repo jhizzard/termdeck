@@ -2350,7 +2350,7 @@ function createServer(config) {
   // Body: { text: string, source?: 'user' | 'reply' | 'ai', fromSessionId?: string }
   // Used by T1.3 reply button and any agent-to-agent routing.
   const inputRateLimit = new Map(); // sessionId -> { windowStart, count }
-  app.post('/api/sessions/:id/input', (req, res) => {
+  app.post('/api/sessions/:id/input', async (req, res) => {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     // Sprint 72 T2 — web-chat panels have no PTY. Route the inject to the
@@ -2428,7 +2428,7 @@ function createServer(config) {
       });
     }
 
-    const { text, source, fromSessionId } = req.body || {};
+    const { text, source, fromSessionId, submit } = req.body || {};
     if (typeof text !== 'string') {
       return res.status(400).json({ error: 'Missing text' });
     }
@@ -2449,11 +2449,65 @@ function createServer(config) {
     // CRLF normalize: zsh/readline want \r for Enter
     const normalized = text.replace(/\r\n?/g, '\r').replace(/\n/g, '\r');
 
-    try {
-      session.pty.write(normalized);
-      session.trackInput(normalized);
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
+    // Sprint 76.1 (Bug B — Brad's "POST /input returns 200 but never submits"):
+    // optional server-sequenced submit. The documented two-stage inject (paste
+    // body, ~400ms settle, then a lone `\r` as a SECOND POST) is a CALLER-side
+    // race — when the bracketed-paste close marker and the `\r` ride one PTY
+    // write the foreground TUI absorbs the `\r` as paste content, so under
+    // concurrent / mid-turn injects the submit is silently swallowed and the
+    // text sits unsubmitted (a 200 here only ever meant "bytes written", not
+    // "became a turn"). With `submit:true` the SERVER owns the ordering: write
+    // the body, await the settle, then write a lone `\r` as its OWN PTY write —
+    // the OS chunk-boundary race is impossible because the two writes are
+    // distinct with a server-held gap between them. Mirrors the web-chat arm's
+    // server-side assembly above. Absent/falsy `submit` ⇒ byte-identical to the
+    // pre-76.1 pass-through (existing two-stage callers are untouched).
+    let bytesWritten;
+    let submitted;
+    if (submit === true) {
+      const rawSettle = process.env.TERMDECK_INPUT_SUBMIT_SETTLE_MS;
+      const parsedSettle = Number(rawSettle);
+      const settleMs = (rawSettle !== undefined && rawSettle !== ''
+        && Number.isFinite(parsedSettle) && parsedSettle >= 0) ? parsedSettle : 400;
+      // Strip any caller-supplied trailing CR so the body never self-submits;
+      // the lone `\r` below is the one and only submit keystroke.
+      const body = normalized.replace(/\r+$/, '');
+      try {
+        if (body) { session.pty.write(body); session.trackInput(body); }
+        await new Promise((resolve) => setTimeout(resolve, settleMs));
+        // The PTY can be torn down DURING the server-held settle (panel closed
+        // mid-submit). Re-validate before the submit keystroke and return a
+        // clean 410 (the route's exited-panel convention) instead of leaning on
+        // the catch below to surface a generic 500 — so a caller can tell
+        // "panel closed mid-submit, don't retry" from a real write error. The
+        // try/catch remains the backstop for any unexpected write throw.
+        if (session.meta.status === 'exited' || !session.pty) {
+          const msg = `Panel ${req.params.id} exited during submit settle`;
+          return res.status(410).json({
+            ok: false, code: 'panel_exited', error: msg, message: msg,
+            exitCode: session.meta.exitCode ?? null,
+            exitedAt: session.meta.exitedAt || null,
+          });
+        }
+        session.pty.write('\r');
+        session.trackInput('\r');
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      bytesWritten = body.length + 1;
+      // The server completed the atomic submit sequence. This is the mechanical
+      // guarantee that removes the caller-side `\r`-swallow race; `status` below
+      // is the best-effort "did the TUI start the turn" signal (adapter-derived,
+      // so it may lag a beat on a freshly-idle panel).
+      submitted = true;
+    } else {
+      try {
+        session.pty.write(normalized);
+        session.trackInput(normalized);
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      bytesWritten = normalized.length;
     }
 
     session.meta.replyCount = (session.meta.replyCount || 0) + 1;
@@ -2471,7 +2525,19 @@ function createServer(config) {
       }
     }
 
-    res.json({ ok: true, bytes: normalized.length, replyCount: session.meta.replyCount });
+    // submit-confirm: callers (e.g. Brad's tg-poll re-inject) read
+    // `status` / `inputBufferLength` to detect a stuck inject and retry
+    // deterministically instead of separately polling GET /buffer. `submitted`
+    // is present only when `submit:true` was requested.
+    const responseBody = {
+      ok: true,
+      bytes: bytesWritten,
+      replyCount: session.meta.replyCount,
+      status: session.meta.status,
+      inputBufferLength: (session._inputBuffer || '').length,
+    };
+    if (submit === true) responseBody.submitted = submitted;
+    res.json(responseBody);
   });
 
   // POST /api/sessions/:id/upload?name=<filename> - File drop / clipboard image paste

@@ -1,3 +1,14 @@
+## [1.10.1] - 2026-06-13
+
+### Fixed
+- `POST /api/sessions/:id/input` — server-sequenced submit closes Brad's "200 but the message never becomes a turn" race. The documented two-stage inject (paste body, ~400ms settle, then a lone `\r` as a SECOND POST) is a caller-side race: when the bracketed-paste close marker and the `\r` ride one PTY write, the foreground TUI absorbs the `\r` as paste content, so under concurrent / mid-turn injects the submit is silently swallowed and the text sits in the input box unsubmitted (a 200 only ever meant "bytes written," not "became a turn"). The new `{submit:true}` flag makes the server own the ordering — write the body, await a server-held settle (`TERMDECK_INPUT_SUBMIT_SETTLE_MS`, default 400ms), then write a lone `\r` as its own PTY write — so the OS chunk-boundary race is impossible. A caller-supplied trailing CR/LF is stripped so the panel submits exactly once. Mirrors the web-chat arm's existing server-side assembly. Absent/falsy `submit` is byte-identical to the prior pass-through (existing two-stage callers untouched).
+
+### Added
+- `POST /api/sessions/:id/input` submit-confirm — every response now carries `status` + `inputBufferLength`, plus `submitted` when `submit:true` was requested, so a caller (e.g. a Telegram re-inject daemon) can detect a stuck inject and retry deterministically instead of separately polling `GET /buffer`. `{submit:true}` collapses the client two-stage dance into one POST.
+
+### Notes
+- Single-orchestrator patch addressing Bug B from Brad's 2026-06-13 report (the codex-exec empty-verdict half — Bug A — does not affect our live-panel auditor and is Brad-side). An OOD Codex adversarial review's one flagged scenario — PTY torn down during the settle — is hardened to a clean 410 `panel_exited` (it was already hang-safe via the try/catch). Full suite: 771 tests, 766 pass, 0 fail, 5 pre-existing sqlite skips. 7 new fence tests (`packages/server/tests/input-submit-option.test.js`) pin the body-then-lone-`\r` sequence, the no-double-submit strip, the empty-body bare-Enter case, pass-through byte-identity, and the mid-settle-close → 410 race. The two-stage client helper still works unchanged; migrating our own inject doctrine to `{submit:true}` is deferred (callers opt in incrementally). Companion publish: termdeck-stack@1.8.4 (audit-trail). Migration 026 was applied to the daily driver during this session; `TERMDECK_BRIDGE_ENABLE_PROPOSE` remains OFF.
+
 ## [1.10.0] - 2026-06-12
 
 ### Added
