@@ -1,3 +1,13 @@
+## [1.11.0] - 2026-06-13
+
+### Added
+- **Doctrine registry** (`doctrine/registry.jsonl` + `doctrine/SCHEMA.md` + `doctrine/index.js`) — a machine-readable source of truth for the project's operating rules, demoting prose to a derived view (Sprint 78 T1). `loadDoctrine({event,cwd,audience})` merges the repo registry + a never-shipped `~/.claude/doctrine/registry.local.jsonl` (Joshua-only rules) + `~/.termdeck/doctrine-local/` overlay; per-entry try/catch trigger compilation; max-severity-per-surface validation (rejects entries claiming `block` on advisory-only surfaces); a forbidden-strings gitleaks screen at load (fail-soft); `recordGateEvent` (never throws) + `shouldNotify(rule_id, dedupe_key)` cooldown/budget throttle. Seeded with ~17 universal advisory entries (publish-before-push, RLS five-gates, two-stage-inject ban, STATUS grammar, CHECKPOINT cadence, …). Vendored read-only into `@jhizzard/termdeck-stack` for external installs (full-file version stamp).
+- **Agent-facing advisory MVP** (`packages/server/src/advisor/{index,suppress,deliver}.js`) — re-routes the existing Flashback error trigger into a non-Claude panel's PTY at idle (never mid-turn), instead of only a browser toast (Sprint 78 T2). Registry-only lookup (Mnestra Tier-2 default-off); suppression (5/session, 1/10min, once-per-dedup-key, per-rule cooldown, non-silent quarantine + 7d expiry); delivery via the shared `pty-submit.js` helper; `advisory_events` SQLite telemetry + `GET /api/advisor/{diag,stats}` + best-effort ADV-ACK detection. Offline-complete (no Supabase dependency).
+- **`packages/server/src/pty-submit.js`** — shared server-sequenced submit helper; both `/input {submit:true}` (v1.10.1) and the advisor's delivery use it (single source of truth for body→settle→lone-`\r`).
+
+### Notes
+- Sprint 78 ("Doctrine substrate + agent-facing advisory + recall telemetry"), 3+1+1 (T1 registry / T2 advisor / T3 engram recall-telemetry / T4 Codex auditor), FINAL-VERDICT GREEN after one RED→GREEN re-audit cycle. Full TermDeck suite **841 tests, 836 pass, 0 fail, 5 pre-existing sqlite skips**; doctrine 37/37; advisor + input-submit 28/28. Companions: `@jhizzard/termdeck-stack@1.9.0` (vendors the doctrine asset) + `@jhizzard/mnestra@0.7.0` (recall-hit telemetry log, migration 027, webhook shared-secret + 127.0.0.1-bind hardening). The recall-telemetry write path lives in mnestra (T3), not termdeck; **migration 027 must be applied to the daily-driver before recall telemetry records anything** (operator step, hard-failing five-gate receipt).
+
 ## [1.10.1] - 2026-06-13
 
 ### Fixed

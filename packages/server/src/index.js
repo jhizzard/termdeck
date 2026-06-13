@@ -85,6 +85,8 @@ const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = requ
 const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./mnestra-bridge');
 const flashbackDiag = require('./flashback-diag');
+const advisor = require('./advisor');
+const { submitToPty } = require('./pty-submit');
 const { writeSessionLog } = require('./session-logger');
 const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler, runPreflight } = require('./preflight');
@@ -2125,6 +2127,15 @@ function createServer(config) {
           rag.onStatusChanged(sess, oldStatus, newStatus);
         };
 
+        // Sprint 78 T2 — ADV-ACK detection (best-effort). When an agent types
+        // `ADV-ACK <rule_id>` in response to an injected advisory, mark the
+        // matching advisory_events row acked (heeding lifts the unheeded-
+        // recurrence quarantine signal). Fail-soft; never load-bearing.
+        session.onAdvAck = (ruleId) => {
+          if (!db) return;
+          try { advisor.markAcked(db, session.id, ruleId); } catch (err) { console.warn('[advisor] markAcked failed:', err && err.message); }
+        };
+
         // Proactive Mnestra queries on error — fire-and-forget.
         // Independent of rag.enabled — the push loop (rag.js) and the Flashback
         // bridge (mnestra-bridge) are separate systems. rag.enabled gates only
@@ -2134,6 +2145,18 @@ function createServer(config) {
         session.onErrorDetected = (sess, ctx) => {
           const question = `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
           console.log(`[flashback] error detected in session ${sess.id} (type=${sess.meta.type}, project=${sess.meta.project || 'none'}), querying Mnestra via ${mnestraBridge.mode}…`);
+          // Sprint 78 T2 — agent-facing advisory. Registry-driven (T1 doctrine),
+          // Mnestra-INDEPENDENT (A1, no embedding call), so it fires for EVERY
+          // detected error — NOT gated behind the Mnestra-hit toast below (which
+          // returns early on no-hit). Sets sess._lastAdvisorMatch synchronously
+          // so the proactive_memory frame can report `agent_injected`. Delivery
+          // is fire-and-forget + idle-gated inside onTrigger. Fail-soft: never
+          // throws into onErrorDetected.
+          try {
+            advisor.onTrigger(sess, ctx, { db });
+          } catch (advErr) {
+            console.warn('[advisor] onTrigger threw at call site (fail-soft):', advErr && advErr.message);
+          }
           mnestraBridge.queryMnestra({
             question,
             project: sess.meta.project,
@@ -2193,7 +2216,15 @@ function createServer(config) {
                 top_hit_id: hit.id || null,
                 top_hit_score: typeof hit.similarity === 'number' ? hit.similarity : null,
               });
-              const frame = JSON.stringify({ type: 'proactive_memory', hit, flashback_event_id });
+              // Sprint 78 T2 — report whether a registry advisory was routed to
+              // the agent's PTY for this error. `willDeliver` is onTrigger's
+              // synchronous post-suppression decision (matched AND cleared the
+              // throttle), set above before this frame is built. A matched-but-
+              // suppressed advisory reports false (nothing reached the agent).
+              // Final landed/queued/dropped status lives in advisory_events.
+              // Default false (e.g. a Claude/shell panel onTrigger no-ops on).
+              const agent_injected = !!(sess._lastAdvisorMatch && sess._lastAdvisorMatch.willDeliver);
+              const frame = JSON.stringify({ type: 'proactive_memory', hit, flashback_event_id, agent_injected });
               try {
                 sess.ws.send(frame);
                 console.log(`[flashback] proactive_memory sent to session ${sess.id} (source_type=${hit.source_type}, project=${hit.project}, event_id=${flashback_event_id})`);
@@ -2465,40 +2496,29 @@ function createServer(config) {
     let bytesWritten;
     let submitted;
     if (submit === true) {
-      const rawSettle = process.env.TERMDECK_INPUT_SUBMIT_SETTLE_MS;
-      const parsedSettle = Number(rawSettle);
-      const settleMs = (rawSettle !== undefined && rawSettle !== ''
-        && Number.isFinite(parsedSettle) && parsedSettle >= 0) ? parsedSettle : 400;
-      // Strip any caller-supplied trailing CR so the body never self-submits;
-      // the lone `\r` below is the one and only submit keystroke.
-      const body = normalized.replace(/\r+$/, '');
-      try {
-        if (body) { session.pty.write(body); session.trackInput(body); }
-        await new Promise((resolve) => setTimeout(resolve, settleMs));
-        // The PTY can be torn down DURING the server-held settle (panel closed
-        // mid-submit). Re-validate before the submit keystroke and return a
-        // clean 410 (the route's exited-panel convention) instead of leaning on
-        // the catch below to surface a generic 500 — so a caller can tell
-        // "panel closed mid-submit, don't retry" from a real write error. The
-        // try/catch remains the backstop for any unexpected write throw.
-        if (session.meta.status === 'exited' || !session.pty) {
-          const msg = `Panel ${req.params.id} exited during submit settle`;
-          return res.status(410).json({
-            ok: false, code: 'panel_exited', error: msg, message: msg,
-            exitCode: session.meta.exitCode ?? null,
-            exitedAt: session.meta.exitedAt || null,
-          });
-        }
-        session.pty.write('\r');
-        session.trackInput('\r');
-      } catch (err) {
-        return res.status(500).json({ error: err.message });
+      // Sprint 76.1 server-sequenced submit, now via the shared pty-submit
+      // helper so this route and the Sprint 78 advisor delivery path never
+      // drift. The helper writes the body, awaits the server-held settle, then
+      // writes a LONE `\r` as its own PTY write — the mechanical guarantee that
+      // removes the caller-side `\r`-swallow race. It re-validates the PTY after
+      // the settle so a panel closed mid-submit returns a clean 410 (vs a
+      // generic 500 for a real write error); `status` below is the best-effort
+      // "did the TUI start the turn" signal. `normalized` is already
+      // CRLF-normalized; the helper strips the trailing CR so the body can't
+      // self-submit.
+      const r = await submitToPty(session, normalized);
+      if (r.reason === 'exited_mid_settle') {
+        const msg = `Panel ${req.params.id} exited during submit settle`;
+        return res.status(410).json({
+          ok: false, code: 'panel_exited', error: msg, message: msg,
+          exitCode: session.meta.exitCode ?? null,
+          exitedAt: session.meta.exitedAt || null,
+        });
       }
-      bytesWritten = body.length + 1;
-      // The server completed the atomic submit sequence. This is the mechanical
-      // guarantee that removes the caller-side `\r`-swallow race; `status` below
-      // is the best-effort "did the TUI start the turn" signal (adapter-derived,
-      // so it may lag a beat on a freshly-idle panel).
+      if (!r.ok) {
+        return res.status(500).json({ error: r.error || r.reason || 'submit failed' });
+      }
+      bytesWritten = r.bytes;
       submitted = true;
     } else {
       try {
@@ -2701,6 +2721,31 @@ function createServer(config) {
       statusDetail: session.meta.statusDetail || '',
       replyCount: session.meta.replyCount || 0,
     });
+  });
+
+  // GET /api/advisor/diag - recent advisory_events rows (Sprint 78 T2).
+  // Mirrors the flashback-diag route style. The agent-facing analogue of
+  // /api/flashback/diag: "did an advisory fire, was it delivered or suppressed,
+  // and did the agent ACK it?" Query params: ?limit=N (≤500), ?since=ISO.
+  app.get('/api/advisor/diag', (req, res) => {
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const since = req.query.since || undefined;
+      res.json({ ok: true, events: advisor.getRecentAdvisoryEvents(db, { limit, since }) });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // GET /api/advisor/stats - aggregate counts + suppression-reason histogram +
+  // active quarantine state (Sprint 78 T2). ?since=ISO optional.
+  app.get('/api/advisor/stats', (req, res) => {
+    try {
+      const since = req.query.since || undefined;
+      res.json({ ok: true, stats: advisor.getAdvisoryStats(db, { since }) });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   // POST /api/sessions/:id/resize - resize terminal

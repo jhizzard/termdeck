@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 const { resolveTheme } = require('./theme-resolver');
 const flashbackDiag = require('./flashback-diag');
+const advisor = require('./advisor');
 const geminiAdapter = require('./agent-adapters/gemini');
 const { detectAdapter, getAdapterForSessionType } = require('./agent-adapters');
 
@@ -215,6 +216,7 @@ class Session {
     this.onCommand = null;    // callback: (sessionId, command) => void
     this.onStatusChange = null; // callback: (session, oldStatus, newStatus) => void
     this.onErrorDetected = null; // callback: (session, { lastCommand, tail }) => void
+    this.onAdvAck = null;        // Sprint 78 T2: callback (ruleId) => void on ADV-ACK in output
     this._statusChangeTimer = null;
     this._pendingStatusChange = null;
     this._lastErrorFireAt = 0;
@@ -247,6 +249,9 @@ class Session {
 
     // Error detection — transition to 'errored' and fire onErrorDetected (rate limited 30s)
     this._detectErrors(clean);
+
+    // Sprint 78 T2 — ADV-ACK detection (best-effort, never load-bearing).
+    this._detectAdvAck(clean);
 
     // Flush buffer periodically (don't hold too much in memory)
     clearTimeout(this._outputFlushTimer);
@@ -508,6 +513,23 @@ class Session {
       }
     } else {
       console.log(`[flashback] error detected in session ${this.id} but no onErrorDetected handler wired`);
+    }
+  }
+
+  // Sprint 78 T2 — scan agent output for `ADV-ACK <rule_id>` and notify the
+  // server so the matching advisory_events row is marked acked. The advisor's
+  // detectAdvAck skips the injected payload's own `ADV-ACK <id> optional.`
+  // echo, so an inject can't self-ACK. Best-effort: wrapped fail-soft, never
+  // disturbs analyzeOutput.
+  _detectAdvAck(clean) {
+    if (!this.onAdvAck) return;
+    try {
+      const ids = advisor.detectAdvAck(clean);
+      for (const id of ids) {
+        try { this.onAdvAck(id); } catch (err) { console.warn('[advisor] onAdvAck handler error:', err && err.message); }
+      }
+    } catch (err) {
+      console.warn('[advisor] _detectAdvAck failed:', err && err.message);
     }
   }
 

@@ -26,6 +26,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const readline = require('node:readline/promises');
 const { spawn, spawnSync } = require('node:child_process');
 
@@ -86,6 +87,18 @@ const PRECOMPACT_HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'me
 const PRECOMPACT_HOOK_COMMAND = _hookCommandFor('memory-pre-compact.js');
 const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
 const SECRETS_PATH = path.join(HOME, '.termdeck', 'secrets.env');
+
+// Sprint 78 T1 — doctrine registry vendoring. A READ-ONLY copy of the doctrine
+// registry (audience:'all' + active entries only, baked at publish) lands at
+// ~/.claude/doctrine/registry.shipped.jsonl so Brad has an inspectable
+// artifact. This is NOT a loader read-path: the loader (doctrine/index.js)
+// reads the registry package-relative, and doctrine/ ships in @jhizzard/termdeck
+// via the files whitelist, so the loader is always co-located with its own
+// registry. The shipped copy is purely inspectable + refresh-gated on a
+// FULL-FILE content hash.
+const DOCTRINE_DEST_DIR = path.join(HOME, '.claude', 'doctrine');
+const DOCTRINE_SHIPPED_DEST = path.join(DOCTRINE_DEST_DIR, 'registry.shipped.jsonl');
+const DOCTRINE_SHIPPED_SOURCE = path.join(__dirname, '..', 'assets', 'doctrine', 'registry.shipped.jsonl');
 
 // Read ~/.termdeck/secrets.env into a plain object. Returns {} if the file
 // is absent or unreadable. Used to populate the mnestra MCP env block with
@@ -941,6 +954,63 @@ async function installPreCompactHook(opts = {}) {
   return { fileStatus, settingsStatus };
 }
 
+// ── Doctrine registry (Sprint 78 T1) ──────────────────────────────────
+//
+// CRITICAL — FULL-FILE stamp, NOT the 4KB-head stamp. `_readHookSignatureVersion`
+// above reads `slice(0, 4096)` + `HOOK_SIGNATURE_REGEX` — that is the exact stamp
+// that failed in Sprint 51.6 (a file whose marker/content sits past the first
+// 4KB is mis-graded, so bundled fixes never land). The doctrine copy on Brad's
+// machine is READ-ONLY (he never hand-edits it), so the refresh gate is a plain
+// full-file sha256 compare: any drift ⇒ refresh from the bundled copy. No
+// version-number bookkeeping to forget; the content hash IS the stamp. This
+// avoids the INSTALLER-PITFALLS 4KB-head failure class by construction.
+
+function _fileSha256(filepath) {
+  // FULL file read — never a 4KB-head slice.
+  try { return crypto.createHash('sha256').update(fs.readFileSync(filepath)).digest('hex'); }
+  catch (_) { return null; }
+}
+
+// Read-only refresh model: refresh when dest is missing OR its full-file hash
+// differs from the bundled copy. Returns true ⇒ refresh needed.
+function _doctrineRefreshNeeded(sourcePath, destPath) {
+  const srcHash = _fileSha256(sourcePath);
+  if (srcHash == null) return false; // bundled asset missing — nothing to vendor
+  return _fileSha256(destPath) !== srcHash;
+}
+
+// Install / refresh the read-only doctrine registry copy. Promptless (the file
+// is TermDeck-managed read-only; Brad never edits it, so there is no hand-edit
+// to preserve). Fail-soft: any error logs a status line + returns, never throws
+// into the installer flow.
+function installDoctrineRegistry(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const sourcePath = opts.sourcePath || DOCTRINE_SHIPPED_SOURCE;
+  const destPath = opts.destPath || DOCTRINE_SHIPPED_DEST;
+  try {
+    if (!fs.existsSync(sourcePath)) return { status: 'no-bundled-asset' };
+    if (!_doctrineRefreshNeeded(sourcePath, destPath)) {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'doctrine registry', 'already current (read-only)');
+      return { status: 'already-current' };
+    }
+    if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would refresh read-only doctrine registry at ${destPath}`);
+      return { status: 'would-refresh' };
+    }
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    // The dest is 0o444 after a prior install — make it writable for the
+    // overwrite, then re-lock read-only.
+    try { if (fs.existsSync(destPath)) fs.chmodSync(destPath, 0o644); } catch (_) { /* best-effort */ }
+    fs.copyFileSync(sourcePath, destPath);
+    try { fs.chmodSync(destPath, 0o444); } catch (_) { /* best-effort */ }
+    statusLine(`${ANSI.green}↻${ANSI.reset}`, 'doctrine registry', `refreshed read-only copy at ${destPath}`);
+    return { status: 'refreshed' };
+  } catch (err) {
+    statusLine(`${ANSI.yellow}!${ANSI.reset}`, 'doctrine registry', `skipped (fail-soft: ${err && err.message})`);
+    return { status: 'error', error: err && err.message };
+  }
+}
+
 // ── Next steps ──────────────────────────────────────────────────────
 
 function printNextSteps(plan, opts) {
@@ -1081,6 +1151,11 @@ async function main(argv) {
     assumeYes: args.yes,
   });
 
+  // Sprint 78 T1 — vendor the read-only doctrine registry copy (audience:'all'
+  // + active entries, baked at publish) so Brad has an inspectable artifact.
+  // Promptless; full-file-hash refresh gate; fail-soft (never aborts install).
+  installDoctrineRegistry({ dryRun: args.dryRun });
+
   printNextSteps(wantedLayers, { dryRun: args.dryRun });
 
   if (failures > 0) {
@@ -1121,6 +1196,11 @@ module.exports.HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_SECONDS;
 module.exports.HOOK_SOURCE = HOOK_SOURCE;
 // Sprint 64 T3 — PreCompact hook (Investigation 2 closure) exports.
 module.exports.installPreCompactHook = installPreCompactHook;
+module.exports.installDoctrineRegistry = installDoctrineRegistry;
+module.exports._fileSha256 = _fileSha256;
+module.exports._doctrineRefreshNeeded = _doctrineRefreshNeeded;
+module.exports.DOCTRINE_SHIPPED_SOURCE = DOCTRINE_SHIPPED_SOURCE;
+module.exports.DOCTRINE_SHIPPED_DEST = DOCTRINE_SHIPPED_DEST;
 module.exports._isPreCompactHookEntry = _isPreCompactHookEntry;
 module.exports._mergePreCompactHookEntry = _mergePreCompactHookEntry;
 module.exports.PRECOMPACT_HOOK_COMMAND = PRECOMPACT_HOOK_COMMAND;
