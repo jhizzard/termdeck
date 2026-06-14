@@ -32,6 +32,12 @@ services:
         value: "37778"
       - key: MNESTRA_WEBHOOK_URL
         value: http://127.0.0.1:37778/mnestra
+      # Long-lived tokens: a token issued once validates on ANY origin (shared
+      # jwtSecret) for 90 days, so failover never forces a re-auth.
+      - key: TERMDECK_BRIDGE_ACCESS_TTL_SEC
+        value: "7776000"      # 90 days
+      - key: TERMDECK_BRIDGE_REFRESH_TTL_SEC
+        value: "31536000"     # 365 days
       # ---- secrets: enter values in the Render dashboard (sync:false) ----
       - key: SUPABASE_URL                 # from ~/.termdeck/secrets.env
         sync: false
