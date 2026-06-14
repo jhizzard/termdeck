@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  termdeck-watchdog — external real-readiness watchdog for the TMR bridge HA pair.
+  Probes public + imac + air origins every 5 min (POST /token real-readiness) and
+  iMessages Josh on a red/green transition; self-heals the local bridge first.
+  Machine-specific: the absolute path below assumes the repo at the default location
+  and HOME=/Users/joshuaizzard. Edit both if either differs.
+  EnvironmentVariables>PATH is REQUIRED (launchd's default PATH excludes Homebrew /
+  /usr/local; the supervise plist learned this the hard way on the iMac).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jhizzard.termdeck-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/termdeck/scripts/termdeck-watchdog.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/joshuaizzard/.termdeck/logs/watchdog.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/joshuaizzard/.termdeck/logs/watchdog.err.log</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
