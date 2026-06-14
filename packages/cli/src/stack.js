@@ -15,6 +15,11 @@ const http = require('http');
 const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 
+// Idempotent provisioning of the Mnestra webhook shared secret. Lives in the
+// server `setup/` dir (merge-aware secrets.env writer) and is require()d here
+// the same way init.js pulls in its sibling setup modules.
+const { ensureWebhookSecret } = require(path.join(__dirname, '..', '..', 'server', 'src', 'setup', 'ensure-webhook-secret'));
+
 const HOME = os.homedir();
 const CONFIG_DIR = path.join(HOME, '.termdeck');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.yaml');
@@ -520,6 +525,15 @@ async function main(rawArgs) {
   }
 
   ensureFirstRunConfig();
+
+  // Provision the Mnestra webhook secret BEFORE loadSecrets() sources the file,
+  // so the just-generated key flows into process.env (and thus into the Mnestra
+  // / bridge children we spawn below) on a first run after upgrading to a
+  // fail-closed webhook. Idempotent + fail-soft — a no-op once the key exists.
+  const webhookSecret = ensureWebhookSecret(SECRETS_FILE);
+  if (webhookSecret.generated) {
+    stepLine('1/4', 'Webhook secret', 'OK', `(generated MNESTRA_WEBHOOK_SECRET → ${SECRETS_FILE})`);
+  }
 
   loadSecrets();
 
