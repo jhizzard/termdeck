@@ -21,16 +21,23 @@ MN_PORT="${MNESTRA_WEBHOOK_PORT:-37778}"
 #    Secret File (mounted at /etc/secrets/bridge-auth.json); fall back to the
 #    BRIDGE_AUTH_JSON env var. Either way it MUST match the Macs' file so OAuth
 #    tokens issued on any origin validate here too.
-mkdir -p "$HOME/.termdeck"
+# Write to the EXACT path the bridge reads (node's os.homedir(), which may differ
+# from the shell's $HOME on Render) so the bridge actually loads the shared secret.
+DEST_DIR="$(node -e 'process.stdout.write(require("os").homedir())' 2>/dev/null)/.termdeck"
+[ -n "$DEST_DIR" ] || DEST_DIR="$HOME/.termdeck"
+mkdir -p "$DEST_DIR"
+DEST="$DEST_DIR/bridge-auth.json"
 if [ -f /etc/secrets/bridge-auth.json ]; then
-  cp /etc/secrets/bridge-auth.json "$HOME/.termdeck/bridge-auth.json"
-  echo "[cloud-origin] bridge-auth.json from Render Secret File ($(wc -c < "$HOME/.termdeck/bridge-auth.json" | tr -d ' ') bytes)"
+  cp /etc/secrets/bridge-auth.json "$DEST"
+  echo "[cloud-origin] bridge-auth.json -> $DEST ($(wc -c < "$DEST" | tr -d ' ') bytes)"
 elif [ -n "${BRIDGE_AUTH_JSON:-}" ]; then
-  printf '%s' "$BRIDGE_AUTH_JSON" > "$HOME/.termdeck/bridge-auth.json"
-  echo "[cloud-origin] bridge-auth.json from env ($(wc -c < "$HOME/.termdeck/bridge-auth.json" | tr -d ' ') bytes)"
+  printf '%s' "$BRIDGE_AUTH_JSON" > "$DEST"
+  echo "[cloud-origin] bridge-auth.json from env -> $DEST ($(wc -c < "$DEST" | tr -d ' ') bytes)"
 else
   echo "[cloud-origin] WARNING: no bridge-auth.json source — a NEW jwtSecret will be generated; Mac-issued tokens will NOT validate here."
 fi
+# Diagnostic: hash (not value) of the jwtSecret the bridge will load — compare to the Macs' de69cf9f3095.
+node -e 'try{const c=require("crypto"),f=require("fs");const d=JSON.parse(f.readFileSync(process.argv[1],"utf8"));process.stdout.write("[cloud-origin] loaded jwtSecret sha256[:12] = "+c.createHash("sha256").update(String(d.jwtSecret)).digest("hex").slice(0,12)+"\n")}catch(e){process.stdout.write("[cloud-origin] WARN could not read jwtSecret: "+e.message+"\n")}' "$DEST" 2>/dev/null || true
 
 # 2. Mnestra webhook (internal only) -> cloud Supabase. Needs SUPABASE_URL,
 #    SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY in the env (Render secrets).
