@@ -16,16 +16,20 @@
 # failure that motivated this watchdog: an origin dropping out of the LB pool while
 # the public hostname stayed green via failover).
 #
-# On a RED *transition* it iMessages Josh (self). DEDUPED: one alert per state change
-# (green->red and red->green), never one per tick. If the LOCAL origin is red it first
-# self-heals (kill :8870 + kickstart the supervisor) and re-probes before alerting.
+# ALERTS GO VIA TELEGRAM, not iMessage. A launchd background job CANNOT drive
+# Messages.app: osascript blocks forever on the un-showable "control Messages"
+# automation prompt (verified 2026-06-13). Telegram's Bot API is a plain HTTPS POST
+# (no TCC, no GUI session) and still pushes to Josh's phone. Token comes from
+# ~/.claude/channels/telegram/.env; chat id from .../access.json. DEDUPED: one alert
+# per state change (green->red and red->green), never per tick. If the LOCAL origin
+# is red it self-heals (kill :8870 + kickstart the supervisor) and re-probes first.
 #
 # bash 3.2-safe (macOS /bin/bash) — no associative arrays. Exactly three targets.
 #
 # Modes:
 #   (no args)            normal run
 #   WATCHDOG_DRY=1 ...   probe + log only; no self-heal, no alert, no state write
-#   ... test-alert       send a single test iMessage and exit (validate the alert path)
+#   ... test-alert       send a single test alert and exit (validate the alert path)
 #
 # State: ~/.termdeck/watchdog-state.json   Log: ~/.termdeck/logs/watchdog.log
 set -uo pipefail
@@ -38,6 +42,8 @@ SUPERVISOR_LABEL="com.jhizzard.termdeck-supervise"
 PROBE_TIMEOUT="${WATCHDOG_PROBE_TIMEOUT:-12}"
 SELF_HEAL_WAIT="${WATCHDOG_SELF_HEAL_WAIT:-15}"
 DRY="${WATCHDOG_DRY:-0}"
+export TG_ENV="${HOME}/.claude/channels/telegram/.env"
+export TG_ACCESS="${HOME}/.claude/channels/telegram/access.json"
 
 ts()  { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "[$(ts)] $*" >> "$LOG_FILE"; }
@@ -50,34 +56,42 @@ probe() {
 }
 is_green() { case "$1" in 4[0-9][0-9]) return 0;; *) return 1;; esac; }
 
-# Resolve Josh's self iMessage address from the imessage MCP config (survives changes).
-self_address() {
-  python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude.json')))['mcpServers']['imessage']['env']['IMESSAGE_SELF_ADDRESS'])" 2>/dev/null
+# Telegram bot token (from the channel .env; never hardcoded / committed).
+tg_token() { grep -oE 'TOKEN=.*' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n'; }
+# First allowed chat id from access.json (any signed integer >= 6 digits).
+tg_chat() {
+  python3 -c "import json,os
+d=json.load(open(os.environ['TG_ACCESS']))
+ids=[]
+def w(o):
+    if isinstance(o,dict):
+        for k,v in o.items(): w(k); w(v)
+    elif isinstance(o,list):
+        [w(x) for x in o]
+    else:
+        s=str(o)
+        if s.lstrip('-').isdigit() and len(s.lstrip('-'))>=6: ids.append(s)
+w(d)
+print(ids[0] if ids else '')" 2>/dev/null
 }
 
-# Send via Messages.app. Message + address pass through the env (system attribute) so
-# arbitrary text / newlines can't break the AppleScript source.
-send_imessage() {
-  local addr; addr="$(self_address)"
-  if [ -z "$addr" ]; then log "ALERT(no-self-addr): $1"; return 1; fi
-  MSG="$1" ADDR="$addr" /usr/bin/osascript - <<'OSA' 2>>"$LOG_FILE"
-on run
-  set m to (system attribute "MSG")
-  set a to (system attribute "ADDR")
-  tell application "Messages"
-    set svc to 1st service whose service type = iMessage
-    send m to buddy a of svc
-  end tell
-end run
-OSA
+# Send a push alert via Telegram. Returns 0 on HTTP 200.
+send_alert() {
+  local token chat code
+  token="$(tg_token)"; chat="$(tg_chat)"
+  if [ -z "$token" ] || [ -z "$chat" ]; then log "ALERT(no-telegram-config): $1"; return 1; fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    "https://api.telegram.org/bot${token}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" --data-urlencode "text=$1" 2>/dev/null)"
+  [ "$code" = "200" ]
 }
 
 # ---- test-alert mode ------------------------------------------------------------
 if [ "${1:-}" = "test-alert" ]; then
-  if send_imessage "TermDeck watchdog test @ $(hostname -s) $(date '+%a %H:%M %Z') - alert path OK."; then
-    log "test-alert: iMessage sent OK"; echo "sent"
+  if send_alert "TermDeck watchdog test @ $(hostname -s) $(date '+%a %H:%M %Z') — alert path OK (Telegram)."; then
+    log "test-alert: Telegram sent OK"; echo "sent"
   else
-    log "test-alert: iMessage FAILED"; echo "FAILED"; exit 1
+    log "test-alert: Telegram FAILED"; echo "FAILED"; exit 1
   fi
   exit 0
 fi
@@ -140,6 +154,6 @@ PUB="$new_public" IM="$new_imac" AIR="$new_air" TSV="$(ts)" \
 # ---- alert on changes -----------------------------------------------------------
 if [ "${#ALERTS[@]}" -gt 0 ]; then
   body="TermDeck bridge watchdog @ $(hostname -s) $(date '+%a %H:%M %Z')"$'\n'"$(printf '%s\n' "${ALERTS[@]}")"
-  if send_imessage "$body"; then log "iMessage sent (${#ALERTS[@]} change(s))"; else log "iMessage send FAILED"; fi
+  if send_alert "$body"; then log "Telegram alert sent (${#ALERTS[@]} change(s))"; else log "Telegram alert FAILED"; fi
 fi
 exit 0
