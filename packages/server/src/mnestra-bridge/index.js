@@ -98,9 +98,16 @@ function createBridge(config) {
 
   async function queryWebhook({ question, project, searchAll }) {
     const url = config.rag?.mnestraWebhookUrl || 'http://localhost:37778/mnestra';
+    // mnestra ≥ 0.7.0 fail-closes the webhook: present the shared secret when
+    // it's configured (sourced into this process's env from secrets.env).
+    // Absent ⇒ no header ⇒ unchanged against a pre-0.7.0 ungated webhook.
+    const secret = process.env.MNESTRA_WEBHOOK_SECRET || '';
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(secret ? { 'x-mnestra-secret': secret } : {})
+      },
       body: JSON.stringify({
         op: 'recall',
         question,

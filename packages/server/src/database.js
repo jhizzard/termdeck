@@ -42,6 +42,49 @@ const FLASHBACK_EVENTS_INLINE_SQL = `
     ON flashback_events(session_id);
 `;
 
+// Sprint 78 T2 — advisory_events durable audit table. A flashback_events
+// SIBLING (same shape/contract): one row per advisor outcome (delivered OR
+// suppressed OR ttl-dropped), so the agent-facing advisory channel is as
+// auditable as the human-facing flashback toast. `delivered`/`agent_injected`
+// distinguish "the deliver path ran" from "the submit confirmed in the PTY";
+// `suppressed_reason` carries the throttle reason (rate_session / rate_10min /
+// dup_key / cooldown / quarantined / ttl_dropped / …) for the non-delivered
+// rows. Idempotent CREATE so it replays safely on every server start. SQLite
+// has no source-of-truth migration file for this table (it ships only in the
+// inline fallback, like the audit table did pre-001) — the advisor is
+// offline-complete (A10) and SQLite-only this sprint.
+const ADVISORY_EVENTS_INLINE_SQL = `
+  CREATE TABLE IF NOT EXISTS advisory_events (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    fired_at          TEXT    NOT NULL,
+    session_id        TEXT    NOT NULL,
+    project           TEXT,
+    rule_id           TEXT    NOT NULL,
+    dedupe_key        TEXT    NOT NULL,
+    error_text        TEXT,
+    delivered         INTEGER NOT NULL DEFAULT 0,
+    suppressed_reason TEXT,
+    agent_injected    INTEGER NOT NULL DEFAULT 0,
+    acked_at          TEXT,
+    created_at        TEXT    NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS advisory_events_fired_at_idx
+    ON advisory_events(fired_at DESC);
+  CREATE INDEX IF NOT EXISTS advisory_events_session_idx
+    ON advisory_events(session_id);
+  CREATE INDEX IF NOT EXISTS advisory_events_rule_idx
+    ON advisory_events(rule_id);
+  CREATE INDEX IF NOT EXISTS advisory_events_dedupe_idx
+    ON advisory_events(dedupe_key);
+
+  CREATE TABLE IF NOT EXISTS advisory_quarantine (
+    rule_id        TEXT PRIMARY KEY,
+    quarantined_at TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    reason         TEXT
+  );
+`;
+
 function initDatabase(Database) {
   const dbPath = path.join(os.homedir(), '.termdeck', 'termdeck.db');
 
@@ -180,6 +223,30 @@ function initDatabase(Database) {
     db.exec(loadMigrationSql('001_flashback_events.sql', FLASHBACK_EVENTS_INLINE_SQL));
   } catch (err) {
     console.warn('[db] flashback_events migration failed:', err.message);
+  }
+
+  // Sprint 78 T2: advisory_events + advisory_quarantine. Inline-only (no
+  // repo-root migration file — SQLite-only, offline-complete this sprint).
+  // Idempotent CREATE; fail-soft so a broken advisor schema can never block
+  // server start (the advisor is non-critical-path by design).
+  try {
+    db.exec(ADVISORY_EVENTS_INLINE_SQL);
+  } catch (err) {
+    console.warn('[db] advisory_events migration failed:', err.message);
+  }
+
+  // Sprint 78 T1: doctrine_events store, sibling of flashback_events /
+  // advisory_events in this shared handle (no second DB file). The DDL is
+  // canonical in the top-level doctrine/index.js module (one schema, used by
+  // both the loader's throttle and this wiring). Lazy-required inside the
+  // try/catch so a doctrine-module problem can never break server boot —
+  // fail-soft, idempotent CREATE.
+  try {
+    const doctrine = require('../../../doctrine');
+    db.exec(doctrine.DOCTRINE_EVENTS_SQL);
+    doctrine.setDb(db); // hand the loader its throttle/recordGateEvent handle
+  } catch (err) {
+    console.warn('[db] doctrine_events init failed (fail-soft):', err && err.message);
   }
 
   return db;

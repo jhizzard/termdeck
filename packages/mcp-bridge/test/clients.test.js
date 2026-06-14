@@ -154,3 +154,61 @@ test('mnestra client clamps min_results into [1,25]', async () => {
   await mn.recall({ query: 'a', minResults: 9999 });
   assert.equal(calls[0].body.min_results, 25);
 });
+
+// ── webhook shared-secret (mnestra ≥ 0.7.0 fail-closed gate) ──────────────────
+
+function secretHeaderOf(call) {
+  // makeFetch records init.headers verbatim; the client merges authHeaders in
+  // via requestJson's { accept, ...headers }. Look up case-insensitively.
+  const h = call.headers || {};
+  for (const k of Object.keys(h)) if (k.toLowerCase() === 'x-mnestra-secret') return h[k];
+  return undefined;
+}
+
+test('mnestra: attaches x-mnestra-secret from env.MNESTRA_WEBHOOK_SECRET on every read op', async () => {
+  const { fetchImpl, calls } = makeFetch(() => ({ body: { ok: true, hits: [] } }));
+  const mn = createMnestraClient({
+    webhookUrl: 'http://x:37778/mnestra',
+    fetchImpl,
+    env: { MNESTRA_WEBHOOK_SECRET: 'sek-from-env' },
+  });
+  await mn.recall({ query: 'a' });
+  await mn.search({ query: 'b' });
+  await mn.status();
+  assert.equal(calls.length, 3);
+  for (const c of calls) assert.equal(secretHeaderOf(c), 'sek-from-env');
+});
+
+test('mnestra: opts.secret overrides env and rides the propose write op too', async () => {
+  const { fetchImpl, calls } = makeFetch(() => ({ body: { ok: true, id: 'inbox-1', status: 'pending' } }));
+  const mn = createMnestraClient({
+    webhookUrl: 'http://x:37778/mnestra',
+    fetchImpl,
+    secret: 'explicit-sek',
+    env: { MNESTRA_WEBHOOK_SECRET: 'ignored-env-sek' },
+  });
+  const out = await mn.propose({ sourceAgent: 'claude-web', text: 'hello' });
+  assert.equal(out.id, 'inbox-1');
+  assert.equal(calls[0].body.op, 'propose');
+  assert.equal(secretHeaderOf(calls[0]), 'explicit-sek');
+});
+
+test('mnestra: NO secret header when none is configured (backward-compat with a pre-0.7.0 ungated webhook)', async () => {
+  const { fetchImpl, calls } = makeFetch(() => ({ body: { ok: true, hits: [] } }));
+  const mn = createMnestraClient({ webhookUrl: 'http://x:37778/mnestra', fetchImpl, env: {} });
+  await mn.recall({ query: 'a' });
+  assert.equal(secretHeaderOf(calls[0]), undefined);
+});
+
+test('mnestra: the secret is a HEADER only — never leaks into the request body', async () => {
+  const { fetchImpl, calls } = makeFetch(() => ({ body: { ok: true, hits: [] } }));
+  const mn = createMnestraClient({
+    webhookUrl: 'http://x:37778/mnestra',
+    fetchImpl,
+    env: { MNESTRA_WEBHOOK_SECRET: 'top-secret-value' },
+  });
+  await mn.recall({ query: 'a', project: 'termdeck' });
+  const bodyStr = JSON.stringify(calls[0].body);
+  assert.ok(!bodyStr.includes('top-secret-value'), 'secret must not appear in the request body');
+  assert.equal(secretHeaderOf(calls[0]), 'top-secret-value');
+});

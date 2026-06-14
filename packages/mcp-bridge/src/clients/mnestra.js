@@ -48,7 +48,19 @@ function normalizeRow(m) {
 function createMnestraClient(opts = {}) {
   const env = opts.env || process.env;
   const webhookUrl = String(opts.webhookUrl || env.MNESTRA_WEBHOOK_URL || DEFAULT_WEBHOOK);
-  const reqOpts = { fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs || 8000 };
+
+  // The Mnestra webhook (mnestra ≥ 0.7.0) is fail-CLOSED: every op except
+  // /healthz is rejected 401 unless the caller presents the shared secret. We
+  // read it from the same source the webhook does — MNESTRA_WEBHOOK_SECRET,
+  // sourced into this process's env from ~/.termdeck/secrets.env by the
+  // launcher — and attach it as `x-mnestra-secret` on every request.
+  // Backward-compatible by construction: no secret configured ⇒ no header ⇒
+  // unchanged behavior against a pre-0.7.0 ungated webhook. The secret is a
+  // HEADER only — never in a request body, a returned row, or (since requestJson
+  // logs only status + the server's { error } reason) a log line.
+  const secret = opts.secret != null ? String(opts.secret) : (env.MNESTRA_WEBHOOK_SECRET || '');
+  const authHeaders = secret ? { 'x-mnestra-secret': secret } : undefined;
+  const reqOpts = { fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs || 8000, headers: authHeaders };
 
   // Internal — the ONLY way this module talks to Mnestra. `op` is always one of
   // the three read ops below; callers cannot inject an arbitrary op.
