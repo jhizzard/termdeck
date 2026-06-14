@@ -1,0 +1,60 @@
+# render.yaml — Render Blueprint for the always-on, memory-only bridge origin.
+#
+# This is the 3rd Cloudflare Load Balancer pool member ("bridge-cloud"): it keeps
+# web-chat memory (Claude.ai / ChatGPT / Grok / Gemini) alive when BOTH Macs are
+# off. It runs the bridge in memory-only mode + a local `mnestra serve` that talks
+# straight to cloud Supabase. See scripts/cloud-origin-start.sh.
+#
+# Secrets (sync: false) are entered in the Render dashboard, NEVER committed.
+# Must be a PAID always-on plan — free Render web services sleep after ~15 min
+# idle, which would defeat the purpose of a last-resort origin.
+services:
+  - type: web
+    name: termdeck-cloud-origin
+    runtime: node
+    rootDir: packages/mcp-bridge
+    plan: starter            # paid, always-on — do NOT use 'free' (it sleeps)
+    region: ohio             # closest US region; any is fine (Cloudflare fronts it)
+    buildCommand: npm install --no-workspaces && npm install --no-save --no-workspaces @jhizzard/mnestra@0.7.0
+    startCommand: bash ../../scripts/cloud-origin-start.sh
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: TERMDECK_BRIDGE_PUBLIC_URL
+        value: https://bridge.joshuaizzard.dev
+      - key: TERMDECK_BRIDGE_MEMORY_ONLY
+        value: "1"
+      - key: TERMDECK_BRIDGE_ORIGIN_LABEL
+        value: cloud
+      - key: TERMDECK_BRIDGE_HOST
+        value: 0.0.0.0
+      - key: MNESTRA_WEBHOOK_PORT
+        value: "37778"
+      - key: MNESTRA_WEBHOOK_URL
+        value: http://127.0.0.1:37778/mnestra
+      # mnestra >=0.7.0 webhook is fail-closed: it 401s every request unless this
+      # is set. The bridge (same container) reads the same var and sends it as
+      # x-mnestra-secret, so one generated value makes both sides agree. It only
+      # gates localhost:37778 inside the container, never anything external.
+      - key: MNESTRA_WEBHOOK_SECRET
+        generateValue: true
+      # Long-lived tokens: a token issued once validates on ANY origin (shared
+      # jwtSecret) for 90 days, so failover never forces a re-auth.
+      - key: TERMDECK_BRIDGE_ACCESS_TTL_SEC
+        value: "7776000"      # 90 days
+      - key: TERMDECK_BRIDGE_REFRESH_TTL_SEC
+        value: "31536000"     # 365 days
+      # ---- secrets: enter values in the Render dashboard (sync:false) ----
+      - key: SUPABASE_URL                 # from ~/.termdeck/secrets.env
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY    # from ~/.termdeck/secrets.env
+        sync: false
+      - key: OPENAI_API_KEY               # from ~/.termdeck/secrets.env (embeddings)
+        sync: false
+      - key: TERMDECK_BRIDGE_OPERATOR_SECRET  # = ~/.termdeck/bridge-operator-secret.txt
+        sync: false
+      # bridge-auth.json (the shared jwtSecret) is provided as a Render SECRET FILE
+      # named "bridge-auth.json" (mounted at /etc/secrets/bridge-auth.json), not an
+      # env var — it's ~9KB. The start script reads that path. Add it in the
+      # dashboard: Service -> Environment -> Secret Files -> Add, name it
+      # bridge-auth.json, paste the contents of ~/.termdeck/bridge-auth.json.
