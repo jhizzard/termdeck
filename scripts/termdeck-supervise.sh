@@ -112,10 +112,18 @@ start_bridge() {
     log "MCP bridge :8870 DOWN — starting"
   fi
   ensure_secret
+  # Mnestra >= 0.7.0 fail-closes the :37778 webhook; the bridge's mnestra client
+  # presents MNESTRA_WEBHOOK_SECRET as x-mnestra-secret. The bridge deliberately
+  # does NOT source the whole secrets.env (egress-sensitive process — explicit
+  # allowlist only), so extract just this one key surgically. Absent ⇒ empty ⇒
+  # no header ⇒ unchanged against a pre-0.7.0 ungated webhook.
+  local wh_secret
+  wh_secret="$(sed -n 's/^MNESTRA_WEBHOOK_SECRET=//p' "$SECRETS_ENV" 2>/dev/null | head -1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
   ( cd "${REPO_DIR}/packages/mcp-bridge" || exit 1
     TERMDECK_BRIDGE_PUBLIC_URL="$pub" \
     TERMDECK_BRIDGE_OPERATOR_SECRET="$(cat "$SECRET_FILE")" \
     MNESTRA_WEBHOOK_URL="http://localhost:37778/mnestra" \
+    MNESTRA_WEBHOOK_SECRET="$wh_secret" \
     TERMDECK_API_BASE="http://127.0.0.1:3000" \
     TERMDECK_BRIDGE_ALLOWLIST_PROJECTS="$ALLOWLIST_PROJECTS" \
     nohup node src/server.js >>"${LOG_DIR}/bridge.log" 2>&1 & )
