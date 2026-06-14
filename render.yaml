@@ -41,5 +41,8 @@ services:
         sync: false
       - key: TERMDECK_BRIDGE_OPERATOR_SECRET  # = ~/.termdeck/bridge-operator-secret.txt
         sync: false
-      - key: BRIDGE_AUTH_JSON             # = full contents of ~/.termdeck/bridge-auth.json
-        sync: false
+      # bridge-auth.json (the shared jwtSecret) is provided as a Render SECRET FILE
+      # named "bridge-auth.json" (mounted at /etc/secrets/bridge-auth.json), not an
+      # env var — it's ~9KB. The start script reads that path. Add it in the
+      # dashboard: Service -> Environment -> Secret Files -> Add, name it
+      # bridge-auth.json, paste the contents of ~/.termdeck/bridge-auth.json.

@@ -17,13 +17,19 @@ set -uo pipefail
 
 MN_PORT="${MNESTRA_WEBHOOK_PORT:-37778}"
 
-# 1. Shared bridge-auth.json (jwtSecret + client/refresh snapshot).
+# 1. Shared bridge-auth.json (jwtSecret + client/refresh snapshot). Prefer a Render
+#    Secret File (mounted at /etc/secrets/bridge-auth.json); fall back to the
+#    BRIDGE_AUTH_JSON env var. Either way it MUST match the Macs' file so OAuth
+#    tokens issued on any origin validate here too.
 mkdir -p "$HOME/.termdeck"
-if [ -n "${BRIDGE_AUTH_JSON:-}" ]; then
+if [ -f /etc/secrets/bridge-auth.json ]; then
+  cp /etc/secrets/bridge-auth.json "$HOME/.termdeck/bridge-auth.json"
+  echo "[cloud-origin] bridge-auth.json from Render Secret File ($(wc -c < "$HOME/.termdeck/bridge-auth.json" | tr -d ' ') bytes)"
+elif [ -n "${BRIDGE_AUTH_JSON:-}" ]; then
   printf '%s' "$BRIDGE_AUTH_JSON" > "$HOME/.termdeck/bridge-auth.json"
-  echo "[cloud-origin] wrote bridge-auth.json ($(wc -c < "$HOME/.termdeck/bridge-auth.json" | tr -d ' ') bytes)"
+  echo "[cloud-origin] bridge-auth.json from env ($(wc -c < "$HOME/.termdeck/bridge-auth.json" | tr -d ' ') bytes)"
 else
-  echo "[cloud-origin] WARNING: BRIDGE_AUTH_JSON unset — a NEW jwtSecret will be generated; tokens from the Macs will NOT validate here."
+  echo "[cloud-origin] WARNING: no bridge-auth.json source — a NEW jwtSecret will be generated; Mac-issued tokens will NOT validate here."
 fi
 
 # 2. Mnestra webhook (internal only) -> cloud Supabase. Needs SUPABASE_URL,
