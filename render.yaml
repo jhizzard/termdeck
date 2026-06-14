@@ -32,6 +32,12 @@ services:
         value: "37778"
       - key: MNESTRA_WEBHOOK_URL
         value: http://127.0.0.1:37778/mnestra
+      # mnestra >=0.7.0 webhook is fail-closed: it 401s every request unless this
+      # is set. The bridge (same container) reads the same var and sends it as
+      # x-mnestra-secret, so one generated value makes both sides agree. It only
+      # gates localhost:37778 inside the container, never anything external.
+      - key: MNESTRA_WEBHOOK_SECRET
+        generateValue: true
       # Long-lived tokens: a token issued once validates on ANY origin (shared
       # jwtSecret) for 90 days, so failover never forces a re-auth.
       - key: TERMDECK_BRIDGE_ACCESS_TTL_SEC
