@@ -15,7 +15,7 @@ services:
     rootDir: packages/mcp-bridge
     plan: starter            # paid, always-on — do NOT use 'free' (it sleeps)
     region: ohio             # closest US region; any is fine (Cloudflare fronts it)
-    buildCommand: npm install && npm install --no-save @jhizzard/mnestra@0.7.0
+    buildCommand: npm install --no-workspaces && npm install --no-save --no-workspaces @jhizzard/mnestra@0.7.0
     startCommand: bash ../../scripts/cloud-origin-start.sh
     healthCheckPath: /healthz
     autoDeploy: true
