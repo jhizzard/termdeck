@@ -566,7 +566,7 @@ jobs:
 
       - name: Upload fixture-status artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixture-status-brad-5-no-zsh-ubuntu
           path: /tmp/fixture-status/brad-5-no-zsh-ubuntu.json
@@ -646,7 +646,7 @@ jobs:
 
       - name: Upload fixture-status artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixture-status-brad-5-alpine-bashism
           path: /tmp/fixture-status/brad-5-alpine-bashism.json
@@ -729,7 +729,7 @@ jobs:
 
       - name: Upload fixture-status artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixture-status-brad-2-quoted-database-url
           path: /tmp/fixture-status/brad-2-quoted-database-url.json
@@ -848,7 +848,7 @@ jobs:
 
       - name: Upload fixture-status artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixture-status-brad-1-nohup-secrets
           path: /tmp/fixture-status/brad-1-nohup-secrets.json
@@ -912,7 +912,7 @@ jobs:
 
       - name: Upload fixture-status artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixture-status-brad-6-claude-code-optional
           path: /tmp/fixture-status/brad-6-claude-code-optional.json
