@@ -52,7 +52,7 @@
     "yaml": "^2.3.4"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.96.0"
+    "@anthropic-ai/sdk": "^0.100.1"
   },
   "keywords": [
     "terminal",
