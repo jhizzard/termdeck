@@ -134,6 +134,14 @@ function defaultConfig() {
     host: '127.0.0.1',
     shell: process.env.SHELL || '/bin/bash',
     defaultTheme: 'tokyo-night',
+    // Sprint 80 T3 (FR-3) — optional cap on concurrent LIVE panels. `null`
+    // (also 0 / negative / non-numeric) means UNLIMITED, which is the exact
+    // pre-FR-3 behavior (TermDeck imposed no cap), so the default never
+    // regresses. Set a positive integer to make POST /api/sessions return a
+    // clear 429 once that many live panels exist — a guarded ceiling instead of
+    // the silent host/PTY exhaustion Brad hit at ~30-40 panels (2026-06-26).
+    // Override precedence: TERMDECK_MAX_PANELS env > config.yaml > this default.
+    maxPanels: null,
     projects: {},
     rag: {
       enabled: false,
@@ -155,6 +163,26 @@ function defaultConfig() {
     sessionLogs: {
       enabled: false,
       summaryModel: 'claude-haiku-4-5'
+    },
+    // Sprint 80 T2 (FR-5 + FR-6) — per-panel context-size telemetry + ceiling
+    // enforcement. Defaults chosen from Brad's 2026-06-26 crash: orchs rode to
+    // 356K–999K unseen, so WARN at 350K / OVER at 400K surfaces the danger band
+    // well before the ~1M wall. Enforcement (maxContextK) is OFF by default —
+    // TermDeck never intervenes on a panel until the operator opts in — and even
+    // when on, the default action is the non-destructive `notify` (PLANNING §3.3).
+    context: {
+      warnK: 350,          // header turns ⚠ amber at/above this
+      overK: 400,          // header turns ⛔ red at/above this
+      maxContextK: null,   // FR-6 enforcement ceiling; null/0 = disabled
+      contextAction: 'notify',   // notify | inject | kill  (inject/kill are opt-in)
+      // Force-rotate message pasted (two-stage) into the panel when action=inject.
+      contextInjectText:
+        'You are approaching the context limit. Persist critical state to memory now '
+        + '(memory_remember / STATUS.md), then rotate: summarize your handoff and end this session so a fresh panel can resume.',
+      respawnOnKill: false,      // action=kill: respawn a fresh panel with the same command/cwd
+      killGraceMs: 15000,        // re-check delay when a kill is deferred mid-tool-use
+      killMaxDeferrals: 3,       // after this many mid-tool-use deferrals, kill anyway
+      webhookUrl: null           // optional POST target fired on every enforcement action
     }
   };
 }
@@ -182,6 +210,13 @@ host: 127.0.0.1
 shell: ${process.env.SHELL || '/bin/bash'}
 defaultTheme: tokyo-night
 
+# Cap on concurrent LIVE panels (FR-3). Omitted / null / 0 = UNLIMITED (default).
+# Set a positive integer to get a clear 429 once that many live panels exist,
+# instead of letting a busy host run out of PTYs / RAM. Pick a value your host
+# can actually drive — see the README "Panel cap" section for per-OS PTY notes.
+# The TERMDECK_MAX_PANELS env var overrides this at launch.
+# maxPanels: 24
+
 # projects:
 #   my-project:
 #     path: ~/code/my-project
@@ -202,6 +237,21 @@ rag:
 sessionLogs:
   enabled: false
   summaryModel: claude-haiku-4-5
+
+# Per-panel context-size telemetry (FR-5) + ceiling enforcement (FR-6).
+# The panel header shows live "NNK ctx" for Claude panels, read from the
+# session transcript on disk (no CLI involvement). Enforcement is OFF until
+# you set maxContextK; the default action is the non-destructive "notify".
+context:
+  warnK: 350            # header shows an amber warning at/above this many K tokens
+  overK: 400            # header shows a red over-limit marker at/above this
+  # maxContextK: 400    # uncomment to enforce a ceiling; null/omitted = disabled
+  contextAction: notify # notify | inject | kill  (inject and kill are opt-in)
+  # contextInjectText: "..."   # message pasted into the panel when action: inject
+  respawnOnKill: false  # action: kill — respawn a fresh panel with the same command/cwd
+  killGraceMs: 15000    # when a kill is deferred mid-tool-use, re-check after this
+  killMaxDeferrals: 3   # after this many mid-tool-use deferrals, kill anyway
+  # webhookUrl: "https://..."  # optional POST fired on every enforcement action
 `;
     fs.writeFileSync(CONFIG_PATH, defaultYaml, 'utf-8');
     console.log('[config] Created default config at', CONFIG_PATH);
@@ -224,11 +274,28 @@ sessionLogs:
 
   const substituted = substituteEnv(parsed);
 
+  // Sprint 80 T3 (FR-3) — panel-cap resolution order: TERMDECK_MAX_PANELS env >
+  // config.yaml > default (null = unlimited). Resolved explicitly (rather than
+  // relying on the `...substituted` spread alone) so the env var can raise or
+  // lower the ceiling at launch without editing the file. Left as-is here (no
+  // clamping) — effectivePanelCap() in index.js normalizes null/0/negative to
+  // "unlimited" at the enforcement point.
+  let maxPanels = (substituted && substituted.maxPanels !== undefined)
+    ? substituted.maxPanels
+    : defaults.maxPanels;
+  const envCap = process.env.TERMDECK_MAX_PANELS;
+  if (envCap !== undefined && envCap !== '') {
+    const n = Number(envCap);
+    if (Number.isFinite(n)) maxPanels = n;
+  }
+
   return {
     ...defaults,
     ...substituted,
+    maxPanels,
     rag: { ...defaults.rag, ...(substituted?.rag || {}) },
-    sessionLogs: { ...defaults.sessionLogs, ...(substituted?.sessionLogs || {}) }
+    sessionLogs: { ...defaults.sessionLogs, ...(substituted?.sessionLogs || {}) },
+    context: { ...defaults.context, ...(substituted?.context || {}) }
   };
 }
 

@@ -5,6 +5,15 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [1.10.0] — 2026-07-01
+
+### Fixed
+- **`564e788` — rumen-tick wrapper watchdog.** The bundled `rumen-tick` Edge Function gains a watchdog race that self-aborts at ~140s (env `RUMEN_TICK_WATCHDOG_MS`) — ahead of the platform's 150s hard kill — so a hung tick returns a real JSON error + log trail instead of an opaque 504. Pairs with `@jhizzard/rumen@0.6.1` (job budget + DB/LLM timeouts inside the package) to close the field edge-tick outage that ran from 06-28 (tick riding to the 150s wall every 15 min). Existing installs pick it up on the next Rumen function refresh/redeploy.
+
+### Documentation
+- Audit-trail: validated against `@jhizzard/termdeck@1.12.0` (Sprint 80 close).
+- Version-history note: `[1.4.0]`–`[1.9.0]` were released without entries in this file; those bumps are recorded in the root `CHANGELOG.md` Notes sections of the corresponding `@jhizzard/termdeck` releases.
+
 ## [1.3.0] — 2026-05-14
 
 ### Added

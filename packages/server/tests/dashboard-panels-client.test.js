@@ -54,6 +54,10 @@ const PURE_HELPERS = [
   'filterValueRevealingPanel', 'clampFontSize',
   // Sprint 66 T1 (Task 1.3) — the orchestrator-toggle pure helpers.
   'nextRoleForToggle', 'orchToggleLabel',
+  // Sprint 80 FR-2 — the gold master-tier predicate.
+  'isMasterOrchestratorRole',
+  // Sprint 80 FR-1 — the transcript newest-first line reorderer.
+  'orderTranscriptContent',
   // Sprint 72 T3 — the web-chat composer submit-frame builder.
   'webChatSubmitFrames',
 ];
@@ -171,36 +175,52 @@ test('shouldShowChipRow — hidden only when there are zero projects', () => {
   assert.equal(shouldShowChipRow(undefined, false), false);
 });
 
-// --- 1.2: isOrchestratorRole ----------------------------------------------
+// --- 1.2: isOrchestratorRole / isMasterOrchestratorRole (Sprint 80 FR-2) ----
 
-test('isOrchestratorRole — only the explicit orchestrator role qualifies', () => {
+test('isOrchestratorRole — the pin-family predicate: BOTH orchestrator tiers qualify', () => {
   const isOrchestratorRole = loadHelper('isOrchestratorRole');
+  // Sprint 80 FR-2 — both tiers pin to the ORCH row (silver + gold).
   assert.equal(isOrchestratorRole('orchestrator'), true);
+  assert.equal(isOrchestratorRole('master-orchestrator'), true);
   assert.equal(isOrchestratorRole('worker'), false);
   assert.equal(isOrchestratorRole('auditor'), false);
   assert.equal(isOrchestratorRole(null), false);
   assert.equal(isOrchestratorRole(undefined), false);
 });
 
-// --- 1.3: nextRoleForToggle + orchToggleLabel (Sprint 66 T1 — ORCH toggle) --
-
-test('nextRoleForToggle — orchestrator ⇄ unroled(null) is a binary toggle', () => {
-  const nextRoleForToggle = loadHelper('nextRoleForToggle');
-  // An orchestrator panel toggles back to unroled.
-  assert.equal(nextRoleForToggle('orchestrator'), null);
-  // Any non-orchestrator role (incl. null/undefined) toggles UP to orchestrator.
-  assert.equal(nextRoleForToggle(null), 'orchestrator');
-  assert.equal(nextRoleForToggle(undefined), 'orchestrator');
-  // A worker/reviewer/auditor panel is promoted to orchestrator — the toggle
-  // is a binary ORCH switch and deliberately does NOT preserve the prior role.
-  assert.equal(nextRoleForToggle('worker'), 'orchestrator');
-  assert.equal(nextRoleForToggle('reviewer'), 'orchestrator');
-  assert.equal(nextRoleForToggle('auditor'), 'orchestrator');
+test('isMasterOrchestratorRole — only the gold master tier qualifies', () => {
+  const isMasterOrchestratorRole = loadHelper('isMasterOrchestratorRole');
+  assert.equal(isMasterOrchestratorRole('master-orchestrator'), true);
+  // A plain orchestrator is silver, NOT master.
+  assert.equal(isMasterOrchestratorRole('orchestrator'), false);
+  assert.equal(isMasterOrchestratorRole('worker'), false);
+  assert.equal(isMasterOrchestratorRole(null), false);
+  assert.equal(isMasterOrchestratorRole(undefined), false);
 });
 
-test('orchToggleLabel — button text reflects whether the panel is orchestrator', () => {
+// --- 1.3: nextRoleForToggle + orchToggleLabel (Sprint 66 T1 / Sprint 80 FR-2) --
+
+test('nextRoleForToggle — orch-family ⇄ unroled(null); the promote target is the gold master', () => {
+  const nextRoleForToggle = loadHelper('nextRoleForToggle');
+  // Either orchestrator tier toggles back to unroled.
+  assert.equal(nextRoleForToggle('orchestrator'), null);
+  assert.equal(nextRoleForToggle('master-orchestrator'), null);
+  // Sprint 80 FR-2 — any non-orch role (incl. null/undefined) promotes UP to
+  // master-orchestrator (gold): the solo-operator one-click affordance keeps its
+  // gold border. Plain silver `orchestrator` is the fleet-API path, not this toggle.
+  assert.equal(nextRoleForToggle(null), 'master-orchestrator');
+  assert.equal(nextRoleForToggle(undefined), 'master-orchestrator');
+  // A worker/reviewer/auditor panel is promoted to master-orchestrator — the
+  // toggle is a binary switch and deliberately does NOT preserve the prior role.
+  assert.equal(nextRoleForToggle('worker'), 'master-orchestrator');
+  assert.equal(nextRoleForToggle('reviewer'), 'master-orchestrator');
+  assert.equal(nextRoleForToggle('auditor'), 'master-orchestrator');
+});
+
+test('orchToggleLabel — button text reflects whether the panel is in the orch family', () => {
   const orchToggleLabel = loadHelper('orchToggleLabel');
   assert.equal(orchToggleLabel('orchestrator'), 'unmark orch');
+  assert.equal(orchToggleLabel('master-orchestrator'), 'unmark orch');
   assert.equal(orchToggleLabel(null), 'mark orch');
   assert.equal(orchToggleLabel(undefined), 'mark orch');
   assert.equal(orchToggleLabel('worker'), 'mark orch');
@@ -363,9 +383,24 @@ test('style.css ships the chip / ORCH / tile-state classes', () => {
   for (const sel of [
     '.project-chips-row', '.project-chip', '.panel--filtered-out',
     '.orch-pin-row', '.panel--role-orch', '.panel--exiting',
+    // Sprint 80 FR-2 — the gold master-tier modifier.
+    '.panel--role-master',
   ]) {
     assert.ok(cssSource.includes(sel), `style.css should define ${sel}`);
   }
+});
+
+test('Sprint 80 FR-2 — style.css splits orchestrator into silver default + gold master tier', () => {
+  // The silver accent var backs the plain-orchestrator default.
+  assert.ok(cssSource.includes('--tg-accent-orch-secondary'),
+    'style.css defines the silver --tg-accent-orch-secondary accent var');
+  // The master modifier overrides to the existing gold var (two-class selector).
+  assert.ok(cssSource.includes('.term-panel.panel--role-orch.panel--role-master'),
+    'style.css defines the .panel--role-orch.panel--role-master gold override');
+  // The base orch border now reads silver, not gold.
+  assert.ok(
+    /\.term-panel\.panel--role-orch\s*\{[^}]*--tg-accent-orch-secondary/.test(cssSource),
+    'the base .panel--role-orch border uses the silver accent var');
 });
 
 // --- 1.3: orchestrator-toggle wiring (Sprint 66 T1) -----------------------
@@ -393,6 +428,59 @@ test('app.js defines the orchestrator-toggle handler + sync helper', () => {
 test('style.css ships the orch-toggle active-state class', () => {
   assert.ok(cssSource.includes('.ctrl-btn.orch-toggle.is-orch'),
     'style.css defines the .ctrl-btn.orch-toggle.is-orch active state');
+});
+
+test('Sprint 80 FR-2 — placePanel + reconcileOrchRow manage the gold master modifier', () => {
+  // The gold tier is a `panel--role-master` modifier toggled by isMasterOrchestratorRole.
+  assert.ok(appSource.includes("classList.toggle('panel--role-master', isMasterOrchestratorRole"),
+    'the master modifier is toggled by isMasterOrchestratorRole (placePanel + reconcile)');
+  // A demotion out of the orch family must strip the master modifier so a
+  // grid-placed panel never keeps a stale gold class.
+  assert.ok(appSource.includes("classList.remove('panel--role-master')"),
+    'reconcileOrchRow removes panel--role-master when a panel leaves the orch family');
+  // The toggle button still PATCHes the (now master) role via the shared handler.
+  assert.ok(appSource.includes("'master-orchestrator'"),
+    'app.js references the master-orchestrator role value');
+});
+
+// --- Sprint 80 FR-1: transcript newest-first toggle -----------------------
+
+test('FR-1 — orderTranscriptContent leaves oldest-first content unchanged', () => {
+  const orderTranscriptContent = loadHelper('orderTranscriptContent');
+  assert.equal(orderTranscriptContent('a\nb\nc', false), 'a\nb\nc');
+  // Empty / null / undefined are tolerated and normalized to ''.
+  assert.equal(orderTranscriptContent('', true), '');
+  assert.equal(orderTranscriptContent(null, true), '');
+  assert.equal(orderTranscriptContent(undefined, false), '');
+});
+
+test('FR-1 — orderTranscriptContent reverses line order when newest-first is on', () => {
+  const orderTranscriptContent = loadHelper('orderTranscriptContent');
+  assert.equal(orderTranscriptContent('a\nb\nc', true), 'c\nb\na');
+  // A single trailing newline is dropped so the reversed view opens on real
+  // content, not a blank line.
+  assert.equal(orderTranscriptContent('a\nb\nc\n', true), 'c\nb\na');
+  // Single line is a no-op either way.
+  assert.equal(orderTranscriptContent('solo', true), 'solo');
+});
+
+test('app.js wires the FR-1 transcript order toggle + localStorage persistence', () => {
+  assert.ok(appSource.includes("id=\"transcriptOrderBtn\"") || appSource.includes('id="transcriptOrderBtn"'),
+    'renderTranscriptReplay builds the #transcriptOrderBtn toggle');
+  assert.ok(appSource.includes('TRANSCRIPT_ORDER_KEY'),
+    'a namespaced localStorage key backs the toggle');
+  assert.ok(appSource.includes('function loadTranscriptNewestFirst')
+    && appSource.includes('function saveTranscriptNewestFirst'),
+    'load/save localStorage helpers are defined');
+  assert.ok(appSource.includes('newestFirst: loadTranscriptNewestFirst()'),
+    'transcriptState seeds newestFirst from the persisted value (default off)');
+});
+
+test('style.css ships the FR-1 transcript order-toggle styles', () => {
+  assert.ok(cssSource.includes('.transcript-order-toggle'),
+    'style.css defines the .transcript-order-toggle button');
+  assert.ok(cssSource.includes('.transcript-order-toggle[aria-pressed="true"]'),
+    'the toggle has an active (aria-pressed) state style');
 });
 
 // --- 1.4: Path A dense layout presets -------------------------------------

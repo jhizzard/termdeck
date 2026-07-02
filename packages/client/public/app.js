@@ -479,6 +479,10 @@
             <span class="panel-index" id="idx-${id}"></span>
             <span class="panel-sid" title="Session ID: ${id}">${id.slice(0, 8)}</span>
             <span class="panel-status" id="status-${id}">${meta.statusDetail || meta.status}</span>
+            <!-- Sprint 80 T2 (FR-5) — live context-size counter. Dedicated node,
+                 populated by updateContextBadge(); hidden until a Claude panel
+                 reports a contextK. Not touched by role logic. -->
+            <span class="panel-ctx" id="ctx-${id}" style="display:none"></span>
           </div>
           <div class="panel-header-right">
             <button class="panel-btn" onclick="focusPanel('${id}')" title="Focus this terminal">&#9634;</button>
@@ -512,7 +516,7 @@
                 <a class="theme-reset" id="theme-reset-${id}" href="javascript:void(0)" onclick="resetTheme('${id}')" title="Revert to project / global default from config.yaml" style="font-size:11px;color:#7aa2f7;text-decoration:none;margin-left:4px;opacity:0.7;cursor:pointer">↺ default</a>
                 <button class="ctrl-btn" onclick="focusPanel('${id}')">focus</button>
                 <button class="ctrl-btn" onclick="halfPanel('${id}')">half</button>
-                <button class="ctrl-btn orch-toggle${isOrchestratorRole(meta.role) ? ' is-orch' : ''}" id="orch-toggle-${id}" type="button" onclick="toggleOrchestratorRole('${id}')" title="${isOrchestratorRole(meta.role) ? 'Unmark this panel as the orchestrator' : 'Mark this panel as the orchestrator — gold border, ORCH badge, pinned row'}">${orchToggleLabel(meta.role)}</button>
+                <button class="ctrl-btn orch-toggle${isOrchestratorRole(meta.role) ? ' is-orch' : ''}" id="orch-toggle-${id}" type="button" onclick="toggleOrchestratorRole('${id}')" title="${isOrchestratorRole(meta.role) ? 'Unmark this panel (remove the orchestrator role)' : 'Mark this panel as the master orchestrator — gold border, ORCH★ badge, pinned row'}">${orchToggleLabel(meta.role)}</button>
                 <button class="ctrl-btn reply-toggle" id="reply-btn-${id}" onclick="toggleReplyForm('${id}')" title="Send text to another terminal">reply ▸</button>
                 <input type="text" class="ctrl-input" id="ai-${id}" placeholder="Ask about this terminal..." onkeydown="if(event.key==='Enter')askAI('${id}', this.value)">
               </div>
@@ -1170,24 +1174,39 @@
     }
 
     // Approach A (Brad's 2026-05-13 spec): orchestrator identity is the
-    // explicit meta.role flag, never inferred from cwd.
+    // explicit meta.role flag, never inferred from cwd. Sprint 80 FR-2 —
+    // isOrchestratorRole is the PIN-FAMILY predicate: BOTH `orchestrator` (silver)
+    // and `master-orchestrator` (gold) belong in the ORCH pin row and survive
+    // filter-reveal / reconcile. isMasterOrchestratorRole splits the gold top
+    // tier out for the border + badge color (Brad's 2026-06-26 fleet-legibility
+    // ask — spot the master control panel among many orchestrators at a glance).
     function isOrchestratorRole(role) {
-      return role === 'orchestrator';
+      return role === 'orchestrator' || role === 'master-orchestrator';
+    }
+    function isMasterOrchestratorRole(role) {
+      return role === 'master-orchestrator';
     }
 
-    // Sprint 66 T1 (Task 1.3) — the binary "mark / unmark orchestrator" toggle.
-    // nextRoleForToggle: the role the toggle moves a panel TO, given its
-    // current role — orchestrator ⇄ unroled (null). A worker/reviewer/auditor
-    // panel is "not orchestrator", so the toggle promotes it to orchestrator;
-    // it does NOT preserve a prior non-orch role (the affordance is a binary
-    // ORCH switch, not a role-history stack — it matches "mark / unmark as
-    // orchestrator"). orchToggleLabel: the toggle button's text for a role.
-    // Both pure — unit-tested in tests/dashboard-panels-client.test.js.
+    // Sprint 66 T1 (Task 1.3) / Sprint 80 FR-2 — the one-click "mark / unmark
+    // orchestrator" toggle. nextRoleForToggle: an orch-family panel toggles back
+    // to unroled (null); anything else promotes to `master-orchestrator` — the
+    // solo operator's one primary control surface is the prominent GOLD master.
+    // This preserves the pre-FR-2 gold affordance (the toggle never produced a
+    // silver panel); plain silver `orchestrator` is the FLEET path, set via
+    // `PATCH {role:'orchestrator'}`, not this binary button. The toggle does NOT
+    // preserve a prior non-orch role (a binary switch, not a role-history stack).
+    // orchToggleLabel: the toggle button's text for a role. Both pure — unit-
+    // tested in tests/dashboard-panels-client.test.js.
+    // The orch-family check is inlined (not a call to isOrchestratorRole) so each
+    // helper stays self-contained — the unit-test harness brace-extracts and evals
+    // each pure helper in isolation, where sibling helpers are not in scope.
     function nextRoleForToggle(currentRole) {
-      return currentRole === 'orchestrator' ? null : 'orchestrator';
+      const isOrchFamily = currentRole === 'orchestrator' || currentRole === 'master-orchestrator';
+      return isOrchFamily ? null : 'master-orchestrator';
     }
     function orchToggleLabel(role) {
-      return role === 'orchestrator' ? 'unmark orch' : 'mark orch';
+      const isOrchFamily = role === 'orchestrator' || role === 'master-orchestrator';
+      return isOrchFamily ? 'unmark orch' : 'mark orch';
     }
 
     // Belt-and-suspenders for missed panel_exited frames: panel ids the
@@ -1350,10 +1369,13 @@
     }
 
     // 1.2 — route a freshly-built panel into the ORCH pin row or the grid.
+    // Sprint 80 FR-2 — the gold master tier carries an extra `panel--role-master`
+    // class that overrides the silver `panel--role-orch` default to gold (pure CSS).
     function placePanel(panel, meta) {
       const orchRow = document.getElementById('orch-pin-row');
       if (orchRow && isOrchestratorRole(meta && meta.role)) {
         panel.classList.add('panel--role-orch');
+        panel.classList.toggle('panel--role-master', isMasterOrchestratorRole(meta && meta.role));
         orchRow.appendChild(panel);
       } else {
         document.getElementById('termGrid').appendChild(panel);
@@ -1376,7 +1398,8 @@
       let moved = false;
       for (const entry of state.sessions.values()) {
         if (!entry || entry._mounting || !entry.el || !entry.session) continue;
-        const isOrch = isOrchestratorRole(entry.session.meta && entry.session.meta.role);
+        const role = entry.session.meta && entry.session.meta.role;
+        const isOrch = isOrchestratorRole(role);
         const inOrchRow = entry.el.parentElement === orchRow;
         if (isOrch && !inOrchRow) {
           entry.el.classList.add('panel--role-orch');
@@ -1385,8 +1408,16 @@
           moved = true;
         } else if (!isOrch && inOrchRow) {
           entry.el.classList.remove('panel--role-orch');
+          entry.el.classList.remove('panel--role-master');
           grid.appendChild(entry.el);
           moved = true;
+        }
+        // Sprint 80 FR-2 — keep the gold master modifier in sync on EVERY pass,
+        // even when the panel does not move: an `orchestrator ⇄ master-orchestrator`
+        // flip stays in the ORCH row but must re-skin silver ⇄ gold. (A pure
+        // recolor leaves `moved` false — no layout refit needed.)
+        if (isOrch) {
+          entry.el.classList.toggle('panel--role-master', isMasterOrchestratorRole(role));
         }
       }
       return moved;
@@ -2687,8 +2718,8 @@
       btn.textContent = orchToggleLabel(role);
       btn.classList.toggle('is-orch', isOrch);
       btn.title = isOrch
-        ? 'Unmark this panel as the orchestrator'
-        : 'Mark this panel as the orchestrator — gold border, ORCH badge, pinned row';
+        ? 'Unmark this panel (remove the orchestrator role)'
+        : 'Mark this panel as the master orchestrator — gold border, ORCH★ badge, pinned row';
     }
 
     async function askAI(id, question) {
@@ -3906,6 +3937,54 @@
       return `${Math.floor(hrs / 24)}d ago`;
     }
 
+    // Sprint 80 T2 (FR-5) — render the per-panel context-size counter into its
+    // Pure band classifier — the client mirror of the server's classifyContext
+    // (context-meter.js). Used ONLY as the fallback when the server didn't ship
+    // a contextLevel: the PATCH-only path (Brad's external watchdog writes
+    // meta.contextK on a non-Claude panel; contextLevel isn't PATCH-mutable and
+    // only the server's JSONL compute sets it — T4 AUDIT-FAIL 21:27). Thresholds
+    // arrive via state.config.contextThresholds; defaults match config defaults.
+    function classifyContextLevel(k, warnK, overK) {
+      if (typeof k !== 'number' || !isFinite(k)) return 'unknown';
+      const over = (typeof overK === 'number' && isFinite(overK)) ? overK : 400;
+      const warn = (typeof warnK === 'number' && isFinite(warnK)) ? warnK : 350;
+      if (k >= over) return 'over';
+      if (k >= warn) return 'warn';
+      return 'ok';
+    }
+
+    // dedicated header node. Dedicated function + dedicated DOM node per the
+    // land-order boundary rule (role logic is T3's; this never touches it).
+    // Renders whenever meta.contextK is a number — server-computed (Claude) OR
+    // externally PATCHed (Brad's watchdog, non-Claude). Absent/non-numeric =
+    // unknown → hide (no header noise). Colour band = meta.contextLevel when the
+    // server set it (authoritative — "server-computed wins"), else derived
+    // client-side from shipped thresholds so PATCH-only values still band. An
+    // active enforcement (meta.contextAlert) adds an ⚡ marker + tooltip.
+    function updateContextBadge(id, meta) {
+      const el = document.getElementById(`ctx-${id}`);
+      if (!el) return;
+      const k = meta.contextK;
+      if (typeof k !== 'number' || !isFinite(k)) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      const thresholds = (state.config && state.config.contextThresholds) || {};
+      const level = (meta.contextLevel && meta.contextLevel !== 'unknown')
+        ? meta.contextLevel
+        : classifyContextLevel(k, thresholds.warnK, thresholds.overK);
+      const icon = level === 'over' ? '⛔' : (level === 'warn' ? '⚠' : '');
+      const alert = meta.contextAlert;
+      const bolt = alert && alert.action ? ' ⚡' : '';
+      el.textContent = `${icon ? icon + ' ' : ''}${k}K ctx${bolt}`;
+      el.className = `panel-ctx panel-ctx--${level}`;
+      el.title = alert && alert.action
+        ? `Context ${k}K — ${alert.action} fired at ${alert.maxContextK}K ceiling`
+        : `Context size: ${k}K tokens`;
+      el.style.display = '';
+    }
+
     function updatePanelMeta(id, meta) {
       // Track status transitions into the per-panel status log
       const entry = state.sessions.get(id);
@@ -3927,6 +4006,10 @@
       // merged role, so a role changed from another dashboard tab is reflected
       // here too (the per-tab toggle path syncs in its own finally block).
       syncOrchToggle(id);
+
+      // Sprint 80 T2 (FR-5) — additive: refresh the context counter from the
+      // merged meta (rides the 2s status_broadcast). Own DOM node + function.
+      updateContextBadge(id, meta);
 
       const dot = document.getElementById(`dot-${id}`);
       const status = document.getElementById(`status-${id}`);
@@ -5705,6 +5788,26 @@
     }
 
     // ===== Transcript Recovery UI (Sprint 6 T4) =====
+    // Sprint 80 FR-1 (Brad's transcript-order ask) — per-user newest-first toggle
+    // for the full-transcript Replay view, persisted in localStorage. Default is
+    // false = oldest-first (unchanged chronological reading). Pure-client; no
+    // server change. The helpers are function DECLARATIONS so they're hoisted and
+    // callable from the transcriptState literal below.
+    const TRANSCRIPT_ORDER_KEY = 'termdeck.transcripts.newestFirst';
+    function loadTranscriptNewestFirst() {
+      try {
+        return localStorage.getItem(TRANSCRIPT_ORDER_KEY) === 'true';
+      } catch (_e) {
+        // localStorage can throw in private-mode / sandboxed contexts — default off.
+        return false;
+      }
+    }
+    function saveTranscriptNewestFirst(value) {
+      try {
+        localStorage.setItem(TRANSCRIPT_ORDER_KEY, value ? 'true' : 'false');
+      } catch (_e) { /* non-persistent this session — the in-memory flag still works */ }
+    }
+
     const transcriptState = {
       available: false,
       modalOpen: false,
@@ -5712,7 +5815,8 @@
       recentData: null,
       searchResults: null,
       replaySession: null,
-      replayData: null
+      replayData: null,
+      newestFirst: loadTranscriptNewestFirst()   // FR-1 — replay line order
     };
 
     function setupTranscriptUI() {
@@ -5988,19 +6092,50 @@
       }
     }
 
+    // Sprint 80 FR-1 — reorder a transcript's lines for the newest-first toggle.
+    // Pure (unit-tested): oldest-first returns the content unchanged; newest-first
+    // splits on newline, drops a single trailing empty element (from a final
+    // newline, so the reversed view doesn't open with a blank line), reverses,
+    // and rejoins. Line-level reversal is the pragmatic "newest-first" semantic
+    // for a line-oriented terminal log.
+    function orderTranscriptContent(content, newestFirst) {
+      if (!newestFirst || !content) return content || '';
+      const lines = String(content).split('\n');
+      if (lines.length && lines[lines.length - 1] === '') lines.pop();
+      return lines.reverse().join('\n');
+    }
+
     function renderTranscriptReplay(data) {
       const body = document.getElementById('transcriptBody');
-      const content = data.content || data.lines?.join('\n') || '';
+      const rawContent = data.content || data.lines?.join('\n') || '';
       const sessionId = transcriptState.replaySession || 'unknown';
+      const newestFirst = transcriptState.newestFirst;
+      // Copy reflects the on-screen order (WYSIWYG — the button sits next to the
+      // visible content). Toggle back to oldest-first for a canonical export.
+      const displayContent = orderTranscriptContent(rawContent, newestFirst);
       body.innerHTML = `
         <div class="transcript-replay-header">
           <span class="tr-replay-id">Session: ${escapeHtml(sessionId.slice(0, 12))}</span>
-          <button class="transcript-copy" id="transcriptCopyBtn">Copy to clipboard</button>
+          <div class="tr-replay-actions">
+            <button class="transcript-order-toggle" id="transcriptOrderBtn" type="button"
+              title="Toggle transcript line order — newest-first or oldest-first (remembered across sessions)"
+              aria-pressed="${newestFirst ? 'true' : 'false'}">${newestFirst ? 'newest first ▲' : 'oldest first ▼'}</button>
+            <button class="transcript-copy" id="transcriptCopyBtn">Copy to clipboard</button>
+          </div>
         </div>
-        <pre class="transcript-replay-content">${escapeHtml(content)}</pre>
+        <pre class="transcript-replay-content">${escapeHtml(displayContent)}</pre>
       `;
+      const orderBtn = document.getElementById('transcriptOrderBtn');
+      if (orderBtn) {
+        orderBtn.addEventListener('click', () => {
+          transcriptState.newestFirst = !transcriptState.newestFirst;
+          saveTranscriptNewestFirst(transcriptState.newestFirst);
+          // Re-render the same replay payload in the new order (persisted flag).
+          renderTranscriptReplay(transcriptState.replayData || data);
+        });
+      }
       document.getElementById('transcriptCopyBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(content).then(() => {
+        navigator.clipboard.writeText(displayContent).then(() => {
           const btn = document.getElementById('transcriptCopyBtn');
           btn.textContent = 'Copied!';
           btn.classList.add('copied');

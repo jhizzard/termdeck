@@ -113,7 +113,7 @@ const _fakeTermsByPid = new Map();
 })();
 
 const serverModule = require('../src/index.js');
-const { createServer, ALLOWED_SESSION_ROLES, _resetTermdeckSecretsCache } = serverModule;
+const { createServer, ALLOWED_SESSION_ROLES, effectivePanelCap, _resetTermdeckSecretsCache } = serverModule;
 const { SessionManager } = require('../src/session');
 const { initDatabase } = require('../src/database');
 
@@ -142,7 +142,7 @@ async function withTempHome(fn) {
 
 // Minimal inline config — every optional side-effect disabled. Do NOT call
 // loadConfig() (it freezes CONFIG_PATH from the developer's real ~/.termdeck).
-async function bootTestServer() {
+async function bootTestServer(configOverrides = {}) {
   if (typeof _resetTermdeckSecretsCache === 'function') _resetTermdeckSecretsCache();
   const config = {
     shell: process.env.SHELL || '/bin/sh',
@@ -152,6 +152,9 @@ async function bootTestServer() {
     transcripts: { enabled: false },
     sessionLogs: { enabled: false },
     defaultTheme: 'tokyo-night',
+    // Sprint 80 T3 (FR-3) — tests can inject e.g. { maxPanels: 2 } to exercise
+    // the panel-cap 429. Absent → undefined → effectivePanelCap() → unlimited.
+    ...configOverrides,
   };
   const { server, ptyReaper, transcriptWriter } = createServer(config);
   await new Promise((resolve, reject) => {
@@ -293,10 +296,82 @@ test('2.1 — ALLOWED_SESSION_ROLES is exported and is exactly the documented wh
   assert.ok(Array.isArray(ALLOWED_SESSION_ROLES), 'whitelist is exported as an array');
   assert.deepEqual(
     ALLOWED_SESSION_ROLES,
-    ['orchestrator', 'worker', 'reviewer', 'auditor', null],
-    'whitelist must be exactly orchestrator/worker/reviewer/auditor/null',
+    // Sprint 80 FR-2 — `master-orchestrator` top tier added ahead of `orchestrator`.
+    ['master-orchestrator', 'orchestrator', 'worker', 'reviewer', 'auditor', null],
+    'whitelist must be exactly master-orchestrator/orchestrator/worker/reviewer/auditor/null',
   );
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FR-3 (Sprint 80 T3) — optional panel cap. There is NO hardcoded TermDeck cap
+// (verified 2026-07-01); this adds a configurable ceiling that returns a clear
+// 429 instead of the silent host/PTY exhaustion Brad hit at ~30-40 panels. The
+// normalizer treats null/0/negative/non-numeric as UNLIMITED so nothing regresses.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('FR-3 — effectivePanelCap normalizes null/0/negative/non-numeric to unlimited (null)', () => {
+  assert.equal(typeof effectivePanelCap, 'function', 'effectivePanelCap is exported');
+  // Unlimited sentinels — the zero-regression default (no cap below current usage).
+  assert.equal(effectivePanelCap(undefined), null);
+  assert.equal(effectivePanelCap({}), null);
+  assert.equal(effectivePanelCap({ maxPanels: null }), null);
+  assert.equal(effectivePanelCap({ maxPanels: 0 }), null);
+  assert.equal(effectivePanelCap({ maxPanels: -5 }), null);
+  assert.equal(effectivePanelCap({ maxPanels: NaN }), null);
+  assert.equal(effectivePanelCap({ maxPanels: 'nope' }), null);
+  // Positive values become a real ceiling; a numeric string is coerced; a float floors.
+  assert.equal(effectivePanelCap({ maxPanels: 24 }), 24);
+  assert.equal(effectivePanelCap({ maxPanels: '30' }), 30);
+  assert.equal(effectivePanelCap({ maxPanels: 12.9 }), 12);
+});
+
+test('FR-3 — POST /api/sessions returns a clear 429 when the live-panel cap is hit; freeing a panel re-opens the slot',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer({ maxPanels: 2 });
+      try {
+        // Two live panels fill the cap.
+        const a = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        const b = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        assert.equal(a.status, 201, 'panel 1 under cap → 201');
+        assert.equal(b.status, 201, 'panel 2 fills the cap → 201');
+
+        // The third breaches the cap → structured 429.
+        const c = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        assert.equal(c.status, 429, 'panel 3 over cap → 429');
+        assert.equal(c.json.code, 'panel_cap_reached', 'a machine-readable code');
+        assert.equal(c.json.limit, 2, 'the 429 echoes the configured limit');
+        assert.equal(c.json.current, 2, 'the 429 echoes the live-panel count');
+        assert.match(c.json.hint, /maxPanels/, 'the hint names the fix (maxPanels)');
+
+        // Freeing a live panel drops the count → a fresh spawn succeeds again,
+        // proving the cap counts CURRENT live panels, not cumulative spawns.
+        const del = await fetch(url(h.port, `/api/sessions/${a.json.id}`), { method: 'DELETE' });
+        assert.ok(del.status === 200 || del.status === 204, 'DELETE frees the panel');
+        const d = await postJson(h.port, '/api/sessions', { type: 'shell' });
+        assert.equal(d.status, 201, 'a slot re-opened after a panel was removed → 201');
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
+
+test('FR-3 — no cap configured (default) imposes no limit: many spawns all 201',
+  { skip: !_ptyFakeAvailable }, async () => {
+    await withTempHome(async () => {
+      const h = await bootTestServer(); // no maxPanels → unlimited
+      try {
+        for (let i = 0; i < 6; i++) {
+          const r = await postJson(h.port, '/api/sessions', { type: 'shell' });
+          assert.equal(r.status, 201, `uncapped spawn ${i + 1} → 201`);
+        }
+      } finally {
+        _fakeTermsByPid.clear();
+        await closeTestServer(h);
+      }
+    });
+  });
 
 test('2.1 — meta.role flows through GET /api/sessions and GET /api/sessions/:id',
   { skip: !_ptyFakeAvailable }, async () => {
@@ -361,7 +436,9 @@ test('2.1b — PATCH role accepts every whitelisted value',
       try {
         const created = await postJson(h.port, '/api/sessions', { type: 'shell' });
         const id = created.json.id;
-        for (const role of ['orchestrator', 'worker', 'reviewer', 'auditor', null]) {
+        // Sprint 80 FR-2 — `master-orchestrator` is a whitelisted top tier; the
+        // PATCH {role:"master-orchestrator"} → 200 path is the FR-2 acceptance shape.
+        for (const role of ['master-orchestrator', 'orchestrator', 'worker', 'reviewer', 'auditor', null]) {
           const r = await patchJson(h.port, `/api/sessions/${id}`, { role });
           assert.equal(r.status, 200, `PATCH role=${JSON.stringify(role)} → 200`);
           assert.equal(r.json.meta.role, role, `meta.role echoes ${JSON.stringify(role)}`);

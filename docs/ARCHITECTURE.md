@@ -106,6 +106,137 @@ termdeck/
     └── stack-installer/                  # @jhizzard/termdeck-stack meta-installer
 ```
 
+## Input API — `POST /api/sessions/:id/input`
+
+External senders (the reply button, agent-to-agent routing, the orchestrator's
+two-stage inject) write into a panel's PTY through this route. Body:
+`{ text: string, source?, fromSessionId?, submit? }`.
+
+### `\xNN` escape normalization (BR-1, Sprint 80)
+
+`@termdeck/server` runs on Express 5 (body-parser 2.x). Bash/`curl` inject
+callers routinely send JSON whose `text` field contains the literal 4-character
+sequence `\x1b` (backslash, `x`, `1`, `b`) — e.g.
+`curl -d '{"text":"\x1b[200~boot\x1b[201~"}'`. `\x` is **not** a valid JSON
+escape, so `express.json()` rejects the body with `entity.parse.failed`. Because
+autonomous callers do not check the 400, the inject vanished silently and the
+target panel never booted — the root of Brad's 2026-06-26 fleet cascade.
+
+**Fix:** a pre-parse middleware (mounted before `express.json()` in
+`packages/server/src/index.js`) rewrites real `\xNN`/`\XNN` escapes to the
+equivalent valid `\u00NN` before parsing, so the intended raw ESC-wrapped
+bracketed paste reaches the PTY.
+
+- **Scope — this route only.** The normalization runs *only* when the request is
+  `POST`, the path matches `^/api/sessions/[^/]+/input$`, and the
+  `Content-Type` is `application/json`. **Every other route keeps strict JSON
+  parsing** — a literal `\x1b` sent to, say, `POST /api/sessions` still returns a
+  strict 400.
+- **Even/odd backslash guard (accepted hazard).** Only a *real* `\x` escape (an
+  **odd**-length backslash run, where the last backslash escapes the `x`) is
+  converted. A **properly escaped** `\\x1b` (even run — a valid JSON escaped
+  backslash followed by literal text) is left untouched.
+  - `{"text":"\x1b"}` → the string value becomes a real **ESC byte** (`0x1b`).
+    *(Accepted hazard: a caller who genuinely wanted the 4-char literal text
+    `\x1b` but wrote it with a single backslash was already sending invalid JSON
+    — it 400'd before this fix — and now gets a real ESC. On the `/input` route
+    real-ESC intent dominates, so this is accepted.)*
+  - `{"text":"\\x1b"}` → the string value stays the **literal text** `\x1b`
+    (backslash-x-1-b), unchanged. Valid-JSON literal-`\x` intent is preserved.
+- **Error contract — the 400 stays loud and gets louder.** A body that is still
+  malformed *after* normalization (structural error, raw control char, etc.)
+  returns the structured `400 { error: 'Malformed JSON body', detail, code,
+  hint }`. The `hint` names the exact fix (use the `` unicode escape for a
+  control byte; note that `/input` auto-normalizes `\xNN`). The server also logs
+  a single-line `[body-parser] …` warning with a 32-byte hex prefix of the raw
+  body so the offending caller is identifiable.
+- **Tests:** `packages/server/tests/input-xnn-normalization.test.js` (RAW-wire
+  POSTs reproduce Brad's exact bytes: literal `\x1b`→real ESC, proper ``
+  byte-identical, uppercase/boundary `\X1B`/`\x00`/`\xff`, even-backslash
+  preservation, non-`/input` strict-400, still-malformed→400+hint).
+
+### Inject-vs-human-typing queue (FR-4, Sprint 80)
+
+An agent-to-agent inject that lands while a human is mid-line in a panel would
+interleave into their input. When enabled, the route **holds** an inject
+whenever both are true: the panel's tracked input buffer is non-empty (human
+mid-line) *and* a real human keystroke landed within `TERMDECK_INJECT_HOLD_WINDOW_MS`
+(default 4000ms). Held injects flush **FIFO** on the human's next submit (Enter)
+or clear (Ctrl-C / Ctrl-U / bare Esc, detected in `session.markHumanKeystroke`
+on the WS keystroke path), or when a later inject arrives after typing has
+stopped (the route drains the backlog before its own write). A held inject
+older than `TERMDECK_INJECT_QUEUE_TTL_MS` (default 30000ms) is **dropped** on
+flush so a stale inject never fires into a changed context.
+
+- **Held response:** `200 { ok:true, queued:true, queuePosition, status,
+  inputBufferLength }` — the caller sees it was parked, not written.
+- **Default scope:** ON for **orchestrator-tier** panels only (`orchestrator` /
+  `master-orchestrator`); OFF for everything else. Per-panel override via
+  `PATCH /api/sessions/:id { "holdInjectsWhileTyping": true|false }`.
+- **`{submit:true}` interplay:** a held submit inject flushes via the same
+  server-sequenced submit (body write + a lone `\r`).
+- Only real human keystrokes (WS `input`) stamp the "typing" clock —
+  API injects never do. Tests: `packages/server/tests/input-inject-queue.test.js`.
+
+### Server-crash safety — pty `error` listener (Sprint 80 INCIDENT)
+
+node-pty's `UnixTerminal` re-**throws** any non-EAGAIN/EIO master-socket error
+(EBADF/ENOTTY/EPIPE — what a write to a pty whose child just died emits) as an
+**uncaught exception** when the terminal has fewer than 2 `'error'` listeners
+(`unixTerminal.js:138`; baseline count is 1). A `{submit:true}` inject to a
+dying panel crashed the whole deck this way — its server-held settle widens the
+write-after-death race. `spawnTerminalSession` now attaches one `term.on('error',
+…)` so the count reaches 2 and node-pty never throws. Regression:
+`packages/server/tests/input-submit-crash-guard.test.js`.
+
+## Context telemetry + enforcement (FR-5 + FR-6, Sprint 80)
+
+**Why:** on 2026-06-26 four of Brad's five orchestrator panels rode their Claude
+context to 356K–999K tokens unseen and crashed the host. Claude-side self-
+monitoring provably fails at high context (the model is the component that has
+run out of room to notice). TermDeck reads the true size off disk instead.
+
+**FR-5 — per-panel counter.** `packages/server/src/context-meter.js`
+`computeContextK()` tail-reads (256 KB) the newest Claude JSONL and sums the last
+assistant turn's `usage`: `input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens` (cache-read dominates — omitting it under-reports by
+~99%). The transcript is resolved by the **shared** `claude` adapter
+`resolveTranscriptPath` (`agent-adapters/claude.js`) — the same encoded-cwd
+resolver the Sprint-64 periodic-capture path uses; no second path builder. An
+`fs.watch` on the transcript **directory** (debounced; the inner filename is
+Claude's own UUID and may not exist at spawn) recomputes on each write and sets
+`session.meta.contextK` + `meta.contextLevel` (`ok`/`warn`/`over`), which ride
+the existing 2 s `status_broadcast` (`toJSON()` spreads meta) to the header chip
+(`.panel-ctx`, rendered by `updateContextBadge` in `app.js`). Claude-only; non-
+Claude panels have no `usage`-carrying JSONL and degrade to PATCH-only.
+
+**Precedence (server-computed wins).** When the JSONL is readable, the server-
+computed value **overwrites** any prior `meta.contextK`. When compute returns
+null (no `usage` yet, or a truncated mid-write tail) the prior value is
+**retained** — a transient truncation never clobbers a good reading. For panels
+TermDeck can't read itself, an external watchdog (Brad's) may `PATCH
+/api/sessions/:id {"contextK": N}` — `contextK` is in
+`SessionManager.PATCHABLE_META_FIELDS`; this PATCH value is the **fallback only**
+and is superseded the moment a real JSONL reading arrives. `contextLevel` is NOT
+PATCH-mutable (only the server's compute sets it), so the client bands a PATCH-
+only `contextK` itself via `classifyContextLevel` using the WARN/OVER thresholds
+shipped in `GET /api/config` (`contextThresholds`).
+
+**FR-6 — ceiling enforcement.** Config `context.maxContextK` (per-session
+override via PATCH `maxContextK`/`contextAction`). **Default action is `notify`**
+— TermDeck never intervenes until the operator opts in, and even then defaults to
+a UI alert (`meta.contextAlert`, rides the broadcast) + optional webhook. `inject`
+pastes `contextInjectText` via the production `pty-submit.js` two-stage path
+(opt-in). `kill` terminates (+ optional `respawnOnKill`) and is **never** the
+default and **never** fires mid-tool-use: the pure `evaluateEnforcement` state
+machine (context-meter.js) defers a kill while the panel is busy, up to
+`killMaxDeferrals`, re-checking after `killGraceMs`. Hysteresis: one firing per
+breach episode; re-arms only after context drops back below WARN (i.e. after a
+rotation). Runs on the same JSONL-write event as FR-5 — no extra polling loop.
+Tests: `context-meter.test.js` (compute + bands + state machine),
+`context-telemetry-wiring.test.js` (index.js integration, stubbed PTY),
+`context-badge-client.test.js` (client render + PATCH-only band).
+
 ## Known issues and gotchas
 
 1. **node-pty on source installs**: The published package uses prebuilt binaries. If you build from source and hit compile errors, macOS: `xcode-select --install`; then `npm rebuild node-pty`.

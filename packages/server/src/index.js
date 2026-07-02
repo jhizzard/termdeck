@@ -87,6 +87,11 @@ const { createBridge } = require('./mnestra-bridge');
 const flashbackDiag = require('./flashback-diag');
 const advisor = require('./advisor');
 const { submitToPty } = require('./pty-submit');
+const {
+  computeContextK,
+  classifyContext,
+  evaluateEnforcement,
+} = require('./context-meter');
 const { writeSessionLog } = require('./session-logger');
 const { TranscriptWriter } = require('./transcripts');
 const { createHealthHandler, runPreflight } = require('./preflight');
@@ -161,11 +166,24 @@ const SECRETS_EXCLUDED_FROM_PTY = new Set([
 // Sprint 65 T2 (2.1) — explicit operator-role whitelist for the optional
 // `role` field on POST /api/sessions (Brad's 2026-05-13 v2 dashboard spec,
 // Approach A). `null` is the valid "unroled" value; an absent field also
-// defaults to null. The dashboard renders the ORCH pin when
-// `meta.role === 'orchestrator'`; worker/reviewer/auditor are accepted now
-// for forward-compat with the canonical 3+1+1 role taxonomy. Unknown values
-// are rejected with 400 at the route. Exported for the route-fence test.
-const ALLOWED_SESSION_ROLES = ['orchestrator', 'worker', 'reviewer', 'auditor', null];
+// defaults to null. The dashboard pins the ORCH row for the orchestrator
+// family (`orchestrator` OR `master-orchestrator`); worker/reviewer/auditor
+// are accepted for forward-compat with the canonical 3+1+1 role taxonomy.
+// Sprint 80 FR-2 (Brad's 2026-06-26 fleet-legibility ask) — `master-orchestrator`
+// is a distinct TOP tier: it renders GOLD while plain `orchestrator` moves to
+// SILVER, so an operator running many orchestrators across a fleet can spot the
+// master control panel at a glance. Both tiers pin. Unknown values are rejected
+// with 400 at the route. Exported for the route-fence test.
+const ALLOWED_SESSION_ROLES = ['master-orchestrator', 'orchestrator', 'worker', 'reviewer', 'auditor', null];
+
+// Sprint 80 T3 (FR-3) — normalize the configured panel cap. A positive finite
+// integer is a real ceiling; null / 0 / negative / NaN / non-numeric ALL mean
+// UNLIMITED — the exact pre-FR-3 behavior, so an unset/malformed value never
+// caps below current usage. Exported for the unit test.
+function effectivePanelCap(config) {
+  const n = Number(config && config.maxPanels);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
 
 function readTermdeckSecretsForPty() {
   if (_termdeckSecretsCache !== null) return _termdeckSecretsCache;
@@ -430,6 +448,280 @@ function _resolvePeriodicCaptureIntervalMs() {
   return n;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Sprint 80 T2 — context telemetry (FR-5) + ceiling enforcement (FR-6).
+//
+// Reads the true Claude context size off the on-disk transcript (the same
+// figure the model itself can no longer reliably self-report at high context —
+// see context-meter.js header + Brad's 2026-06-26 crash) and, when configured,
+// enforces a ceiling. FR-5 is telemetry-only; FR-6 default action is `notify`
+// (PLANNING §3.3) — inject/kill are opt-in and kill is grace-guarded.
+//
+// The compute + threshold + hysteresis/kill-grace DECISIONS live in the pure,
+// unit-tested context-meter.js. This block is the WIRING: the fs.watch on the
+// transcript, the meta mutation (which rides the existing 2s status_broadcast),
+// and the action side-effects. Side-effects are behind injectable impls so the
+// enforcement path is testable with a stubbed PTY — never a live server (the
+// production submitToPty path is a suspected crash trigger under the 2026-07-01
+// INCIDENT, and inject is the only action that touches it; it stays opt-in).
+// ════════════════════════════════════════════════════════════════════════════
+
+const CONTEXT_WATCH_RETRY_MS = 3000;
+const CONTEXT_WATCH_MAX_RETRIES = 20;   // ~60s of retries before giving up quietly
+
+function _resolveContextWatchDebounceMs() {
+  const raw = process.env.TERMDECK_CONTEXT_WATCH_DEBOUNCE_MS;
+  if (raw === undefined || raw === '') return 600;
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) return 600;
+  return n;
+}
+
+function _numOr(v, d) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
+// The server sets this to `() => config.context` at startup; tests set their own.
+let _contextConfigProvider = () => ({});
+function _setContextConfigProvider(fn) {
+  _contextConfigProvider = typeof fn === 'function' ? fn : (() => ({}));
+}
+
+// Injectable action side-effects (mirrors the _spawn*HookImpl pattern).
+let _contextSubmitImpl = submitToPty;                 // FR-6 inject (SUSPECT crash path — opt-in only)
+let _contextKillImpl = null;                          // FR-6 kill — server wires this (needs spawn/sessions)
+let _contextWebhookImpl = _defaultContextWebhook;     // FR-6 notify webhook
+function _setContextSubmitImplForTesting(fn) { _contextSubmitImpl = typeof fn === 'function' ? fn : submitToPty; }
+function _setContextKillImpl(fn) { _contextKillImpl = typeof fn === 'function' ? fn : null; }
+function _setContextWebhookImplForTesting(fn) { _contextWebhookImpl = typeof fn === 'function' ? fn : _defaultContextWebhook; }
+
+function _defaultContextWebhook(url, payload) {
+  // Fire-and-forget POST. Uses global fetch (Node 18+); silently no-ops if
+  // unavailable. Never throws into the caller.
+  try {
+    if (typeof fetch !== 'function' || !url) return;
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => { /* fire-and-forget */ });
+  } catch (_e) { /* fire-and-forget */ }
+}
+
+// Effective per-panel context config = global config.context, with per-session
+// meta overrides (maxContextK / contextAction) winning. maxContextK stays
+// undefined (→ enforcement disabled) unless a positive number is configured.
+function resolveContextConfig(session) {
+  const base = _contextConfigProvider() || {};
+  const meta = (session && session.meta) || {};
+  const maxRaw = (meta.maxContextK !== undefined && meta.maxContextK !== null)
+    ? meta.maxContextK
+    : base.maxContextK;
+  const maxNum = Number(maxRaw);
+  return {
+    warnK: _numOr(base.warnK, 350),
+    overK: _numOr(base.overK, 400),
+    maxContextK: (Number.isFinite(maxNum) && maxNum > 0) ? maxNum : undefined,
+    contextAction: meta.contextAction || base.contextAction || 'notify',
+    contextInjectText: base.contextInjectText
+      || 'You are approaching the context limit. Persist critical state to memory now, then rotate to a fresh session.',
+    respawnOnKill: !!base.respawnOnKill,
+    killGraceMs: _numOr(base.killGraceMs, 15000),
+    killMaxDeferrals: _numOr(base.killMaxDeferrals, 3),
+    webhookUrl: base.webhookUrl || null,
+  };
+}
+
+function _contextAdapterFor(session) {
+  return AGENT_ADAPTERS[session.meta.type]
+    || Object.values(AGENT_ADAPTERS).find((a) => a.sessionType === session.meta.type);
+}
+
+// Kill is destructive, so we NEVER fire it while the panel looks busy. Any live
+// state (thinking / editing / active / anything not clearly at-rest) defers the
+// kill; the deferral cap in evaluateEnforcement guarantees we eventually act.
+function isMidToolUse(session) {
+  const m = session && session.meta;
+  if (!m) return false;
+  return !(m.status === 'idle' || m.status === 'exited' || m.status === 'errored');
+}
+
+// FR-5 core: resolve the panel's Claude transcript, compute contextK, update
+// meta (rides status_broadcast), and run the FR-6 check. Claude-only; non-Claude
+// panels have no Claude JSONL and degrade to PATCH-only (no header noise).
+//
+// Precedence (PLANNING §3.4): the server-computed value WINS whenever the JSONL
+// is readable. When compute returns null (no usage yet / truncated mid-write),
+// we return early and RETAIN the prior value — so a transient truncated tail
+// never clobbers a good reading, and a PATCH-supplied fallback stands until a
+// real reading arrives.
+async function updatePanelContext(session) {
+  try {
+    if (!session || !session.meta) return;
+    if (session.meta.status === 'exited') return;
+    const adapter = _contextAdapterFor(session);
+    if (!adapter || adapter.sessionType !== 'claude-code') return;
+    if (typeof adapter.resolveTranscriptPath !== 'function') return;
+
+    const transcriptPath = await adapter.resolveTranscriptPath(session);
+    if (!transcriptPath) return;
+
+    const result = computeContextK(transcriptPath);
+    if (!result) return; // no reading — retain prior value (PATCH fallback stands)
+
+    const cfg = resolveContextConfig(session);
+    session.meta.contextK = result.contextK;
+    session.meta.contextLevel = classifyContext(result.contextK, cfg.warnK, cfg.overK);
+
+    enforceContext(session, result.contextK, cfg);
+  } catch (_e) { /* fail-soft: telemetry must never break a panel */ }
+}
+
+// FR-6: run the pure state machine, then apply the decided side-effect.
+function enforceContext(session, contextK, cfg) {
+  if (!session._contextEnforce) session._contextEnforce = { armed: true, deferrals: 0 };
+  const decision = evaluateEnforcement({
+    contextK,
+    maxContextK: cfg.maxContextK,
+    warnK: cfg.warnK,
+    action: cfg.contextAction,
+    midToolUse: isMidToolUse(session),
+    state: session._contextEnforce,
+    maxDeferrals: cfg.killMaxDeferrals,
+  });
+
+  if (decision.kind === 'fire') {
+    fireContextAction(session, decision.action, contextK, cfg);
+  } else if (decision.kind === 'defer') {
+    _scheduleKillRecheck(session, cfg);
+  } else if (decision.kind === 'reset') {
+    // Context dropped below WARN — a rotation happened; clear the stale alert.
+    if (session.meta) session.meta.contextAlert = null;
+  }
+}
+
+// Kill was deferred because the panel is mid-tool-use. Re-check after the grace
+// window with the CURRENT contextK. Guarded so overlapping JSONL writes don't
+// stack multiple timers.
+function _scheduleKillRecheck(session, cfg) {
+  const st = session._contextEnforce;
+  if (!st || st.gracePending) return;
+  st.gracePending = true;
+  const t = setTimeout(() => {
+    st.gracePending = false;
+    if (session.meta && session.meta.status !== 'exited'
+        && typeof session.meta.contextK === 'number') {
+      enforceContext(session, session.meta.contextK, resolveContextConfig(session));
+    }
+  }, _numOr(cfg.killGraceMs, 15000));
+  if (t.unref) t.unref();
+  session._contextKillTimer = t;
+}
+
+// Apply an enforcement action. `notify` (default) records a UI alert (rides the
+// status_broadcast) + optional webhook. `inject` additionally pastes the
+// force-rotate message via the production submitToPty path (opt-in; SUSPECT
+// crash path). `kill` terminates + optionally respawns (opt-in; never default).
+function fireContextAction(session, action, contextK, cfg) {
+  const alert = {
+    action,
+    contextK,
+    maxContextK: cfg.maxContextK,
+    ts: new Date().toISOString(),
+  };
+  if (session.meta) session.meta.contextAlert = alert;
+  console.warn(`[context] panel ${session.id} at ${contextK}K ≥ ${cfg.maxContextK}K ceiling — action=${action}`);
+
+  if (cfg.webhookUrl) {
+    try { _contextWebhookImpl(cfg.webhookUrl, { sessionId: session.id, ...alert }); }
+    catch (_e) { /* fire-and-forget */ }
+  }
+
+  if (action === 'inject') {
+    try {
+      Promise.resolve(_contextSubmitImpl(session, cfg.contextInjectText))
+        .catch((err) => console.error('[context] inject submit failed:', err && err.message ? err.message : err));
+    } catch (err) {
+      console.error('[context] inject submit threw:', err && err.message ? err.message : err);
+    }
+  } else if (action === 'kill') {
+    if (typeof _contextKillImpl === 'function') {
+      try { _contextKillImpl(session, { respawn: !!cfg.respawnOnKill }); }
+      catch (err) { console.error('[context] kill failed:', err && err.message ? err.message : err); }
+    } else {
+      console.error(`[context] kill requested for ${session.id} but no kill impl wired`);
+    }
+  }
+  // 'notify' → alert + webhook only (already done above).
+}
+
+// FR-5 watch: Claude writes its transcript at
+// ~/.claude/projects/<cwd-slash→dash>/<uuid>.jsonl, but the inner UUID is
+// Claude's own session id (not TermDeck's) and the file may not exist at spawn,
+// so we watch the DIRECTORY (debounced) and re-resolve the newest jsonl via the
+// shared claude-adapter resolver on each change — reusing that resolver rather
+// than rolling a second encoded-cwd path builder (Sprint 64 mandate). The dir
+// may not exist yet on a brand-new cwd; retry a bounded number of times.
+function establishContextWatch(session, opts = {}) {
+  try {
+    if (!session || !session.meta || !session.meta.cwd) return;
+    const adapter = _contextAdapterFor(session);
+    if (!adapter || adapter.sessionType !== 'claude-code') return; // Claude-only
+    if (typeof adapter.resolveTranscriptPath !== 'function') return;
+
+    const dirHash = session.meta.cwd.replace(/\//g, '-');
+    const projectsDir = path.join(os.homedir(), '.claude', 'projects', dirHash);
+    const debounceMs = _numOr(opts.debounceMs, _resolveContextWatchDebounceMs());
+
+    const state = { watcher: null, debounce: null, retry: null, retries: 0, closed: false };
+    session._contextWatch = state;
+
+    const recompute = () => {
+      state.debounce = null;
+      updatePanelContext(session).catch((err) =>
+        console.error('[context] update error:', err && err.message ? err.message : err));
+    };
+    const schedule = () => {
+      if (state.closed || state.debounce) return;
+      state.debounce = setTimeout(recompute, debounceMs);
+      if (state.debounce.unref) state.debounce.unref();
+    };
+    const tryWatch = () => {
+      if (state.closed) return;
+      try {
+        state.watcher = fs.watch(projectsDir, () => schedule());
+        // Initial compute — a resumed panel already has a growing transcript.
+        schedule();
+      } catch (e) {
+        if (e && e.code === 'ENOENT' && state.retries < CONTEXT_WATCH_MAX_RETRIES) {
+          state.retries += 1;
+          state.retry = setTimeout(tryWatch, CONTEXT_WATCH_RETRY_MS);
+          if (state.retry.unref) state.retry.unref();
+        }
+        // else: give up quietly — contextK stays unknown (no header noise).
+      }
+    };
+    tryWatch();
+  } catch (_e) { /* fail-soft */ }
+}
+
+// Clear the fs.watch + any pending grace timer. Called at both panel-teardown
+// sites next to the periodic-capture timer clear.
+function teardownContextWatch(session) {
+  const s = session && session._contextWatch;
+  if (s) {
+    s.closed = true;
+    if (s.watcher) { try { s.watcher.close(); } catch (_e) { /* noop */ } s.watcher = null; }
+    if (s.debounce) { try { clearTimeout(s.debounce); } catch (_e) { /* noop */ } s.debounce = null; }
+    if (s.retry) { try { clearTimeout(s.retry); } catch (_e) { /* noop */ } s.retry = null; }
+  }
+  if (session && session._contextKillTimer) {
+    try { clearTimeout(session._contextKillTimer); } catch (_e) { /* noop */ }
+    session._contextKillTimer = null;
+  }
+}
+
 // Sprint 70 T1 — best-effort line-buffering wrap for stdout-capture adapters.
 //
 // The LOAD-BEARING capture mechanism is the PTY tee in spawnTerminalSession;
@@ -598,10 +890,190 @@ function hexEscapePrefix(buf, maxBytes = 32) {
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Sprint 80 T1 (FR-4) — inject-vs-human-typing queue. When a human is actively
+// typing in a panel, hold API injects and flush them FIFO on the human's next
+// submit/clear (or when a later inject arrives after typing stops) so an
+// agent-to-agent inject never interleaves mid-line. Default ON for
+// orchestrator-tier panels only (Brad's ask); per-panel override via
+// meta.holdInjectsWhileTyping. Thresholds are env-overridable, read at call
+// time (no restart-order dependency). Module-scope + db-injected so the whole
+// queue is unit-testable off a live server.
+// ─────────────────────────────────────────────────────────────────────────
+
+function resolveInjectHoldWindowMs() {
+  const raw = Number(process.env.TERMDECK_INJECT_HOLD_WINDOW_MS);
+  return (Number.isFinite(raw) && raw >= 0) ? raw : 4000;   // "actively typing" window
+}
+function resolveInjectQueueTtlMs() {
+  const raw = Number(process.env.TERMDECK_INJECT_QUEUE_TTL_MS);
+  return (Number.isFinite(raw) && raw > 0) ? raw : 30000;   // a held inject older than this is dropped, never fired into a stale context
+}
+function isInjectHoldEnabled(session) {
+  const flag = session.meta && session.meta.holdInjectsWhileTyping;
+  if (flag === true) return true;
+  if (flag === false) return false;
+  const role = session.meta && session.meta.role;
+  return role === 'orchestrator' || role === 'master-orchestrator';
+}
+function shouldHoldInject(session, now) {
+  if (!isInjectHoldEnabled(session)) return false;
+  if (!session._inputBuffer || session._inputBuffer.length === 0) return false;
+  const last = session._lastHumanKeystrokeAt || 0;
+  return (now - last) < resolveInjectHoldWindowMs();
+}
+
+// Deliver one held inject to the PTY (honoring submit:true), then log it.
+async function deliverQueuedInject(session, item, db) {
+  const normalized = String(item.text == null ? '' : item.text)
+    .replace(/\r\n?/g, '\r').replace(/\n/g, '\r');
+  try {
+    if (item.submit === true) {
+      await submitToPty(session, normalized);
+    } else {
+      session.pty.write(normalized);
+      session.trackInput(normalized);
+    }
+    session.meta.replyCount = (session.meta.replyCount || 0) + 1;
+    if (db) {
+      try {
+        const snippet = item.fromSessionId ? `from:${item.fromSessionId}` : null;
+        logCommand(db, session.id, String(item.text || '').slice(0, 500), snippet, item.source || 'user');
+      } catch (err) { console.error('[db] logCommand (inject-queue) failed:', err); }
+    }
+  } catch (err) {
+    console.error('[inject-queue] deliver failed:', err && err.message ? err.message : err);
+  }
+}
+
+// Flush the held-inject queue FIFO. Drops injects older than the TTL. Serialized
+// via `_injectFlushing` so a WS-triggered flush and a route-triggered drain
+// can't interleave writes.
+async function flushInjectQueue(session, db) {
+  if (!session || !session._injectQueue || session._injectQueue.length === 0) return;
+  if (session._injectFlushing) return;
+  session._injectFlushing = true;
+  try {
+    const ttl = resolveInjectQueueTtlMs();
+    while (session._injectQueue.length > 0) {
+      const item = session._injectQueue.shift();
+      const age = Date.now() - item.enqueuedAt;
+      if (age > ttl) {
+        console.warn(`[inject-queue] dropped stale inject (age ${age}ms > ttl ${ttl}ms) session=${session.id}`);
+        continue;
+      }
+      if (!session.pty || (session.meta && session.meta.status === 'exited')) {
+        session._injectQueue = [];   // panel gone — drop the rest
+        break;
+      }
+      await deliverQueuedInject(session, item, db);
+    }
+  } finally {
+    session._injectFlushing = false;
+  }
+}
+
 function createServer(config) {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
+
+  // Sprint 80 T1 (BR-1 — Brad's 2026-06-26 fleet cascade) — route-scoped
+  // pre-parse normalization for POST /api/sessions/:id/input. Bash/curl inject
+  // callers send JSON whose `text` contains the literal 4-char sequence `\x1b`
+  // (backslash-x-1-b) — an INVALID JSON escape that express.json() rejects with
+  // entity.parse.failed. Autonomous orch callers do NOT check the 400, so the
+  // inject vanishes silently and the spawned panel never boots — the root of
+  // the cascade that eventually crashed Brad's deck. This middleware, mounted
+  // BEFORE express.json(), rewrites `\xNN` → the equivalent valid `\u00NN`
+  // escape in the raw body so the intended real ESC-wrapped bracketed paste
+  // lands in the PTY.
+  //
+  // Mechanism: it fully consumes the request stream, parses the normalized body
+  // itself, and sets `req.body`; express.json() below then short-circuits via
+  // `onFinished.isFinished(req)` (verified against body-parser 2.2.2
+  // read.js:40 — the request stream is complete + no longer readable) and never
+  // re-parses. `req.rawBody` is stamped with the ORIGINAL bytes so the
+  // error-handler hex prefix shows what the caller actually sent.
+  //
+  // Scope + hazard (locked, PLANNING §3.1): applied ONLY on this exact route
+  // (POST + the /input path) and ONLY to application/json bodies — every other
+  // route keeps strict parsing. Accepted hazard: a caller who genuinely wants
+  // the literal 4-char text `\x1b` written with a SINGLE backslash is already
+  // sending invalid JSON (it 400'd before this fix); post-fix it becomes a real
+  // ESC. Real-ESC intent dominates on /input, so this is accepted + documented
+  // in docs/ARCHITECTURE.md § Input API. The even/odd backslash guard SHRINKS
+  // the hazard: a PROPERLY escaped `\\x1b` (valid-JSON literal-text intent) is
+  // left untouched.
+  const INPUT_ROUTE_RE = /^\/api\/sessions\/[^/]+\/input$/;
+  // Parity with express.json()'s default '100kb' limit (the mount below sets no
+  // explicit limit), so a >100kb /input body 413s exactly as it does today.
+  const INPUT_BODY_LIMIT = 100 * 1024;
+
+  // Rewrite REAL `\xNN` / `\XNN` escapes (ODD-length backslash run — the last
+  // backslash escapes the x) to `\u00NN`. An even run (`\\x…`) is a valid
+  // escaped backslash + literal text and is left as-is, so legitimate literal
+  // `\x` content is never corrupted.
+  function normalizeXEscapes(s) {
+    return s.replace(/(\\+)[xX]([0-9a-fA-F]{2})/g, (m, slashes, hex) => {
+      if (slashes.length % 2 === 1) {
+        return slashes.slice(0, -1) + '\\u00' + hex;
+      }
+      return m;
+    });
+  }
+
+  app.use((req, res, next) => {
+    if (req.method !== 'POST' || !INPUT_ROUTE_RE.test(req.path)) return next();
+    const ctype = req.headers['content-type'] || '';
+    // Non-JSON bodies fall through to normal handling (express.json skips them;
+    // the route returns its own 400 "Missing text").
+    if (!/application\/json/i.test(ctype)) return next();
+
+    const chunks = [];
+    let size = 0;
+    let finished = false;
+    const fail = (err) => { if (!finished) { finished = true; next(err); } };
+    req.on('data', (chunk) => {
+      if (finished) return;
+      size += chunk.length;
+      if (size > INPUT_BODY_LIMIT) {
+        const err = new Error('request entity too large');
+        err.type = 'entity.too.large';
+        err.statusCode = 413;
+        err.status = 413;
+        return fail(err);
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (finished) return;
+      finished = true;
+      const raw = Buffer.concat(chunks);
+      req.rawBody = raw;   // original bytes for the error-handler hex prefix
+      if (raw.length === 0) {
+        // Empty body: mirror body-parser (leave req.body undefined; the route
+        // returns its own 400 "Missing text").
+        return next();
+      }
+      const text = raw.toString('utf8');
+      try {
+        req.body = JSON.parse(normalizeXEscapes(text));
+        req._body = true;  // body-parser convention; the real skip is isFinished(req)
+        return next();
+      } catch (parseErr) {
+        // Still malformed AFTER normalization (e.g. a structural error or a raw
+        // control char) — forward as the SAME entity.parse.failed shape the
+        // global error handler already renders, now with the extended hint.
+        const err = new Error(parseErr.message);
+        err.type = 'entity.parse.failed';
+        err.statusCode = 400;
+        err.status = 400;
+        return next(err);
+      }
+    });
+    req.on('error', (streamErr) => fail(streamErr));
+  });
 
   // Sprint 60 v1.0.14 (Item 2) — pre-screen incoming JSON bodies for unescaped
   // control characters in string contexts. Brad's 2026-05-07 r730 crash
@@ -682,6 +1154,11 @@ function createServer(config) {
         error: 'Malformed JSON body',
         detail: err.message,
         code: err.code,
+        // Sprint 80 T1 (BR-1, PLANNING §3.2) — "the 400 stays loud and gets
+        // louder." Silent-swallow by autonomous callers was half of Brad's
+        // 2026-06-26 cascade, so name the exact fix: how to encode a control
+        // byte AND that /input now auto-normalizes literal \xNN.
+        hint: 'JSON allows only \\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t and \\uXXXX escapes. For an ESC/control byte use \\u001b (not \\x1b). POST /api/sessions/:id/input additionally auto-normalizes literal \\xNN escapes to \\u00NN, so a 400 there means the body is malformed for another reason.',
       });
     }
     return next(err);
@@ -753,6 +1230,35 @@ function createServer(config) {
 
   // Initialize session manager
   const sessions = new SessionManager(db);
+
+  // Sprint 80 T2 (FR-5 + FR-6) — wire the context-telemetry module to this
+  // server's config + spawn/teardown surfaces (once). The config provider feeds
+  // resolveContextConfig; the kill impl terminates (and optionally respawns) a
+  // panel that breaches its ceiling. `notify` (default) needs neither — it only
+  // sets meta.contextAlert (rides status_broadcast) + optional webhook.
+  _setContextConfigProvider(() => (config && config.context) || {});
+  _setContextKillImpl((session, { respawn } = {}) => {
+    const meta = (session && session.meta) || {};
+    const respawnDesc = respawn
+      ? {
+          command: meta.command,
+          cwd: meta.cwd,
+          project: meta.project,
+          label: meta.label,
+          type: meta.type,
+          theme: meta.theme,
+          reason: `auto-respawn after context ceiling (prev ${String(session.id).slice(0, 8)})`,
+          role: meta.role,
+        }
+      : null;
+    // Terminate via the PTY's own kill → onExit runs the normal teardown
+    // (broadcast, timer clears, context-watch teardown) so we don't duplicate it.
+    try { if (session.pty) session.pty.kill(); } catch (_e) { /* already gone */ }
+    if (respawnDesc && respawnDesc.command) {
+      try { spawnTerminalSession(respawnDesc); }
+      catch (err) { console.error('[context] respawn failed:', err && err.message ? err.message : err); }
+    }
+  });
 
   // PTY orphan reaper (Sprint 42 T2). Periodically walks the live process
   // tree, tracks descendants of each session's shell PTY, and SIGTERMs any
@@ -1567,6 +2073,9 @@ function createServer(config) {
       catch (_e) { /* fail-soft */ }
       session._periodicCapture.timer = null;
     }
+    // Sprint 80 T2 — clear the context fs.watch + any pending kill-grace timer
+    // (no-op for web-chat, which is never Claude-watched, but symmetric + safe).
+    teardownContextWatch(session);
 
     onPanelClose(session).catch((err) => {
       console.error('[panel-close] async error:', err && err.message ? err.message : err);
@@ -1917,6 +2426,33 @@ function createServer(config) {
 
         session.pty = term;
         session.pid = term.pid;
+
+        // Sprint 80 T1 (INCIDENT 2026-07-01 — whole-deck crash) — attach a pty
+        // 'error' listener so an ASYNC node-pty socket error can NEVER take the
+        // server down. node-pty's UnixTerminal master-socket handler
+        // (@homebridge/node-pty-prebuilt-multiarch/lib/unixTerminal.js:114-140)
+        // swallows EAGAIN + EIO but RE-THROWS any other errno (EBADF/ENOTTY/
+        // EPIPE — exactly what a write to a pty whose child just died emits)
+        // as an UNCAUGHT exception when the terminal has fewer than 2 'error'
+        // listeners. The baseline count is 1, so with no consumer listener a
+        // single bad write kills the whole process (all lane PTYs + the HTTP
+        // listener). This is what crashed Brad's deck when a POST
+        // /api/sessions/:id/input {submit:true} re-engaged a panel whose agent
+        // had just exited — the 400ms server-held submit settle (pty-submit.js)
+        // widens the write-after-death race so the body write's async socket
+        // error surfaces while the request is still in flight. Attaching one
+        // listener raises the count to 2 → node-pty declines to throw instead
+        // of crashing. Guarded on `typeof term.on` so the plain-object fake
+        // ptys used by the unit harnesses (no EventEmitter surface) are
+        // untouched; real node-pty always has `.on`.
+        if (typeof term.on === 'function') {
+          term.on('error', (err) => {
+            const code = (err && err.code) ? `, ${err.code}` : '';
+            const msg = (err && err.message) ? err.message : String(err);
+            console.warn(`[pty] non-fatal socket error (session=${session.id}${code}): ${msg}`);
+          });
+        }
+
         session.meta.status = 'active';
         // Sprint 64 T2 (carve-out 2.4 closure) — when direct-spawn matched
         // a known adapter, promote `session.meta.type` from its `'shell'`
@@ -1973,6 +2509,15 @@ function createServer(config) {
             if (session._periodicCapture.timer.unref) session._periodicCapture.timer.unref();
           }
         } catch (_periodicErr) { /* fail-soft */ }
+
+        // Sprint 80 T2 (FR-5) — establish the context-size watch for CLAUDE
+        // panels. The mirror image of the periodic-capture timer above: that one
+        // is for non-Claude panels, this is Claude-only (the ONLY adapter whose
+        // JSONL carries a per-turn `usage` block). fs.watch on the transcript
+        // dir → debounced recompute of meta.contextK, which rides the 2s
+        // status_broadcast to the header. Cleared in term.onExit below.
+        // establishContextWatch is internally Claude-gated + fully fail-soft.
+        establishContextWatch(session);
 
         // Sprint 70 T1 — initialize the in-flight stdout capture buffer for
         // adapters that opt in (agy). The tee in term.onData below appends to
@@ -2083,6 +2628,10 @@ function createServer(config) {
             catch (_clrErr) { /* fail-soft */ }
             session._periodicCapture.timer = null;
           }
+          // Sprint 80 T2 (FR-5) — tear down the context fs.watch + any pending
+          // kill-grace timer before onPanelClose, same ordering discipline as
+          // the periodic-capture clear so no watch/grace tick races teardown.
+          teardownContextWatch(session);
 
           // Sprint 50 T1 — fire the bundled SessionEnd hook for non-Claude
           // panels so Codex / Gemini / Grok /exits write to Mnestra the way
@@ -2293,6 +2842,29 @@ function createServer(config) {
     if (role !== undefined && !ALLOWED_SESSION_ROLES.includes(role)) {
       return res.status(400).json({ ok: false, code: 'invalid_role', allowed: ALLOWED_SESSION_ROLES });
     }
+    // Sprint 80 T3 (FR-3, Brad's 2026-06-26 fleet ask) — enforce the optional
+    // panel cap. Brad hit silent host/PTY exhaustion at ~30-40 panels with NO
+    // TermDeck limit; a configured ceiling now returns a clear 429 instead of
+    // letting the host die. Counts LIVE panels only (exited PTYs hold no
+    // resources) so a deck full of dead panels never blocks a fresh spawn.
+    // Scoped to this user-facing route — internal respawn/sprint-runner spawns
+    // intentionally bypass the cap so recovery is never blocked.
+    const panelCap = effectivePanelCap(config);
+    if (panelCap !== null) {
+      const live = sessions.getAll({ includeExited: false }).length;
+      if (live >= panelCap) {
+        return res.status(429).json({
+          ok: false,
+          code: 'panel_cap_reached',
+          limit: panelCap,
+          current: live,
+          hint: `TermDeck is at its configured maxPanels ceiling (${panelCap}). `
+            + `Close an idle panel, or raise maxPanels in ~/.termdeck/config.yaml `
+            + `(or set the TERMDECK_MAX_PANELS env var). See the README "Panel cap" `
+            + `section for per-OS PTY headroom notes.`,
+        });
+      }
+    }
     const session = spawnTerminalSession({ command, cwd, project, label, type, theme, reason, role });
     res.status(201).json(session.toJSON());
   });
@@ -2336,7 +2908,7 @@ function createServer(config) {
     // a live panel as orchestrator in place. Validate it exactly as POST
     // /api/sessions does (index.js — the `invalid_role` 400 above): an absent
     // field is fine, any present value must be in ALLOWED_SESSION_ROLES
-    // (orchestrator/worker/reviewer/auditor/null) — an unknown value is a 400
+    // (master-orchestrator/orchestrator/worker/reviewer/auditor/null) — an unknown value is a 400
     // so a typo surfaces immediately rather than silently mis-tagging the
     // panel. Validation runs BEFORE updateMeta so a bad role never reaches the
     // whitelist apply or the SQLite write.
@@ -2475,6 +3047,27 @@ function createServer(config) {
     inputRateLimit.set(session.id, bucket);
     if (bucket.count > 10) {
       return res.status(429).json({ error: 'Rate limit exceeded (10/sec)' });
+    }
+
+    // Sprint 80 T1 (FR-4) — hold this inject while a human is actively typing in
+    // the panel (buffer non-empty + a keystroke within the window); it flushes
+    // FIFO later on the human's submit/clear (WS path). If the human has STOPPED
+    // typing but a backlog exists, drain it first so held injects still land in
+    // order AHEAD of this direct write. `now` was captured for the rate limiter.
+    if (shouldHoldInject(session, now)) {
+      session._injectQueue.push({
+        text, submit: submit === true, source, fromSessionId, enqueuedAt: now,
+      });
+      return res.json({
+        ok: true,
+        queued: true,
+        queuePosition: session._injectQueue.length,
+        status: session.meta.status,
+        inputBufferLength: (session._inputBuffer || '').length,
+      });
+    }
+    if (session._injectQueue && session._injectQueue.length > 0) {
+      await flushInjectQueue(session, db);
     }
 
     // CRLF normalize: zsh/readline want \r for Enter
@@ -2867,6 +3460,13 @@ function createServer(config) {
       // the "RAG · on / pending / mcp-only" label.
       ragMode: deriveRagMode(rag, config),
       statusColors,
+      // Sprint 80 T2 (FR-5) — WARN/OVER context-size thresholds so the client
+      // can band a PATCH-only contextK (non-Claude panels have no server-set
+      // contextLevel). Read-only projection of config.context; safe to expose.
+      contextThresholds: {
+        warnK: (config.context && config.context.warnK) || 350,
+        overK: (config.context && config.context.overK) || 400,
+      },
       firstRun
     };
   }
@@ -3439,6 +4039,13 @@ function createServer(config) {
             } else if (session.pty && !session.pty._destroyed) {
               session.pty.write(parsed.data);
               session.trackInput(parsed.data);
+              // Sprint 80 T1 (FR-4) — a REAL human keystroke: stamp the typing
+              // clock and, on Enter (submit) or Ctrl-C/U/bare-Esc (clear), flush
+              // any held injects FIFO into the now-free line.
+              if (session.markHumanKeystroke(parsed.data)) {
+                flushInjectQueue(session, db).catch((err) =>
+                  console.error('[inject-queue] flush failed:', err && err.message ? err.message : err));
+              }
             }
             break;
 
@@ -3829,6 +4436,12 @@ module.exports = {
   // helpers instead of re-implementing them.
   isPtyRaceError,
   hexEscapePrefix,
+  // Sprint 80 T1 (FR-4) — inject-vs-typing queue internals, exported so the
+  // hold decision + FIFO/TTL flush are unit-testable off a live server.
+  isInjectHoldEnabled,
+  shouldHoldInject,
+  flushInjectQueue,
+  deliverQueuedInject,
   // Sprint 48 T4 — exported for unit testing the secrets.env → PTY env merge.
   readTermdeckSecretsForPty,
   _resetTermdeckSecretsCache,
@@ -3837,6 +4450,8 @@ module.exports = {
   SECRETS_EXCLUDED_FROM_PTY,
   // Sprint 65 T2 (2.1) — operator-role whitelist, exported for the route fence.
   ALLOWED_SESSION_ROLES,
+  // Sprint 80 T3 (FR-3) — panel-cap normalizer, exported for the unit test.
+  effectivePanelCap,
   // Sprint 69 T1 — boot-prompt template engine. Exported so T2's inject
   // endpoint and integration tests can import without traversing the
   // internal `./templates/template-engine` path.
@@ -3857,4 +4472,20 @@ module.exports = {
   // web-chat seams (spawn/inject/output/status/close/capture) are exercised
   // with no real Chrome / CDP / network.
   _setWebChatDriverImplForTesting,
+  // Sprint 80 T2 — context telemetry (FR-5) + ceiling enforcement (FR-6).
+  // Wiring surface exported so tests exercise it with a stubbed PTY / fake
+  // adapter and NO live server (the production submitToPty path is under the
+  // 2026-07-01 crash INCIDENT). The pure compute/decision logic lives in
+  // ./context-meter and is tested directly there.
+  updatePanelContext,
+  enforceContext,
+  fireContextAction,
+  isMidToolUse,
+  resolveContextConfig,
+  establishContextWatch,
+  teardownContextWatch,
+  _setContextConfigProvider,
+  _setContextSubmitImplForTesting,
+  _setContextKillImpl,
+  _setContextWebhookImplForTesting,
 };

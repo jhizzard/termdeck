@@ -2,7 +2,7 @@
 
 Single source of truth for everything queued beyond the active sprint set.
 
-**Last updated:** 2026-05-23 (Sprint 67 in flight; v1.6.1 just shipped).
+**Last updated:** 2026-07-01 (Sprint 80 "Brad Queue" closed FINAL-VERDICT GREEN — BR-1 + INCIDENT pty-crash fix + FR-1..6 shipped; v1.12.0 / stack-1.10.0 wave staged; rumen 0.6.1 live. Sprint 79 elevation-capture remains next in queue, never dispatched).
 
 Active sprint plans live in `docs/sprint-N-<name>/`. When an item gets scoped into a sprint, move it from this file into that sprint's `PLANNING.md`. Don't leave it in two places — the sprint plan becomes authoritative once an item is in flight. New items surface from external feedback (Brad, future external testers), incident postmortems, and sprint close-out deferrals — add them here in the right category. Don't create ad-hoc roadmap docs; consolidate.
 
@@ -28,6 +28,7 @@ For history on closed items, see § Archived at the bottom. For deeper context o
 - **V4-6 Security/deployment doc drift.** `SECURITY.md` says `termdeck_auth` cookie; code uses `termdeck_token`. `DEPLOYMENT.md` says `/healthz`; server exposes `/api/health`. Deployment example uses `server.host`; code reads `config.host`. Doc-only, low risk.
 - **Migration-001 idempotency.** `CREATE OR REPLACE FUNCTION` return-type collision when re-running migrations against an already-upgraded store. Doesn't affect fresh installs. Two fix options: explicit `DROP FUNCTION ... CASCADE` before recreate, or a `schema_migrations` tracking table.
 - **Rumen-MCP gap.** Memories written via the MCP path land with NULL `source_session_id`, so they never reach Rumen Extract. Sprint-33 candidate at original triage; still open.
+- **Root-glob `npm test` hang in the MCP/bridge test region** (Sprint 80 T4 baseline + T1 close, 2026-07-01). Exact `npm test` from repo root hangs/fails after the bridge section on some runs; per-package `node --test packages/server/tests/*.test.js` is fully green (512/512 at Sprint 80 close). Ruled pre-existing carry-forward by ORCH (Sprint 80 STATUS 21:40 ET). Likely intersects the repo-root glob gap below + mcp-bridge test lifecycle (unclosed handles/servers keeping the runner alive). Diagnose with `--test-force-exit` vs proper teardown; fix belongs with the glob consolidation.
 - **Repo-root test glob gap** (Sprint 65 deferral + Sprint 67 T1+T4 surfaced). `package.json:34` runs only `packages/server/tests/**`, `packages/cli/tests/**`, `packages/stack-installer/tests/**`. Repo-root test files (`tests/init-mnestra-hook-refresh.test.js`, `tests/init-mnestra-cli-refresh.test.js`, `tests/init-mnestra-settings-migration.test.js`, `tests/stack-installer-hook-merge.test.js`, plus `tests/per-agent-hook-trigger.test.js`, `tests/ws-handler-contract.test.js`, `tests/escapehtml-client.test.js`) sit outside the glob — silent-skipped on CI. This is the test-side mirror of the Sprint 67 Class N drift T1 found. Either move these into a `packages/*` glob path, or extend the npm-test script to include repo-root. Surfaced explicitly by T4-CODEX in Sprint 67 (AUDIT-CONCERN 09:14 ET).
 
 ## B. Adoption levers (cut new-user friction)

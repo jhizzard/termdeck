@@ -288,6 +288,38 @@ Submit PRs at https://github.com/jhizzard/termdeck/pulls.
 
 Config lives at `~/.termdeck/config.yaml`. Secrets (API keys) belong in `~/.termdeck/secrets.env` using dotenv format — use `${VAR}` substitution in `config.yaml` to reference them. Template files are bundled in the published package at `config/config.example.yaml` and `config/secrets.env.example`.
 
+### Panel cap (`maxPanels`)
+
+By default TermDeck imposes **no limit** on the number of concurrent panels — you can open as many as your host can drive. On a busy host, though, spawning too many panels exhausts RAM and pseudo-terminals (PTYs), and the failure mode is ugly: the OS starts refusing new PTYs, or the box thrashes and the whole deck freezes, with no clear signal about why.
+
+Set an explicit ceiling so TermDeck returns a clear error instead:
+
+```yaml
+# ~/.termdeck/config.yaml
+maxPanels: 24        # null / 0 / omitted = unlimited (the default)
+```
+
+Or override at launch without editing the file:
+
+```bash
+TERMDECK_MAX_PANELS=24 npx @jhizzard/termdeck
+```
+
+Resolution order is **`TERMDECK_MAX_PANELS` env > `config.yaml` > default (unlimited)**. The cap counts only **live** panels — panels whose process has exited don't count against it, so a deck full of dead panels never blocks a fresh spawn. When the cap is reached, `POST /api/sessions` responds `429` with a structured body:
+
+```json
+{ "ok": false, "code": "panel_cap_reached", "limit": 24, "current": 24,
+  "hint": "TermDeck is at its configured maxPanels ceiling (24). Close an idle panel, or raise maxPanels…" }
+```
+
+Internal respawns and the in-dashboard sprint runner intentionally **bypass** the cap so recovery is never blocked.
+
+**Picking a value — per-OS PTY headroom.** The realistic bottleneck is almost always RAM and per-agent CPU, not the kernel's PTY ceiling, but the PTY ceiling is worth knowing:
+
+- **Linux** — the kernel default `kernel.pty.max` is `4096` PTYs host-wide (`sysctl kernel.pty.max`). You will run out of RAM long before that with real agent panels; a TermDeck cap is the only practical guard. Pick a value your host's memory can sustain (each Claude/Codex panel + its MCP servers can be hundreds of MB).
+- **macOS** — PTY count is bounded by `kern.tty.ptmx_max` (dynamically grown) and per-process file-descriptor limits (`ulimit -n`); in practice memory is again the first wall.
+- **All platforms** — if you orchestrate many panels that each spawn their own MCP servers, the *process* fan-out (not the panel count) is what pressures the host. Cap conservatively and raise it only after watching memory under load.
+
 ---
 
 ## License

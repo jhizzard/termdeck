@@ -213,6 +213,15 @@ class Session {
     this._outputFlushTimer = null;
     this._commandBuffer = '';
     this._inputBuffer = '';   // tracks user keyboard input for command detection
+    // Sprint 80 T1 (FR-4 — inject-vs-typing queue). `_lastHumanKeystrokeAt` is
+    // stamped ONLY on real human keystrokes (WS input path), never on API
+    // injects — it's the "is a human actively typing right now" signal the
+    // /input route consults before writing. `_injectQueue` holds injects held
+    // back while the human types; it flushes FIFO on the human's next
+    // submit/clear (see markHumanKeystroke) or when a later inject arrives after
+    // typing has stopped.
+    this._lastHumanKeystrokeAt = 0;
+    this._injectQueue = [];
     this.onCommand = null;    // callback: (sessionId, command) => void
     this.onStatusChange = null; // callback: (session, oldStatus, newStatus) => void
     this.onErrorDetected = null; // callback: (session, { lastCommand, tail }) => void
@@ -393,6 +402,37 @@ class Session {
         this._inputBuffer += ch;
       }
     }
+  }
+
+  // Sprint 80 T1 (FR-4). Called on every REAL human keystroke (WS input path,
+  // NOT API injects). Stamps the "human is typing" clock and reports whether
+  // this keystroke should flush the held inject queue: an Enter/submit (CR/LF)
+  // or a line-clear (Ctrl-C 0x03, Ctrl-U 0x15, or a BARE Esc). A bare Esc is
+  // the interrupt/clear key; an Esc that begins a CSI/SS3 sequence (`\x1b[` /
+  // `\x1bO` — arrow/function keys) is NOT a clear and must not flush. On a
+  // clear we also reset `_inputBuffer` so the "buffer non-empty" hold gate
+  // reflects the now-cleared line (trackInput doesn't model Ctrl-C/U/Esc).
+  markHumanKeystroke(data) {
+    this._lastHumanKeystrokeAt = Date.now();
+    const signal = this._humanKeyFlushSignal(data);
+    if (signal === 'clear') this._inputBuffer = '';
+    return signal !== null;   // true ⇒ caller should flush the inject queue
+  }
+
+  // Returns 'submit' | 'clear' | null. Kept separate so it's unit-testable.
+  _humanKeyFlushSignal(data) {
+    if (typeof data !== 'string' || data.length === 0) return null;
+    for (let i = 0; i < data.length; i++) {
+      const ch = data[i];
+      if (ch === '\r' || ch === '\n') return 'submit';
+      if (ch === '\x03' || ch === '\x15') return 'clear';   // Ctrl-C / Ctrl-U
+      if (ch === '\x1b') {
+        const nxt = data[i + 1];
+        // Bare Esc (or Esc not starting a CSI/SS3 seq) = clear/interrupt.
+        if (nxt !== '[' && nxt !== 'O') return 'clear';
+      }
+    }
+    return null;
   }
 
   getNextChunkIndex() {
@@ -668,7 +708,21 @@ class SessionManager {
     // value against ALLOWED_SESSION_ROLES before this whitelist is consulted —
     // the same "route validates, model trusts" boundary as POST /api/sessions
     // and the Session constructor.
-    'role'
+    'role',
+    // Sprint 80 T2 (FR-5 external-writer parity, PLANNING §3.4) — let an
+    // external watchdog (Brad's) PATCH the live context size for panels TermDeck
+    // can't read itself (non-Claude panels have no `usage`-carrying JSONL).
+    // Precedence: the server-computed value from the Claude transcript WINS
+    // whenever readable (updatePanelContext overwrites); this PATCH value is the
+    // fallback only. `maxContextK` + `contextAction` are per-panel FR-6 overrides
+    // of the global config.context defaults.
+    'contextK',
+    'maxContextK',
+    'contextAction',
+    // Sprint 80 T1 (FR-4) — per-panel opt-out for the inject-vs-typing hold.
+    // Default is derived from role (ON for orchestrator tiers); a PATCH of
+    // true/false pins the behavior for one panel regardless of role.
+    'holdInjectsWhileTyping'
   ]);
 
   updateMeta(id, updates) {
