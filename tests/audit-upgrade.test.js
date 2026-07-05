@@ -87,7 +87,9 @@ function defaultMockMigrations() {
     ],
     rumenFiles: [
       '/mock/002_pg_cron_schedule.sql',
-      '/mock/003_graph_inference_schedule.sql'
+      '/mock/003_graph_inference_schedule.sql',
+      '/mock/004_doctrine_registry.sql',
+      '/mock/005_doctrine_scan_schedule.sql'
     ],
     sqlByBasename: {
       '009_memory_relationship_metadata.sql':
@@ -107,7 +109,13 @@ function defaultMockMigrations() {
       '002_pg_cron_schedule.sql':
         "select cron.schedule('rumen-tick', '*/15 * * * *', $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/rumen-tick'); $$);",
       '003_graph_inference_schedule.sql':
-        "select cron.schedule('graph-inference-tick', '0 3 * * *', $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/graph-inference'); $$);"
+        "select cron.schedule('graph-inference-tick', '0 3 * * *', $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/graph-inference'); $$);",
+      // Sprint 79 T3 — doctrine-scan tables (non-templated, plain DDL) + its
+      // cron schedule (templated, same <project-ref> shape as 002/003).
+      '004_doctrine_registry.sql':
+        'create table if not exists doctrine_registry (id uuid primary key default gen_random_uuid()); create table if not exists doctrine_jobs (id uuid primary key default gen_random_uuid());',
+      '005_doctrine_scan_schedule.sql':
+        "select cron.schedule('doctrine-scan', '30 3 * * *', $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/doctrine-scan'); $$);"
     }
   });
 }
@@ -144,12 +152,15 @@ function makeFetchMock(spec) {
 // probes (rumen-tick + graph-inference) for deployed-state pin drift.
 // Sprint 53 T2: probe set grows from 12 to 13 — adds memory_sessions.rumen_processed_at
 // (mig 018) so `init --rumen --yes` cannot deploy rumen 0.5.0 picker without the column.
-test('PROBES has 13 entries covering 7 mnestra + 6 rumen targets', () => {
-  assert.equal(PROBES.length, 13);
+// Sprint 79 T3: probe set grows from 13 to 16 — adds doctrine_registry+
+// doctrine_jobs tables (mig 004), doctrine-scan cron schedule (mig 005), and
+// a doctrine-scan edgeFunctionPin probe (mirrors rumen-tick's).
+test('PROBES has 16 entries covering 7 mnestra + 9 rumen targets', () => {
+  assert.equal(PROBES.length, 16);
   const mnestra = PROBES.filter((p) => p.kind === 'mnestra');
   const rumen = PROBES.filter((p) => p.kind === 'rumen');
   assert.equal(mnestra.length, 7);
-  assert.equal(rumen.length, 6);
+  assert.equal(rumen.length, 9);
   // Migration-backed probes still need a bundled file + probeSql.
   const migrationProbes = PROBES.filter((q) =>
     q.probeKind !== 'functionSource' && q.probeKind !== 'edgeFunctionPin');
@@ -176,11 +187,17 @@ test('PROBES has 13 entries covering 7 mnestra + 6 rumen targets', () => {
       assert.ok(p.bundledPath, `edgeFunctionPin probe ${p.name} missing bundledPath`);
     }
   }
-  // Both rumen schedule probes must be templated (require projectRef).
-  const cronProbes = rumen.filter((p) =>
-    p.probeKind !== 'functionSource' && p.probeKind !== 'edgeFunctionPin');
+  // All rumen CRON-SCHEDULE probes (name ends in "cron schedule" — the
+  // established naming convention) must be templated (require projectRef).
+  // Sprint 79 T3: this filter used to be "every non-function-probe rumen
+  // target," which coincidentally held while the only two such targets were
+  // cron schedules; the new doctrine_registry+doctrine_jobs TABLE probe is a
+  // non-templated rumen SQL probe, so the filter is now name-based instead
+  // of "everything that isn't a function probe."
+  const cronProbes = rumen.filter((p) => /cron schedule$/.test(p.name));
+  assert.equal(cronProbes.length, 3, 'rumen-tick + graph-inference-tick + doctrine-scan');
   assert.equal(cronProbes.every((p) => p.templated === true), true,
-    'both rumen schedule probes must be templated');
+    'all rumen cron-schedule probes must be templated');
 });
 
 test('PROBES order matches dependency requirement: M-009 before M-013, M-013 before M-015, M-015 before M-017, M-017 before M-018', () => {
@@ -209,6 +226,7 @@ test('all SQL probes present → applied=[] (idempotent up-to-date case)', async
   // Every probe SQL returns 1 row → present. Nothing to apply.
   const client = makePgClient([
     { match: 'information_schema.columns', rows: [{ present: 1 }] },
+    { match: 'information_schema.tables', rows: [{ present: 1 }] },
     { match: 'pg_proc', rows: [{ present: 1 }] },
     { match: 'has_table_privilege', rows: [{ present: true }] },
     { match: 'cron.job', rows: [{ present: 1 }] }
@@ -220,8 +238,8 @@ test('all SQL probes present → applied=[] (idempotent up-to-date case)', async
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.probed.length, 9);
-  assert.equal(result.present.length, 9);
+  assert.equal(result.probed.length, 11);
+  assert.equal(result.present.length, 11);
   assert.equal(result.missing.length, 0);
   assert.equal(result.applied.length, 0);
   assert.equal(result.errors.length, 0);
@@ -238,8 +256,8 @@ test('all SQL probes absent → all 9 migrations apply in PROBES order', async (
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.missing.length, 9);
-  assert.equal(result.applied.length, 9);
+  assert.equal(result.missing.length, 11);
+  assert.equal(result.applied.length, 11);
   assert.equal(result.errors.length, 0);
   // Apply order matches PROBES order (filtered).
   assert.deepEqual(result.applied, SQL_PROBES.map((p) => p.name));
@@ -290,16 +308,22 @@ test('partial drift: weight present, source_agent absent → only 015 applies', 
   });
   // mig 017's probe asks for 'session_id' and mig 018's probe asks for
   // 'rumen_processed_at' — neither is in the canned answers above, so
-  // BOTH come back absent. 015, 017, and 018 all apply.
+  // BOTH come back absent. 015, 017, and 018 all apply. Sprint 79 T3's
+  // doctrine_registry+doctrine_jobs probe queries information_schema.tables,
+  // which this client's if-chain never matches, so it also falls through to
+  // the default absent/apply-succeeds branch — it lands last (rumen probes
+  // are ordered after all mnestra probes in PROBES).
   assert.deepEqual(result.missing, [
     'memory_items.source_agent',
     'memory_sessions.session_id',
-    'memory_sessions.rumen_processed_at'
+    'memory_sessions.rumen_processed_at',
+    'doctrine_registry + doctrine_jobs tables'
   ]);
   assert.deepEqual(result.applied, [
     'memory_items.source_agent',
     'memory_sessions.session_id',
-    'memory_sessions.rumen_processed_at'
+    'memory_sessions.rumen_processed_at',
+    'doctrine_registry + doctrine_jobs tables'
   ]);
   assert.equal(result.errors.length, 0);
 });
@@ -316,12 +340,12 @@ test('dryRun=true surfaces missing without applying', async () => {
     probes: SQL_PROBES,
     _migrations: mockMig
   });
-  assert.equal(result.missing.length, 9);
+  assert.equal(result.missing.length, 11);
   assert.equal(result.applied.length, 0,
     'dryRun must not apply anything');
   assert.equal(result.errors.length, 0);
   // Calls should be exactly 9 probes (one per SQL target), no apply queries.
-  assert.equal(client.calls.length, 9);
+  assert.equal(client.calls.length, 11);
 });
 
 // ── Templating regression guard (Brad 2026-05-03 takeaway #5) ───────────────
@@ -332,8 +356,9 @@ test('rumen 002 templating: applied SQL has projectRef substituted, no <project-
     calls: [],
     async query(sql) {
       captured.push(sql);
-      if (sql.includes('cron.job')) return { rows: [] }; // probes report absent
-      // All other probes present so only rumen 002 + 003 apply.
+      if (sql.includes('cron.job')) return { rows: [] }; // cron probes report absent
+      if (sql.includes('information_schema.tables')) return { rows: [] }; // Sprint 79 T3 doctrine tables probe: also absent, applies (non-templated)
+      // All other probes present so only the rumen SQL probes apply.
       if (sql.includes('information_schema.columns')) return { rows: [{ present: 1 }] };
       if (sql.includes('pg_proc')) return { rows: [{ present: 1 }] };
       if (sql.includes('has_table_privilege')) return { rows: [{ present: true }] };
@@ -346,9 +371,14 @@ test('rumen 002 templating: applied SQL has projectRef substituted, no <project-
     projectRef: 'realprojectref789',
     _migrations: mockMig
   });
+  // Sprint 79 T3: the doctrine_registry+doctrine_jobs table probe (non-
+  // templated) also reports absent and applies here — it comes first
+  // (rumen probes ordered: doctrine tables, then the three cron schedules).
   assert.deepEqual(result.applied, [
+    'doctrine_registry + doctrine_jobs tables',
     'rumen-tick cron schedule',
-    'graph-inference-tick cron schedule'
+    'graph-inference-tick cron schedule',
+    'doctrine-scan cron schedule'
   ]);
   // The applied bodies for 002 + 003 must contain the realprojectref789
   // value, NOT the raw <project-ref> placeholder.
@@ -377,14 +407,17 @@ test('templated migration without projectRef → applyTemplating throws → reco
     // projectRef intentionally missing
     _migrations: mockMig
   });
-  // Both rumen apply attempts should fail (templating throws). Audit
-  // continues, surfaces errors[], doesn't crash.
-  assert.equal(result.errors.length, 2);
+  // All three TEMPLATED rumen apply attempts should fail (templating
+  // throws). Audit continues, surfaces errors[], doesn't crash. The
+  // doctrine_registry+doctrine_jobs table probe (Sprint 79 T3) is NOT
+  // templated, so it applies successfully despite the missing projectRef —
+  // it shows up in applied[], not errors[].
+  assert.equal(result.errors.length, 3);
   for (const e of result.errors) {
     assert.match(e.error, /projectRef/i,
       'error message should mention the missing projectRef');
   }
-  assert.deepEqual(result.applied, []);
+  assert.deepEqual(result.applied, ['doctrine_registry + doctrine_jobs tables']);
 });
 
 // ── Probe-error degradation ─────────────────────────────────────────────────
@@ -488,7 +521,7 @@ test('packages/server/src/setup index re-exports auditUpgrade', () => {
     Object.isFrozen(setup.auditUpgrade.PROBES));
   // Sprint 52: 10 → 12 (added rumen-tick-pin + graph-inference-pin).
   // Sprint 53 T2: 12 → 13 (added memory_sessions.rumen_processed_at for mig 018).
-  assert.equal(setup.auditUpgrade.PROBES.length, 13);
+  assert.equal(setup.auditUpgrade.PROBES.length, 16);
 });
 
 // ── Sprint 51.6 T3: functionSource probe (Bug D — Edge Function drift) ──

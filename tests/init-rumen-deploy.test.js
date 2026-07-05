@@ -39,12 +39,14 @@ function loadMigrations() {
 
 // ── Lowest-level invariant: both function sources are bundled on disk ──────
 
-test('bundled rumen functions directory contains rumen-tick and graph-inference', () => {
+test('bundled rumen functions directory contains all four shipped functions', () => {
   const subdirs = fs.readdirSync(BUNDLED_FNS_DIR)
     .filter((name) => fs.statSync(path.join(BUNDLED_FNS_DIR, name)).isDirectory())
     .sort();
-  assert.deepEqual(subdirs, ['graph-inference', 'rumen-tick'],
-    'Sprint 43 T3 bundled both functions; if this fails, scripts/sync-rumen-functions.sh likely was not run before publish');
+  // Sprint 79 T3 added doctrine-scan; Sprint 76 added inbox-promote (was
+  // already bundled, just never had a dedicated assertion here).
+  assert.deepEqual(subdirs, ['doctrine-scan', 'graph-inference', 'inbox-promote', 'rumen-tick'],
+    'Sprint 43 T3 bundled the first two; if this fails after adding/removing a function, scripts/sync-rumen-functions.sh may not have run, or this list needs updating alongside it');
 });
 
 test('rumen-tick/index.ts contains the __RUMEN_VERSION__ placeholder (not a hardcoded version)', () => {
@@ -61,11 +63,19 @@ test('graph-inference/index.ts has no __RUMEN_VERSION__ placeholder (its deps ar
     'graph-inference must not carry the rumen-tick placeholder; substitution would clobber a non-existent dep');
 });
 
+test('doctrine-scan/index.ts contains the __RUMEN_VERSION__ placeholder (Sprint 79 T3, same pattern as rumen-tick)', () => {
+  const src = fs.readFileSync(path.join(BUNDLED_FNS_DIR, 'doctrine-scan', 'index.ts'), 'utf-8');
+  assert.match(src, /__RUMEN_VERSION__/,
+    'doctrine-scan/index.ts must keep the placeholder; init-rumen.js FUNCTIONS_WITH_VERSION_PLACEHOLDER includes it');
+  assert.doesNotMatch(src, /npm:@jhizzard\/rumen@\d+\.\d+\.\d+/,
+    'no concrete @jhizzard/rumen@<version> may be committed in the bundled doctrine-scan source');
+});
+
 // ── migrations.js exports — bundled-first resolution + listRumenFunctions ──
 
-test('listRumenFunctions() returns both function names in lexical order', () => {
+test('listRumenFunctions() returns all four function names in lexical order', () => {
   const m = loadMigrations();
-  assert.deepEqual(m.listRumenFunctions(), ['graph-inference', 'rumen-tick']);
+  assert.deepEqual(m.listRumenFunctions(), ['doctrine-scan', 'graph-inference', 'inbox-promote', 'rumen-tick']);
 });
 
 test('rumenFunctionsRoot() resolves to the bundled directory under packages/server/src/setup', () => {
@@ -104,16 +114,25 @@ test('stageRumenFunctions() creates supabase/functions/<name>/index.ts for every
   }
 });
 
-test('stageRumenFunctions() substitutes __RUMEN_VERSION__ in rumen-tick only', () => {
+test('stageRumenFunctions() substitutes __RUMEN_VERSION__ in rumen-tick and doctrine-scan only', () => {
   const stage = stageRumenFunctions('0.9.99');
   try {
     const tick = fs.readFileSync(path.join(stage, 'supabase', 'functions', 'rumen-tick', 'index.ts'), 'utf-8');
     assert.match(tick, /npm:@jhizzard\/rumen@0\.9\.99/, 'rumen-tick must get the version substituted');
     assert.doesNotMatch(tick, /__RUMEN_VERSION__/, 'rumen-tick stage must no longer contain the placeholder after substitution');
 
+    // Sprint 79 T3: doctrine-scan carries the same placeholder as rumen-tick.
+    const doctrineScan = fs.readFileSync(path.join(stage, 'supabase', 'functions', 'doctrine-scan', 'index.ts'), 'utf-8');
+    assert.match(doctrineScan, /npm:@jhizzard\/rumen@0\.9\.99/, 'doctrine-scan must get the version substituted (FUNCTIONS_WITH_VERSION_PLACEHOLDER)');
+    assert.doesNotMatch(doctrineScan, /__RUMEN_VERSION__/, 'doctrine-scan stage must no longer contain the placeholder after substitution');
+
     const graph = fs.readFileSync(path.join(stage, 'supabase', 'functions', 'graph-inference', 'index.ts'), 'utf-8');
     assert.doesNotMatch(graph, /0\.9\.99/, 'graph-inference must not be touched by the rumen-tick version substitution');
     assert.doesNotMatch(graph, /__RUMEN_VERSION__/, 'graph-inference must never contain the placeholder');
+
+    const inboxPromote = fs.readFileSync(path.join(stage, 'supabase', 'functions', 'inbox-promote', 'index.ts'), 'utf-8');
+    assert.doesNotMatch(inboxPromote, /0\.9\.99/, 'inbox-promote must not be touched by the version substitution');
+    assert.doesNotMatch(inboxPromote, /__RUMEN_VERSION__/, 'inbox-promote must never contain the placeholder');
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
   }
