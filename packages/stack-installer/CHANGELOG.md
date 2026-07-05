@@ -5,6 +5,14 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [1.11.0] — 2026-07-05
+
+### Added
+- **Doctrine-scan provisioning** (Sprint 79). `termdeck init --rumen` now bundles + applies the doctrine elevation schema (`004_doctrine_registry.sql` — `doctrine_registry` + `doctrine_jobs`) and schedules the `doctrine-scan` Edge Function at 03:30 UTC (`005_doctrine_scan_schedule.sql`, reusing the `rumen_service_role_key` Vault secret). Tables (004) apply **before** the schedule (005); the wrapper import is `__RUMEN_VERSION__`-templated. Rides `@jhizzard/rumen@0.7.0` + `@jhizzard/mnestra@0.8.0`.
+
+### Documentation
+- Audit-trail: validated against `@jhizzard/termdeck@1.13.0` (Sprint 79 close).
+
 ## [1.10.0] — 2026-07-01
 
 ### Fixed

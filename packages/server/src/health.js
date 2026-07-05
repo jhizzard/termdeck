@@ -503,6 +503,104 @@ async function checkRumenPool(config, options) {
   }
 }
 
+// Sprint 79 T3 — doctrine-scan flatline + proposed>7d staleness, surfaced in
+// the ORCH preflight output path (docs/sprint-79-elevation-capture PLANNING
+// §3 T3 row). Both are WARN, not REQUIRED: doctrine_registry/doctrine_jobs
+// are brand-new optional tables (migration 004, ORCH-applied at sprint
+// close) — "relation does not exist" means "not migrated yet," a normal
+// pre-close-out or Brad-never-ran-init--rumen state, NOT a health problem.
+// pg 42P01 = undefined_table.
+const DOCTRINE_FLATLINE_HOURS = 48; // cron runs daily at 03:30 UTC; 2 misses = flatline
+const DOCTRINE_PROPOSED_STALE_DAYS = 7;
+
+async function checkDoctrineJobs(config, options) {
+  if (options && typeof options._doctrineJobsProbe === 'function') {
+    try {
+      const r = await options._doctrineJobsProbe();
+      if (r && r.ok) return passCheck('doctrine-jobs');
+      const cat = (r && r.category) || classifyDbFailure(r || {});
+      return warnCheck('doctrine-jobs', cat, (r && r.detail) || (r && r.error) || 'unreachable (best-effort)');
+    } catch (err) {
+      return warnCheck('doctrine-jobs', classifyDbFailure(err), err && err.message ? err.message : String(err));
+    }
+  }
+  let pg;
+  try { pg = require('pg'); } catch (_e) { pg = null; }
+  if (!pg) return warnCheck('doctrine-jobs', CATEGORIES.INIT_FAILED, 'pg module not installed');
+
+  const dbUrl = (config && config.rag && config.rag.databaseUrl) || process.env.DATABASE_URL;
+  if (!dbUrl) return warnCheck('doctrine-jobs', CATEGORIES.INIT_FAILED, 'DATABASE_URL not set');
+
+  const pool = new pg.Pool({ connectionString: dbUrl, max: 1, connectionTimeoutMillis: 3000 });
+  try {
+    const res = await pool.query(
+      `select started_at, status from doctrine_jobs order by started_at desc limit 1`
+    );
+    if (res.rows.length === 0) {
+      return passCheck('doctrine-jobs'); // table exists, zero runs yet (fresh migration) — not a flatline
+    }
+    const last = res.rows[0];
+    const ageHours = (Date.now() - new Date(last.started_at).getTime()) / (1000 * 60 * 60);
+    if (ageHours > DOCTRINE_FLATLINE_HOURS) {
+      return warnCheck(
+        'doctrine-jobs',
+        CATEGORIES.DEPENDENCY_DOWN,
+        `no doctrine-scan run in ${ageHours.toFixed(1)}h (last status='${last.status}' at ${last.started_at}) — check the doctrine-scan cron job / Edge Function logs`
+      );
+    }
+    return passCheck('doctrine-jobs');
+  } catch (err) {
+    if (err && err.code === '42P01') return passCheck('doctrine-jobs'); // not migrated yet — not a health problem
+    const cat = classifyDbFailure(err);
+    return warnCheck('doctrine-jobs', cat, (err && err.message ? err.message : String(err)) + directEndpointSuffix(dbUrl));
+  } finally {
+    try { await pool.end(); } catch (_e) { /* ignore */ }
+  }
+}
+
+async function checkDoctrineProposedStale(config, options) {
+  if (options && typeof options._doctrineProposedProbe === 'function') {
+    try {
+      const r = await options._doctrineProposedProbe();
+      if (r && r.ok) return passCheck('doctrine-proposed-stale');
+      const cat = (r && r.category) || classifyDbFailure(r || {});
+      return warnCheck('doctrine-proposed-stale', cat, (r && r.detail) || (r && r.error) || 'unreachable (best-effort)');
+    } catch (err) {
+      return warnCheck('doctrine-proposed-stale', classifyDbFailure(err), err && err.message ? err.message : String(err));
+    }
+  }
+  let pg;
+  try { pg = require('pg'); } catch (_e) { pg = null; }
+  if (!pg) return warnCheck('doctrine-proposed-stale', CATEGORIES.INIT_FAILED, 'pg module not installed');
+
+  const dbUrl = (config && config.rag && config.rag.databaseUrl) || process.env.DATABASE_URL;
+  if (!dbUrl) return warnCheck('doctrine-proposed-stale', CATEGORIES.INIT_FAILED, 'DATABASE_URL not set');
+
+  const pool = new pg.Pool({ connectionString: dbUrl, max: 1, connectionTimeoutMillis: 3000 });
+  try {
+    const res = await pool.query(
+      `select count(*)::int as n from doctrine_registry
+        where status = 'proposed' and updated_at < now() - make_interval(days => $1)`,
+      [DOCTRINE_PROPOSED_STALE_DAYS]
+    );
+    const n = (res.rows[0] && res.rows[0].n) || 0;
+    if (n > 0) {
+      return warnCheck(
+        'doctrine-proposed-stale',
+        CATEGORIES.DEPENDENCY_DOWN,
+        `${n} doctrine_registry row(s) stuck in status='proposed' for >${DOCTRINE_PROPOSED_STALE_DAYS}d — an open PR may need review (\`termdeck doctrine list --status=proposed\`)`
+      );
+    }
+    return passCheck('doctrine-proposed-stale');
+  } catch (err) {
+    if (err && err.code === '42P01') return passCheck('doctrine-proposed-stale'); // not migrated yet
+    const cat = classifyDbFailure(err);
+    return warnCheck('doctrine-proposed-stale', cat, (err && err.message ? err.message : String(err)) + directEndpointSuffix(dbUrl));
+  } finally {
+    try { await pool.end(); } catch (_e) { /* ignore */ }
+  }
+}
+
 // ── Aggregator ──────────────────────────────────────────────────────────────
 
 async function getFullHealth(config = {}, options = {}) {
@@ -540,7 +638,8 @@ async function getFullHealth(config = {}, options = {}) {
   // the outer catches below. The fence tests need a way to simulate "a
   // probe's path threw before its own catch caught it" — i.e., the
   // belt-and-suspenders outer catch. Set `_throwIn` to one of
-  // `'sqlite' | 'pg' | 'webhook' | 'rumen-pool'` to inject a synthetic
+  // `'sqlite' | 'pg' | 'webhook' | 'rumen-pool' | 'doctrine-jobs' |
+  // 'doctrine-proposed-stale'` to inject a synthetic
   // throw at the corresponding outer-try entry. Never set in production —
   // ignored if the value is falsy.
   const throwIn = options._throwIn || null;
@@ -597,6 +696,28 @@ async function getFullHealth(config = {}, options = {}) {
     pool = warnCheck('rumen-pool', cat, err && err.message ? err.message : String(err));
   }
   checks.push(pool);
+
+  // 10. Doctrine-scan flatline (warn) — Sprint 79 T3
+  let doctrineJobs;
+  try {
+    if (throwIn === 'doctrine-jobs') throw synth('doctrine-jobs');
+    doctrineJobs = await checkDoctrineJobs(config, options);
+  }
+  catch (err) {
+    doctrineJobs = warnCheck('doctrine-jobs', classifyDbFailure(err), err && err.message ? err.message : String(err));
+  }
+  checks.push(doctrineJobs);
+
+  // 11. Doctrine proposed>7d staleness (warn) — Sprint 79 T3
+  let doctrineProposed;
+  try {
+    if (throwIn === 'doctrine-proposed-stale') throw synth('doctrine-proposed-stale');
+    doctrineProposed = await checkDoctrineProposedStale(config, options);
+  }
+  catch (err) {
+    doctrineProposed = warnCheck('doctrine-proposed-stale', classifyDbFailure(err), err && err.message ? err.message : String(err));
+  }
+  checks.push(doctrineProposed);
 
   const ok = checks
     .filter((c) => REQUIRED_CHECKS.has(c.name))

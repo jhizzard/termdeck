@@ -394,7 +394,12 @@ async function runRumenAudit(projectRef, secrets, dryRun) {
 // placeholder (its `npm:@jhizzard/rumen@<ver>` import is rewritten at deploy
 // time). graph-inference pins its own deps (`npm:postgres@3.4.4`) and is
 // copied verbatim. If a future function adds a placeholder, list it here.
-const FUNCTIONS_WITH_VERSION_PLACEHOLDER = new Set(['rumen-tick']);
+// Sprint 79 T3 (T4-CODEX AUDIT-FAIL 12:26 ET): doctrine-scan's wrapper
+// (rumen `supabase/functions/doctrine-scan/index.ts`) imports
+// `npm:@jhizzard/rumen@<ver>` the same way rumen-tick does — added here so
+// `termdeck init --rumen` rewrites it to the installed version instead of
+// deploying a hardcoded stale pin.
+const FUNCTIONS_WITH_VERSION_PLACEHOLDER = new Set(['rumen-tick', 'doctrine-scan']);
 
 // Sprint 51.6 T3 — `projectRef` is required and passed explicitly to every
 // `supabase functions deploy` invocation as `--project-ref <ref>`. Brad's
@@ -790,13 +795,26 @@ async function testFunction(projectRef, secrets, dryRun) {
 // migration 003 (graph-inference-tick) shipped bundled but unsubstituted
 // and unscheduled, which is part of why Sprint 38 close-out left the
 // graph-inference cron disabled.
+//
+// Sprint 79 T3 (seam (b), ORCH ruling): 005_doctrine_scan_schedule.sql (bundle
+// name — mirrors 003_graph_inference_schedule.sql's <function>_schedule
+// convention; rumen's own repo copy is migrations/005_pg_cron_doctrine_scan.sql,
+// vendored here byte-identical modulo filename) adds the doctrine-scan
+// schedule (daily 03:30 UTC, after graph-inference's 03:00 — density
+// clustering consumes that day's memory_relationships edges). Same
+// `<project-ref>` + `rumen_service_role_key` Vault-secret shape as 002/003 —
+// no new secret to provision. 004_doctrine_registry.sql (the doctrine_registry
+// / doctrine_jobs TABLES) is bundled alongside this but is NOT a schedule
+// migration — it has no cron.schedule call, so it is applied via the same
+// general migration-apply enumeration 001_rumen_tables.sql uses, not this list.
 const SCHEDULE_MIGRATIONS = [
   { matcher: /002.*pg_cron/, label: '002_pg_cron_schedule (rumen-tick)' },
-  { matcher: /003.*graph_inference/, label: '003_graph_inference_schedule (graph-inference-tick)' }
+  { matcher: /003.*graph_inference/, label: '003_graph_inference_schedule (graph-inference-tick)' },
+  { matcher: /005.*doctrine_scan/, label: '005_doctrine_scan_schedule (doctrine-scan)' }
 ];
 
 async function applySchedule(projectRef, secrets, dryRun) {
-  step('Applying pg_cron schedules (rumen-tick + graph-inference-tick)...');
+  step('Applying pg_cron schedules (rumen-tick + graph-inference-tick + doctrine-scan)...');
   if (dryRun) { ok('(dry-run)'); return true; }
 
   const files = migrations.listRumenMigrations();
@@ -962,7 +980,9 @@ Next steps:
 ${vaultLine}
 ${llmLine}
   Monitor rumen jobs: psql "$DATABASE_URL" -c "SELECT * FROM rumen_jobs ORDER BY started_at DESC LIMIT 5"
-  Rumen insights flow back into Mnestra's memory_items via rumen_insights.
+  Rumen surfaces insights in rumen_insights (read-only — nothing auto-writes them into
+  memory_items). Recurring cross-project lessons can be elevated to ratified, recallable
+  doctrine via 'termdeck doctrine list|ratify' (Sprint 79).
   graph-inference fills memory_relationships edges nightly (cosine similarity ≥ 0.85).
   TermDeck's Flashback will surface cross-project patterns automatically.
 `);

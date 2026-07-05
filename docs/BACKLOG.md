@@ -2,7 +2,7 @@
 
 Single source of truth for everything queued beyond the active sprint set.
 
-**Last updated:** 2026-07-01 (Sprint 80 "Brad Queue" closed FINAL-VERDICT GREEN — BR-1 + INCIDENT pty-crash fix + FR-1..6 shipped; v1.12.0 / stack-1.10.0 wave staged; rumen 0.6.1 live. Sprint 79 elevation-capture remains next in queue, never dispatched).
+**Last updated:** 2026-07-05 (Sprint 79 "elevation capture" closed FINAL-VERDICT GREEN on code/tests — doctrine elevation loop's second half: engram capture gates 028/029, rumen doctrine-scan 004/005, termdeck materialize+ratify. Wave: mnestra 0.8.0 / rumen 0.7.0 / termdeck 1.13.0 / stack 1.11.0. Live-landedness pending ORCH migration apply. **Next: Sprint 80** — advise→gate enforcement tiers + hook→ingest_capture wiring + web-write activation, ULTRAPLAN §6; worker terminals move to Opus 4.8.).
 
 Active sprint plans live in `docs/sprint-N-<name>/`. When an item gets scoped into a sprint, move it from this file into that sprint's `PLANNING.md`. Don't leave it in two places — the sprint plan becomes authoritative once an item is in flight. New items surface from external feedback (Brad, future external testers), incident postmortems, and sprint close-out deferrals — add them here in the right category. Don't create ad-hoc roadmap docs; consolidate.
 

@@ -453,6 +453,104 @@ test('outer catch fence: invariant — no non-pass check is ever missing categor
   } finally { console.warn = origWarn; }
 });
 
+// ── Sprint 79 T3: doctrine-scan flatline + proposed>7d staleness ──────────
+
+test('doctrine-jobs: no runs recorded → warn with a flatline detail', async () => {
+  const report = await getFullHealth(
+    { rag: {} },
+    {
+      refresh: true,
+      db: { prepare: () => ({ get: () => ({ ok: 1 }) }) },
+      databaseUrl: 'postgres://fake',
+      _doctrineJobsProbe: async () => ({ ok: false, category: CATEGORIES.DEPENDENCY_DOWN, detail: 'no doctrine-scan run in 96.0h (last status=\'done\' at 2026-07-01T03:30:00.000Z)' }),
+    },
+  );
+  const c = report.checks.find((x) => x.name === 'doctrine-jobs');
+  assert.equal(c.status, 'warn');
+  assert.equal(c.category, CATEGORIES.DEPENDENCY_DOWN);
+  assert.match(c.detail, /doctrine-scan run/);
+  // Warn-only: never flips report.ok (doctrine-jobs is not in REQUIRED_CHECKS).
+});
+
+test('doctrine-jobs: healthy recent run → pass', async () => {
+  const report = await getFullHealth(
+    { rag: {} },
+    {
+      refresh: true,
+      db: { prepare: () => ({ get: () => ({ ok: 1 }) }) },
+      databaseUrl: 'postgres://fake',
+      _doctrineJobsProbe: async () => ({ ok: true }),
+    },
+  );
+  const c = report.checks.find((x) => x.name === 'doctrine-jobs');
+  assert.equal(c.status, 'pass');
+});
+
+test('doctrine-proposed-stale: N stale rows → warn naming the CLI remediation', async () => {
+  const report = await getFullHealth(
+    { rag: {} },
+    {
+      refresh: true,
+      db: { prepare: () => ({ get: () => ({ ok: 1 }) }) },
+      databaseUrl: 'postgres://fake',
+      _doctrineProposedProbe: async () => ({ ok: false, category: CATEGORIES.DEPENDENCY_DOWN, detail: "3 doctrine_registry row(s) stuck in status='proposed' for >7d — an open PR may need review (`termdeck doctrine list --status=proposed`)" }),
+    },
+  );
+  const c = report.checks.find((x) => x.name === 'doctrine-proposed-stale');
+  assert.equal(c.status, 'warn');
+  assert.match(c.detail, /termdeck doctrine list/);
+});
+
+test('doctrine-jobs / doctrine-proposed-stale: outer catch fence → warn with category (never throws report-wide)', async () => {
+  const origWarn = console.warn; console.warn = () => {};
+  try {
+    for (const throwIn of ['doctrine-jobs', 'doctrine-proposed-stale']) {
+      const report = await getFullHealth(
+        { rag: {} },
+        {
+          refresh: true,
+          db: { prepare: () => ({ get: () => ({ ok: 1 }) }) },
+          databaseUrl: 'postgres://fake',
+          _throwIn: throwIn,
+        },
+      );
+      const c = report.checks.find((x) => x.name === throwIn);
+      assert.equal(c.status, 'warn', `${throwIn} outer-catch must degrade to warn, not throw report-wide`);
+      assert.ok(c.category, `${throwIn} outer catch must attach a category`);
+    }
+  } finally { console.warn = origWarn; }
+});
+
+test('doctrine checks are WARN-only: absent from REQUIRED_CHECKS, never flip report.ok', async () => {
+  assert.ok(!REQUIRED_CHECKS.has('doctrine-jobs'));
+  assert.ok(!REQUIRED_CHECKS.has('doctrine-proposed-stale'));
+  const report = await getFullHealth(
+    { rag: {} },
+    {
+      refresh: true,
+      db: { prepare: () => ({ get: () => ({ ok: 1 }) }) },
+      databaseUrl: 'postgres://fake',
+      _doctrineJobsProbe: async () => ({ ok: false, category: CATEGORIES.DEPENDENCY_DOWN, detail: 'flatline' }),
+      _doctrineProposedProbe: async () => ({ ok: false, category: CATEGORIES.DEPENDENCY_DOWN, detail: 'stale' }),
+      _pgClient: {
+        query: async (sql) => {
+          if (/pg_extension/.test(sql)) return { rows: [{ ok: true }] };
+          if (/information_schema\.columns/.test(sql)) return { rows: [{ ok: true }] };
+          if (/vault\.decrypted_secrets/.test(sql)) return { rows: [{ ok: true }] };
+          if (/cron\.job/.test(sql)) return { rows: [{ active: true }] };
+          return { rows: [{ ok: true }] };
+        },
+        end: async () => {},
+      },
+    },
+  );
+  const doctrineChecks = report.checks.filter((c) => c.name.startsWith('doctrine-'));
+  assert.equal(doctrineChecks.length, 2);
+  assert.ok(doctrineChecks.every((c) => c.status === 'warn'));
+  // Both doctrine checks warn, but neither is required, so report.ok can
+  // still be true if every REQUIRED check independently passed.
+});
+
 // ── Required-checks contract preserved ────────────────────────────────────
 
 test('REQUIRED_CHECKS still contains the seven names dashboards count on', () => {

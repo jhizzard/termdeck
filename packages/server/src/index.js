@@ -1321,6 +1321,19 @@ function createServer(config) {
     console.log('[transcript] Writer disabled (no DATABASE_URL or transcripts.enabled=false)');
   }
 
+  // Sprint 79 T3 — doctrine-sync: default-OFF worktree poller that
+  // materializes rumen's drafted doctrine_registry rows into a termdeck PR.
+  // maybeStart() itself checks TERMDECK_DOCTRINE_REPO + runs the boot
+  // preflight (git repo + expected remote + gh auth + gitleaks present) and
+  // no-ops with one log line when either is missing — required so this is
+  // lazy-required here rather than at module load, matching the cost-when-
+  // unused convention every other optional feature in this file follows.
+  try {
+    require('./doctrine-sync').maybeStart();
+  } catch (err) {
+    console.warn('[doctrine-sync] failed to initialize (fail-soft):', err && err.message);
+  }
+
   // Wire RAG to session events
   sessions.on('session:created', (s) => rag.onSessionCreated(s));
   sessions.on('session:removed', (s) => rag.onSessionEnded(s));

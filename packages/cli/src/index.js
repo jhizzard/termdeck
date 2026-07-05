@@ -56,7 +56,7 @@ function maybeBootstrapAndDetach() {
     return false;
   }
   const argv = process.argv.slice(2);
-  const SKIP_SUBCOMMANDS = new Set(['init', 'forge', 'doctor', 'stack']);
+  const SKIP_SUBCOMMANDS = new Set(['init', 'forge', 'doctor', 'stack', 'doctrine']);
   if (argv.length > 0 && SKIP_SUBCOMMANDS.has(argv[0])) return false;
   if (process.stdout.isTTY || process.stderr.isTTY) return false;
   const argvSet = new Set(argv);
@@ -340,12 +340,24 @@ if (args[0] === 'doctor') {
   return;
 }
 
+// `termdeck doctrine` — Sprint 79 T3: list|ratify|reject|promote the
+// elevation pipeline's staged doctrine rows (materialize side is the
+// default-OFF packages/server/src/doctrine-sync.js background timer).
+if (args[0] === 'doctrine') {
+  const doctrineCli = require(path.join(__dirname, 'doctrine-cli.js'));
+  doctrineCli(args.slice(1)).then((code) => process.exit(code || 0)).catch((err) => {
+    console.error('[cli] doctrine failed:', err && err.stack || err);
+    process.exit(2);
+  });
+  return;
+}
+
 // Sprint 24: when `termdeck` is invoked with no subcommand AND a configured
 // stack is detected, route through stack.js so users don't have to remember
 // the `stack` subcommand. `--no-stack` is the explicit opt-out.
 const { shouldAutoOrchestrate } = require(path.join(__dirname, 'auto-orchestrate.js'));
 
-const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack', 'doctor']);
+const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack', 'doctor', 'doctrine']);
 const noStackIdx = args.indexOf('--no-stack');
 const noStackRequested = noStackIdx !== -1;
 if (noStackRequested) args.splice(noStackIdx, 1); // strip before flag parsing
@@ -404,6 +416,8 @@ for (let i = 0; i < args.length; i++) {
     termdeck init --project NAME  Scaffold a new project with CLAUDE.md + orchestration docs (--dry-run, --force)
     termdeck forge              Generate Claude skills from memories (experimental)
     termdeck doctor             Diagnose stack — npm versions + Supabase schema (use --no-schema to skip the DB probe)
+    termdeck doctrine list|ratify|reject|promote <id>
+                                Elevation pipeline: review/ratify rumen-detected doctrine candidates (operator-local)
 
   Keyboard shortcuts (in browser):
     Ctrl+Shift+N                Focus prompt bar

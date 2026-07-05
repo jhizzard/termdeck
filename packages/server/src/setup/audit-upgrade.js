@@ -160,6 +160,33 @@ const PROBES = Object.freeze([
     presentWhen: 'rowReturned'
   },
   {
+    // Sprint 79 T3 — doctrine-scan's staging tables (doctrine_registry +
+    // doctrine_jobs, both created by the same migration). A user who upgrades
+    // TermDeck but only runs `init --rumen` re-runs (not a fresh install)
+    // needs this probe: applyRumenTables() only ever applies 001_rumen_tables
+    // on the fresh-install path, so 004 would otherwise never land on an
+    // existing project. Tables-only probe (no cron dependency), so it's
+    // ordered BEFORE the cron probes per this file's own dependency-ordering
+    // convention.
+    // T4-CODEX 12:52 ET tightening catch: both tables come from the SAME
+    // migration file, so a partial install (e.g. doctrine_registry present,
+    // doctrine_jobs somehow missing) must still be treated as "apply 004" —
+    // checking only one table's presence would mark this probe satisfied
+    // while doctrine_jobs stays absent. `having count(*) = 2` (a valid
+    // degenerate GROUP BY over the whole result set) returns a row only when
+    // BOTH table names are found; missing either one means zero rows, so
+    // `presentWhen: 'rowReturned'` correctly reports "absent, apply 004".
+    name: 'doctrine_registry + doctrine_jobs tables',
+    kind: 'rumen',
+    migrationFile: '004_doctrine_registry.sql',
+    probeSql:
+      "select 1 as present from information_schema.tables " +
+      "where table_schema = 'public' " +
+      "  and table_name in ('doctrine_registry', 'doctrine_jobs') " +
+      "having count(*) = 2",
+    presentWhen: 'rowReturned'
+  },
+  {
     name: 'rumen-tick cron schedule',
     kind: 'rumen',
     migrationFile: '002_pg_cron_schedule.sql',
@@ -175,6 +202,19 @@ const PROBES = Object.freeze([
     templated: true,
     probeSql:
       "select 1 as present from cron.job where jobname = 'graph-inference-tick' limit 1",
+    presentWhen: 'rowReturned'
+  },
+  {
+    // Sprint 79 T3 — doctrine-scan cron (03:30 UTC, after graph-inference's
+    // 03:00). Depends on the doctrine_registry table probe above having
+    // applied 004 first (same ordering rationale as rumen-tick/graph-
+    // inference depending on migration 001).
+    name: 'doctrine-scan cron schedule',
+    kind: 'rumen',
+    migrationFile: '005_doctrine_scan_schedule.sql',
+    templated: true,
+    probeSql:
+      "select 1 as present from cron.job where jobname = 'doctrine-scan' limit 1",
     presentWhen: 'rowReturned'
   },
   // Sprint 51.6 T3 — Brad's Bug D: function-existence probes (cron schedule
@@ -249,6 +289,19 @@ const PROBES = Object.freeze([
     importPattern: /npm:postgres@(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)/,
     expectedFrom: 'bundledSource',
     bundledPath: 'packages/server/src/setup/rumen/functions/graph-inference/index.ts'
+  },
+  {
+    // Sprint 79 T3 — doctrine-scan uses the same __RUMEN_VERSION__ templated
+    // import as rumen-tick (init-rumen.js FUNCTIONS_WITH_VERSION_PLACEHOLDER),
+    // so it resolves against the npm registry the same way, not the bundled
+    // source (which still carries the placeholder literal, not a real pin).
+    name: 'doctrine-scan deployed pin matches current @jhizzard/rumen',
+    kind: 'rumen',
+    probeKind: 'edgeFunctionPin',
+    functionSlug: 'doctrine-scan',
+    importPattern: /npm:@jhizzard\/rumen@(\d+\.\d+\.\d+(?:-[a-z0-9.]+)?)/,
+    expectedFrom: 'npmRegistry',
+    npmRegistryPkg: '@jhizzard/rumen'
   }
 ]);
 

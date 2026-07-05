@@ -1,3 +1,13 @@
+## [1.13.0] - 2026-07-05
+
+### Added — doctrine materialize + ratify (Sprint 79 T3)
+- **`packages/server/src/doctrine-sync.js`** (CJS, default-OFF). Registers an hourly unref'd poller ONLY when `TERMDECK_DOCTRINE_REPO` is set AND a boot preflight passes (git working tree + origin remote contains "termdeck" + `gh auth status` + gitleaks binary present) — so Brad's install never runs it. Operates in a `git worktree add` under `~/.termdeck/doctrine-work/` (never touches the live checkout or leaves it on a doctrine branch), scrubs via `doctrine/index.js::screenEntries` (gitleaks shell-out, zero hardcoded forbidden strings), renders `docs/doctrine/D-<id>-<slug>.md` + appends `doctrine/registry.jsonl` (repo-status `proposed`), and opens a PR. Branch/doc/id are deterministic from the row UUID (rumen `doctrine_registry` has no `pr_url` column), so `ratify` recomputes them later.
+- **`termdeck doctrine list|ratify|reject|promote`** (`packages/cli/src/doctrine-cli.js`). `ratify` verifies the PR merged via `gh pr view --json state` before flipping status, then **direct-INSERTs** a recallable `source_type='doctrine'` memory row (embedding → `BEGIN` → `insert into memory_items` → status update → `COMMIT` → registry → `elevated_to` edges; rolls back without commit on insert failure; explicit `stripPrivate`; **never** routes through `memoryRemember`, whose dedup would skip/corrupt it). Status-enum bridge: a rumen `ratified` row materializes to repo-status `active`/`proposed`, mapped at the boundary (repo enum unchanged).
+- **Installer wiring.** Bundled rumen migrations `004_doctrine_registry.sql` + `005_doctrine_scan_schedule.sql`; `audit-upgrade.js` applies the doctrine **tables (004) BEFORE the schedule (005)**; `init-rumen.js` `SCHEDULE_MIGRATIONS` + `FUNCTIONS_WITH_VERSION_PLACEHOLDER` gain `doctrine-scan` (`__RUMEN_VERSION__`-templated wrapper). `health.js` gains doctrine-flatline + `proposed>7d` probes.
+
+### Notes
+- Sprint 79 T3, FINAL-VERDICT GREEN on code/tests (Codex auditor); terminal live-landedness pending ORCH apply of engram 028/029 + rumen 004/005. Root `npm test` **970** (0 fail, 5 skip); doctrine tests **36/36**. Companions: `@jhizzard/mnestra@0.8.0` + `@jhizzard/rumen@0.7.0` + `@jhizzard/termdeck-stack@1.11.0`.
+
 ## [1.12.0] - 2026-07-01
 
 ### Fixed
