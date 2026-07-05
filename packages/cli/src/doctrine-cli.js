@@ -256,22 +256,22 @@ async function cmdList(client, flags) {
 
 async function cmdRatify(client, repoPath, doctrine, id, opts = {}) {
   const row = await fetchRowById(client, id);
-  if (!row) { console.error(`No doctrine_registry row with id '${id}'.`); return 1; }
+  if (!row) { console.error(`[doctrine] No doctrine_registry row with id '${id}'.`); return 1; }
 
-  if (row.status === 'ratified') { console.error(`Row ${id} is already ratified.`); return 1; }
+  if (row.status === 'ratified') { console.error(`[doctrine] Row ${id} is already ratified.`); return 1; }
   if (row.status !== 'proposed') {
-    console.error(`Row ${id} has status '${row.status}' — ratify requires 'proposed' (has doctrine-sync materialized it yet?).`);
+    console.error(`[doctrine] Row ${id} has status '${row.status}' — ratify requires 'proposed' (has doctrine-sync materialized it yet?).`);
     return 1;
   }
 
   const lookup = findPrForRow(repoPath, row, opts);
-  if (!lookup.ok) { console.error(`Could not look up the PR: ${lookup.reason}`); return 2; }
+  if (!lookup.ok) { console.error(`[doctrine] Could not look up the PR: ${lookup.reason}`); return 2; }
   if (!lookup.pr) {
-    console.error(`No PR found for branch '${lookup.branch}' — has doctrine-sync materialized + pushed it?`);
+    console.error(`[doctrine] No PR found for branch '${lookup.branch}' — has doctrine-sync materialized + pushed it?`);
     return 1;
   }
   if (lookup.pr.state !== 'MERGED') {
-    console.error(`PR #${lookup.pr.number} (${lookup.pr.url}) is ${lookup.pr.state}, not MERGED — refusing to ratify until it merges.`);
+    console.error(`[doctrine] PR #${lookup.pr.number} (${lookup.pr.url}) is ${lookup.pr.state}, not MERGED — refusing to ratify until it merges.`);
     return 1;
   }
 
@@ -292,7 +292,7 @@ async function cmdRatify(client, repoPath, doctrine, id, opts = {}) {
   try {
     embedding = await docSync.generateEmbedding(content, { apiKey: secrets.OPENAI_API_KEY });
   } catch (err) {
-    console.error(`Ratify ABORTED: could not generate an embedding (${err.message}). Nothing was mutated — row ${id} stays 'proposed'. Fix OPENAI_API_KEY / connectivity and re-run \`termdeck doctrine ratify ${id}\`.`);
+    console.error(`[doctrine] Ratify ABORTED: could not generate an embedding (${err.message}). Nothing was mutated — row ${id} stays 'proposed'. Fix OPENAI_API_KEY / connectivity and re-run \`termdeck doctrine ratify ${id}\`.`);
     return 2;
   }
 
@@ -327,7 +327,7 @@ async function cmdRatify(client, repoPath, doctrine, id, opts = {}) {
     await client.query('COMMIT');
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_e) { /* best-effort */ }
-    console.error(`Ratify ABORTED: memory_items insert / status flip failed (${err.message}) — rolled back, nothing mutated. Row ${id} stays 'proposed'.`);
+    console.error(`[doctrine] Ratify ABORTED: memory_items insert / status flip failed (${err.message}) — rolled back, nothing mutated. Row ${id} stays 'proposed'.`);
     return 2;
   }
 
@@ -377,9 +377,9 @@ async function cmdRatify(client, repoPath, doctrine, id, opts = {}) {
 
 async function cmdReject(client, repoPath, id, flags, opts = {}) {
   const row = await fetchRowById(client, id);
-  if (!row) { console.error(`No doctrine_registry row with id '${id}'.`); return 1; }
-  if (row.status === 'ratified') { console.error(`Row ${id} is already ratified — reject does not apply (use a future 'deprecate' path instead).`); return 1; }
-  if (row.status === 'rejected') { console.error(`Row ${id} is already rejected.`); return 1; }
+  if (!row) { console.error(`[doctrine] No doctrine_registry row with id '${id}'.`); return 1; }
+  if (row.status === 'ratified') { console.error(`[doctrine] Row ${id} is already ratified — reject does not apply (use a future 'deprecate' path instead).`); return 1; }
+  if (row.status === 'rejected') { console.error(`[doctrine] Row ${id} is already rejected.`); return 1; }
 
   const reason = flags.reason ? String(flags.reason) : 'rejected via termdeck doctrine reject';
 
@@ -404,9 +404,9 @@ async function cmdReject(client, repoPath, id, flags, opts = {}) {
 
 async function cmdPromote(client, repoPath, doctrine, id) {
   const row = await fetchRowById(client, id);
-  if (!row) { console.error(`No doctrine_registry row with id '${id}'.`); return 1; }
+  if (!row) { console.error(`[doctrine] No doctrine_registry row with id '${id}'.`); return 1; }
   if (row.status !== 'ratified') {
-    console.error(`Row ${id} has status '${row.status}' — promote requires 'ratified' (run ratify first).`);
+    console.error(`[doctrine] Row ${id} has status '${row.status}' — promote requires 'ratified' (run ratify first).`);
     return 1;
   }
 
@@ -425,10 +425,10 @@ async function cmdPromote(client, repoPath, doctrine, id) {
       promoted_at: new Date().toISOString(),
     }));
   } catch (err) {
-    console.error(`Registry update failed: ${err.message}`);
+    console.error(`[doctrine] Registry update failed: ${err.message}`);
     return 2;
   }
-  if (!regResult.ok) { console.error(regResult.reason); return 2; }
+  if (!regResult.ok) { console.error(`[doctrine] `); return 2; }
 
   console.log(`Promoted ${id}: registry entry '${entryId}' now declares enforcement.surface='preToolUse-deny', max_severity='block' (staged for the Sprint 80 gate mechanism — nothing enforces this yet).`);
   return 0;
@@ -448,20 +448,20 @@ module.exports = async function doctrineCli(argv) {
   }
 
   if (!['list', 'ratify', 'reject', 'promote'].includes(sub)) {
-    console.error(`Unknown subcommand '${sub}'.`);
+    console.error(`[doctrine] Unknown subcommand '${sub}'.`);
     process.stdout.write(HELP);
     return 1;
   }
 
   const repoPath = resolveRepoPath(flags);
   if (!repoPath) {
-    console.error('Could not resolve the termdeck repo path — set TERMDECK_DOCTRINE_REPO, pass --repo <path>, or run from inside the repo.');
+    console.error('[doctrine] Could not resolve the termdeck repo path — set TERMDECK_DOCTRINE_REPO, pass --repo <path>, or run from inside the repo.');
     return 2;
   }
 
   const secrets = resolveSecrets();
   if (!secrets.DATABASE_URL) {
-    console.error('DATABASE_URL not set (checked process.env and ~/.termdeck/secrets.env).');
+    console.error('[doctrine] DATABASE_URL not set (checked process.env and ~/.termdeck/secrets.env).');
     return 2;
   }
 
@@ -469,7 +469,7 @@ module.exports = async function doctrineCli(argv) {
   try {
     doctrine = require(path.join(repoPath, 'doctrine', 'index.js'));
   } catch (err) {
-    console.error(`Could not load doctrine/index.js from ${repoPath}: ${err.message}`);
+    console.error(`[doctrine] Could not load doctrine/index.js from ${repoPath}: ${err.message}`);
     return 2;
   }
 
@@ -477,14 +477,14 @@ module.exports = async function doctrineCli(argv) {
   try {
     client = await connectPg(secrets.DATABASE_URL);
   } catch (err) {
-    console.error(`Could not connect to DATABASE_URL: ${err.message}`);
+    console.error(`[doctrine] Could not connect to DATABASE_URL: ${err.message}`);
     return 2;
   }
 
   try {
     if (sub === 'list') return await cmdList(client, flags);
     const id = positional[1];
-    if (!id) { console.error(`Usage: termdeck doctrine ${sub} <id>`); return 1; }
+    if (!id) { console.error(`[doctrine] Usage: termdeck doctrine ${sub} <id>`); return 1; }
     if (sub === 'ratify') return await cmdRatify(client, repoPath, doctrine, id, { secrets });
     if (sub === 'reject') return await cmdReject(client, repoPath, id, flags, { secrets });
     if (sub === 'promote') return await cmdPromote(client, repoPath, doctrine, id);
