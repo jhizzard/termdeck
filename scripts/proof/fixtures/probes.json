@@ -1,0 +1,63 @@
+{
+  "_meta": {
+    "frozen": true,
+    "purpose": "Cold-vs-warm recall→reinjection proof. Probes chosen A PRIORI (before any run) to be memory-resident TermDeck facts a cold model cannot know from training, plus one deliberate general-knowledge probe to demonstrate the harness reports no-delta honestly. Public-safe: no PII, no third-party personal facts, none of the forbidden internal identifiers. Selection criteria + provenance: scripts/proof/fixtures/README.md.",
+    "checksum_note": "Run `node scripts/proof/cold-vs-warm.js --write-lock` to freeze; the harness prints a WARN if the live checksum drifts from probes.lock."
+  },
+  "probes": [
+    {
+      "id": "sprint-role-architecture",
+      "project": "termdeck",
+      "query": "canonical sprint role architecture 3+1+1 orchestrator workers auditor out-of-distribution",
+      "task": "State the canonical name of TermDeck's multi-agent sprint role architecture and its exact composition (how many orchestrators, workers, and auditors, and what model family the auditor uses).",
+      "factKey": { "all": ["3+1+1"] },
+      "rationale": "The '3+1+1' label (1 orchestrator + 3 Claude workers + 1 out-of-distribution non-Claude auditor) is a TermDeck-internal methodology decision recorded in Mnestra and the project CLAUDE.md. A base model has no way to know this exact term or composition — it is neither derivable from the code nor part of any training corpus. Expected: clear warm-win.",
+      "token_budget": 2000
+    },
+    {
+      "id": "recall-token-heuristic",
+      "project": "termdeck",
+      "query": "Mnestra recall estimateTokens formula token budget default recall.ts",
+      "task": "What exact formula does Mnestra's recall path (engram/src/recall.ts) use to estimate a memory's token cost, and what is the default token_budget?",
+      "factKey": { "all": ["ceil", "4"] },
+      "rationale": "The specific implementation (Math.ceil(text.length / 4), default token_budget 2000) lives in recall.ts. A cold model might guess the folk heuristic 'about 4 characters per token' but not the exact ceil(len/4) form the factKey requires. Expected: warm-win (the exact form is code-resident).",
+      "token_budget": 2000
+    },
+    {
+      "id": "pruning-moratorium",
+      "project": "termdeck",
+      "query": "recall telemetry pruning moratorium recall_count zero migration 027 sprint cycle",
+      "task": "In Mnestra's recall telemetry, how long must pass before anyone is allowed to act on a memory's recall_count being 0, and why?",
+      "factKey": { "any": ["1 full sprint cycle", "one full sprint cycle", "≥ 1 full sprint"] },
+      "rationale": "The pruning moratorium (act on recall_count=0 only after ≥ 1 full sprint cycle, because a fresh memory simply lacks telemetry) is a design decision in migration 027 and Mnestra memory. Not knowable from training. Expected: warm-win.",
+      "token_budget": 2000
+    },
+    {
+      "id": "precompact-mechanism",
+      "project": "termdeck",
+      "query": "auto-commit context compaction PreCompact hook memory-pre-compact pre_compact_snapshot",
+      "task": "How does TermDeck ensure a Claude Code panel's working state is captured to memory before context compaction? Name the concrete mechanism.",
+      "factKey": { "any": ["PreCompact", "memory-pre-compact", "pre_compact_snapshot"] },
+      "rationale": "The PreCompact harness hook (memory-pre-compact.js writing a source_type='pre_compact_snapshot' row) is a TermDeck implementation detail from Sprint 64. A cold model cannot name it. Expected: warm-win.",
+      "token_budget": 2000
+    },
+    {
+      "id": "recall-boost-default",
+      "project": "termdeck",
+      "query": "migration 032 recall_boost default value no-op bounded multiplier ranking",
+      "task": "In Mnestra migration 032, what is the default value of memory_items.recall_boost, and what is the effect on ranking at that default?",
+      "factKey": { "all": ["recall_boost", "1.0"] },
+      "rationale": "recall_boost NUMERIC NOT NULL DEFAULT 1.0 as a strict no-op multiplier is a Sprint 81 design decision (migration 032, not yet shipped at authoring time). Cannot be known from training. Expected: warm-win. Doubles as proof the harness surfaces facts about not-yet-shipped work that live only in memory/planning.",
+      "token_budget": 2000
+    },
+    {
+      "id": "rrf-meaning",
+      "project": null,
+      "query": "memory_hybrid_search reciprocal rank fusion RRF score band ranking",
+      "task": "What does 'RRF' stand for in the context of Mnestra's memory_hybrid_search ranking?",
+      "factKey": { "any": ["reciprocal rank fusion"] },
+      "rationale": "DELIBERATE no-delta control. RRF = Reciprocal Rank Fusion is general retrieval knowledge a capable model already has, so a live run should score this both-have → no-delta, proving the harness does not simply always report warm-wins. (Under the offline stub answerer, which knows nothing, this shows as a warm-win in the plumbing demo; the real answerer reveals the honest no-delta.)",
+      "token_budget": 2000
+    }
+  ]
+}

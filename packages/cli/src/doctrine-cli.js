@@ -24,6 +24,11 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const docSync = require(path.join(__dirname, '..', '..', 'server', 'src', 'doctrine-sync.js'));
+// Naming/render helpers live in the shared zero-dep doctrine/render.js (Sprint
+// 81 T4). Import them directly rather than through doctrine-sync's git/pg/timer
+// surface. (doctrine-sync still re-exports them, so this is a graph cleanup, not
+// a behavior change.) generateEmbedding/formatEmbedding/requirePg stay on docSync.
+const render = require(path.join(__dirname, '..', '..', '..', 'doctrine', 'render.js'));
 
 const HELP = `
 termdeck doctrine <subcommand>
@@ -207,7 +212,7 @@ function updateRegistryEntry(repoPath, entryId, doctrine, mutator) {
 // ---------------------------------------------------------------------------
 
 function findPrForRow(repoPath, row, opts = {}) {
-  const branch = docSync.branchNameFor(row);
+  const branch = render.branchNameFor(row);
   const ghBin = opts.ghBin || 'gh';
   const res = spawnSync(ghBin, ['pr', 'list', '--head', branch, '--state', 'all', '--json', 'url,number,state,title', '--limit', '1'],
     { cwd: repoPath, encoding: 'utf8', timeout: 15000 });
@@ -225,7 +230,7 @@ function findPrForRow(repoPath, row, opts = {}) {
 // ---------------------------------------------------------------------------
 
 function fmtRow(row) {
-  const id8 = docSync.shortId(row.id);
+  const id8 = render.shortId(row.id);
   const status = String(row.status || '').padEnd(9);
   const occ = String(row.occurrence_count != null ? row.occurrence_count : '').padStart(3);
   const projects = (Array.isArray(row.projects) ? row.projects.join(',') : '').slice(0, 24);
@@ -338,7 +343,7 @@ async function cmdRatify(client, repoPath, doctrine, id, opts = {}) {
   //    it), so if this file write fails, a re-run correctly refuses with
   //    "already ratified" instead of risking a second memory_items insert —
   //    the file can be repaired by hand without any data-integrity risk.
-  const entryId = docSync.registryEntryIdFor(row);
+  const entryId = render.registryEntryIdFor(row);
   let regResult;
   try {
     regResult = updateRegistryEntry(repoPath, entryId, doctrine, (entry) => ({ ...entry, status: 'active' }));
@@ -410,7 +415,7 @@ async function cmdPromote(client, repoPath, doctrine, id) {
     return 1;
   }
 
-  const entryId = docSync.registryEntryIdFor(row);
+  const entryId = render.registryEntryIdFor(row);
   let regResult;
   try {
     // AMEND-5: advise->gate promotion is a forward-declaration this sprint —

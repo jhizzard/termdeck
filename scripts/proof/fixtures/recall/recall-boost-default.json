@@ -1,0 +1,35 @@
+{
+  "_generated": "by build-recall-fixtures.js from recall-hits.json — do not hand-edit; re-run the generator",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000e1",
+      "source_type": "decision",
+      "project": "termdeck",
+      "score": 0.199,
+      "metadata": {
+        "importance": "important"
+      },
+      "content": "Migration 032 adds memory_items.recall_boost numeric NOT NULL DEFAULT 1.0 — a bounded multiplicative ranking factor that is a strict no-op at 1.0. Rumen's recall-feedback loop populates it; the ranking effect stays inert until then. The pruning moratorium still holds: never penalize recall_count=0."
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000e2",
+      "source_type": "architecture",
+      "project": "termdeck",
+      "score": 0.142,
+      "content": "recall_boost is written ONLY by Rumen (doctrine-clean, like doctrine_registry.occurrence_count); it never mutates memory content or embeddings, and memory_hybrid_search multiplies it into the score bounded so 1.0 changes nothing."
+    }
+  ],
+  "tokens_used": 143,
+  "text": "2 memories (143 tokens, project: termdeck):\n\n- (decision/important) Migration 032 adds memory_items.recall_boost numeric NOT NULL DEFAULT 1.0 — a bounded multiplicative ranking factor that is a strict no-op at 1.0. Rumen's recall-feedback loop populates it; the ranking effect stays inert until then. The pruning moratorium still holds: never penalize recall_count=0.\n- (architecture) recall_boost is written ONLY by Rumen (doctrine-clean, like doctrine_registry.occurrence_count); it never mutates memory content or embeddings, and memory_hybrid_search multiplies it into the score bounded so 1.0 changes nothing.",
+  "log": {
+    "recall_group_id": "rg-recall-boost-default",
+    "source_session_id": "proof-harness-fixture",
+    "source_agent": "proof-harness",
+    "token_budget": 2000,
+    "source_type_mix": {
+      "decision": 1,
+      "architecture": 1
+    },
+    "origin": "recall_log"
+  }
+}

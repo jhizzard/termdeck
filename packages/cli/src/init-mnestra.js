@@ -763,6 +763,17 @@ const HOOK_TIMEOUT_SECONDS = 30;
 const PRECOMPACT_HOOK_COMMAND = _hookCommandFor('memory-pre-compact.js');
 const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
 
+// Sprint 81 T3 — PreToolUse deny gates (advise→gate). Lockstep twin of the
+// stack-installer constants (INSTALLER-PITFALLS Class N: change both or
+// neither). Each gate refreshes via the same version-stamp gate the SessionEnd/
+// PreCompact hooks use; the file list is the single source of truth for the
+// refresh loop + settings merge.
+const PRETOOLUSE_GATE_FILES = [
+  'gate-publish-before-push.js',
+  'gate-migration-without-rls.js',
+];
+const PRETOOLUSE_HOOK_TIMEOUT_SECONDS = 20;
+
 function _isSessionEndHookEntry(entry) {
   return entry && typeof entry.command === 'string'
     && entry.command.includes('memory-session-end.js');
@@ -887,6 +898,65 @@ function _mergePreCompactHookEntry(settings, opts = {}) {
   return { settings, status: 'installed' };
 }
 
+// Sprint 81 T3 — PreToolUse gate entry detection + merge. Hoisted mirror of
+// the same-named helpers in packages/stack-installer/src/index.js (the
+// published @jhizzard/termdeck tarball ships only .../assets/hooks/**, not
+// .../src/**, so the wizard can't require() the installer's copy — same reason
+// _mergeSessionEndHookEntry/_mergePreCompactHookEntry are duplicated here).
+// Registers BOTH gate commands under a 'Bash'-matcher group; idempotent per-gate.
+function _isPreToolUseHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && PRETOOLUSE_GATE_FILES.some((f) => entry.command.includes(f));
+}
+
+function _mergePreToolUseHookEntry(settings, opts = {}) {
+  const files = opts.files || PRETOOLUSE_GATE_FILES;
+  const commandFor = opts.commandFor || _hookCommandFor;
+  const timeout = opts.timeout != null ? opts.timeout : PRETOOLUSE_HOOK_TIMEOUT_SECONDS;
+  const matcher = opts.matcher || 'Bash';
+
+  if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
+  if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
+
+  let tildeMigrated = false;
+  for (const group of settings.hooks.PreToolUse) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (_isPreToolUseHookEntry(e) && _isTildeHookCommand(e.command)) {
+        const f = files.find((ff) => e.command.includes(ff));
+        if (f) { e.command = commandFor(f); tildeMigrated = true; }
+      }
+    }
+  }
+
+  const present = new Set();
+  for (const group of settings.hooks.PreToolUse) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (!_isPreToolUseHookEntry(e)) continue;
+      const f = files.find((ff) => e.command.includes(ff));
+      if (f) present.add(f);
+    }
+  }
+
+  const missing = files.filter((f) => !present.has(f));
+  if (!missing.length) {
+    return { settings, status: tildeMigrated ? 'migrated-tilde-path' : 'already-installed' };
+  }
+
+  let bashGroup = settings.hooks.PreToolUse.find(
+    (g) => g && g.matcher === matcher && Array.isArray(g.hooks)
+  );
+  if (!bashGroup) {
+    bashGroup = { matcher, hooks: [] };
+    settings.hooks.PreToolUse.push(bashGroup);
+  }
+  for (const f of missing) {
+    bashGroup.hooks.push({ type: 'command', command: commandFor(f), timeout });
+  }
+  return { settings, status: tildeMigrated ? 'migrated-tilde-path' : 'installed' };
+}
+
 function _readSettingsJson(filePath) {
   if (!fs.existsSync(filePath)) {
     return { settings: {}, status: 'no-file' };
@@ -993,6 +1063,43 @@ function migrateSettingsJsonPreCompactEntry(opts = {}) {
   return { status: merge.status, settingsPath, backup };
 }
 
+// Sprint 81 T3 — settings.json wiring for the two PreToolUse deny gates.
+// Parallel to migrateSettingsJsonPreCompactEntry (new in this sprint, no
+// legacy migration branch). Idempotent + best-effort backup + no-change detect.
+function migrateSettingsJsonPreToolUseEntry(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const settingsPath = opts.settingsPath || SETTINGS_JSON_PATH;
+
+  const read = _readSettingsJson(settingsPath);
+  if (read.status === 'malformed') {
+    return { status: 'malformed', error: read.error, settingsPath };
+  }
+
+  const before = JSON.stringify(read.settings);
+  const merge = _mergePreToolUseHookEntry(read.settings);
+  const after = JSON.stringify(merge.settings);
+  const noChange = before === after;
+
+  if (merge.status === 'already-installed' || noChange) {
+    return { status: 'already-installed', settingsPath };
+  }
+
+  if (dryRun) {
+    return { status: 'would-' + merge.status, settingsPath };
+  }
+
+  let backup = null;
+  if (read.status === 'ok' || read.status === 'empty') {
+    const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+    backup = `${settingsPath}.bak.${stamp}`;
+    try { fs.copyFileSync(settingsPath, backup); }
+    catch (_) { backup = null; }
+  }
+
+  _writeSettingsJson(settingsPath, merge.settings);
+  return { status: merge.status, settingsPath, backup };
+}
+
 function runSettingsJsonMigration({ dryRun = false } = {}) {
   const debug = !!process.env.TERMDECK_DEBUG_WIREUP;
   step('Reconciling ~/.claude/settings.json hook event mapping (Stop → SessionEnd)...');
@@ -1056,6 +1163,33 @@ function runSettingsJsonMigration({ dryRun = false } = {}) {
   } catch (err) {
     process.stdout.write(`    ! PreCompact wiring failed: ${err.message} (continuing)\n`);
     if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration pre-compact threw: ${err && err.stack || err}\n`);
+  }
+
+  // Sprint 81 T3 — wire the two PreToolUse deny gates into settings.json.
+  // Brand new (no legacy migration); the merge creates the entries or reports
+  // already-installed. The gates are inert until promoted, so this is safe.
+  step('Reconciling ~/.claude/settings.json PreToolUse gate wiring...');
+  try {
+    const r = migrateSettingsJsonPreToolUseEntry({ dryRun });
+    if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration pretooluse return: ${JSON.stringify(r)}\n`);
+    if (r.status === 'already-installed') {
+      ok('already wired (PreToolUse gates)');
+    } else if (r.status === 'installed') {
+      ok(r.backup ? `installed (PreToolUse gates; backup: ${path.basename(r.backup)})` : 'installed (PreToolUse gates)');
+    } else if (r.status === 'migrated-tilde-path') {
+      ok(r.backup ? `rewrote legacy ~ gate command to absolute path (backup: ${path.basename(r.backup)})` : 'rewrote legacy ~ gate command to absolute path');
+    } else if (r.status === 'would-installed') {
+      ok('would install (PreToolUse gates) (dry-run)');
+    } else if (r.status === 'would-migrated-tilde-path') {
+      ok('would rewrite legacy ~ gate command to absolute path (dry-run)');
+    } else if (r.status === 'malformed') {
+      ok(`(skipped: settings.json malformed: ${r.error})`);
+    } else {
+      ok(`(${r.status})`);
+    }
+  } catch (err) {
+    process.stdout.write(`    ! PreToolUse gate wiring failed: ${err.message} (continuing)\n`);
+    if (debug) process.stderr.write(`[wire-up-debug] runSettingsJsonMigration pretooluse threw: ${err && err.stack || err}\n`);
   }
 }
 
@@ -1132,6 +1266,45 @@ function runHookRefresh({ dryRun = false } = {}) {
   } catch (err) {
     process.stdout.write(`    ! pre-compact hook refresh failed: ${err.message} (continuing)\n`);
     if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh pre-compact threw: ${err && err.stack || err}\n`);
+  }
+
+  // Sprint 81 T3 — also refresh the two PreToolUse deny gates. Same version-
+  // stamp gate (refreshBundledHookIfNewer is parameterized by destPath +
+  // sourcePath); each gate carries the `@termdeck/stack-installer-hook v<N>`
+  // marker + a TermDeck-managed marker the gate reads.
+  {
+    const HOME = require('os').homedir();
+    for (const f of PRETOOLUSE_GATE_FILES) {
+      step(`Refreshing ~/.claude/hooks/${f} (if bundled is newer)...`);
+      try {
+        const GATE_DEST = path.join(HOME, '.claude', 'hooks', f);
+        const GATE_SOURCE = path.join(__dirname, '..', '..', 'stack-installer', 'assets', 'hooks', f);
+        const r = refreshBundledHookIfNewer({ dryRun, destPath: GATE_DEST, sourcePath: GATE_SOURCE });
+        if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh ${f} return: ${JSON.stringify(r)}\n`);
+        if (r.status === 'refreshed') {
+          ok(`refreshed v${r.from ?? 0} → v${r.to} (backup: ${path.basename(r.backup)})`);
+        } else if (r.status === 'would-refresh') {
+          ok(`would-refresh v${r.from ?? 0} → v${r.to} (dry-run)`);
+        } else if (r.status === 'installed') {
+          ok(`installed v${r.bundled} (no prior copy)`);
+        } else if (r.status === 'would-install') {
+          ok(`would-install v${r.bundled} (dry-run, no prior copy)`);
+        } else if (r.status === 'refreshed-content-drift') {
+          ok(`refreshed v${r.from} → v${r.to} (content-drift; backup: ${path.basename(r.backup)})`);
+        } else if (r.status === 'would-refresh-content-drift') {
+          ok(`would-refresh v${r.from} → v${r.to} (content-drift; dry-run)`);
+        } else if (r.status === 'custom-hook-preserved-content-drift') {
+          ok(`custom-hook-preserved (bytes differ from bundled but no TermDeck markers; keeping as-is)`);
+        } else if (r.status === 'up-to-date') {
+          ok(`up-to-date (v${r.installed})`);
+        } else {
+          ok(`(${r.status}${r.message ? ': ' + r.message : ''})`);
+        }
+      } catch (err) {
+        process.stdout.write(`    ! ${f} refresh failed: ${err.message} (continuing)\n`);
+        if (debug) process.stderr.write(`[wire-up-debug] runHookRefresh ${f} threw: ${err && err.stack || err}\n`);
+      }
+    }
   }
 }
 
@@ -1324,3 +1497,8 @@ module.exports._hookCommandFor = _hookCommandFor;
 module.exports._isTildeHookCommand = _isTildeHookCommand;
 module.exports._mergePreCompactHookEntry = _mergePreCompactHookEntry;
 module.exports.migrateSettingsJsonPreCompactEntry = migrateSettingsJsonPreCompactEntry;
+// Sprint 81 T3 — PreToolUse deny gates (advise→gate) exports for tests.
+module.exports._isPreToolUseHookEntry = _isPreToolUseHookEntry;
+module.exports._mergePreToolUseHookEntry = _mergePreToolUseHookEntry;
+module.exports.migrateSettingsJsonPreToolUseEntry = migrateSettingsJsonPreToolUseEntry;
+module.exports.PRETOOLUSE_GATE_FILES = PRETOOLUSE_GATE_FILES;

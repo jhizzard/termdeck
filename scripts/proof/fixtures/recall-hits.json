@@ -1,0 +1,91 @@
+{
+  "_meta": "Hit CONTENT per probe — the memory rows a recall would return. build-recall-fixtures.js renders these into recall/<id>.json THROUGH scripts/proof/lib/tokens.js, so each fixture's `text` and `tokens_used` are byte-faithful to engram/src/recall.ts's real formatter (not hand-computed). Each hit's content is a real, verifiable TermDeck fact and CONTAINS the probe's factKey. Re-generate: node scripts/proof/fixtures/build-recall-fixtures.js",
+  "sprint-role-architecture": {
+    "project": "termdeck",
+    "hits": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000a1",
+        "source_type": "decision",
+        "project": "termdeck",
+        "score": 0.214,
+        "metadata": { "importance": "critical" },
+        "content": "TermDeck's canonical sprint role architecture is 3+1+1: 1 Orchestrator + 3 Claude workers on disjoint lanes + 1 non-Claude auditor (Codex preferred; Gemini/Grok also work) for adversarial, out-of-distribution review. Shared-model lanes share blind spots; the out-of-distribution auditor breaks the tie."
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000a2",
+        "source_type": "decision",
+        "project": "termdeck",
+        "score": 0.161,
+        "content": "Sprint 51.5 to 51.6 is the canonical case for the 3+1+1 audit pattern: an all-Claude sprint missed 4 bugs; adding Codex as the T4 auditor caught all 4 in ~14 minutes."
+      }
+    ]
+  },
+  "recall-token-heuristic": {
+    "project": "termdeck",
+    "hits": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000b1",
+        "source_type": "code_context",
+        "project": "termdeck",
+        "score": 0.203,
+        "content": "Mnestra's recall path (engram/src/recall.ts) estimates a memory's token cost with estimateTokens(text) = Math.ceil(text.length / 4) — the ~4-characters-per-token heuristic. The recall token_budget defaults to 2000 (about 8000 characters); trimming happens after the minimum-result guarantee."
+      }
+    ]
+  },
+  "pruning-moratorium": {
+    "project": "termdeck",
+    "hits": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000c1",
+        "source_type": "decision",
+        "project": "termdeck",
+        "score": 0.188,
+        "content": "Mnestra recall telemetry (migration 027) pruning moratorium: nobody acts on recall_count=0 for at least 1 full sprint cycle. A freshly added memory simply lacks telemetry, so a zero count must never be read as 'unused' during that window."
+      }
+    ]
+  },
+  "precompact-mechanism": {
+    "project": "termdeck",
+    "hits": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000d1",
+        "source_type": "architecture",
+        "project": "termdeck",
+        "score": 0.176,
+        "content": "Auto-commit on context-compaction-near: Claude Code panels fire the PreCompact harness hook (memory-pre-compact.js), which writes a source_type='pre_compact_snapshot' row to Mnestra before the context is compacted. Non-Claude panels (Codex/Gemini/Grok) have no PreCompact equivalent, so TermDeck's server runs a periodic-capture timer for them instead."
+      }
+    ]
+  },
+  "recall-boost-default": {
+    "project": "termdeck",
+    "hits": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000e1",
+        "source_type": "decision",
+        "project": "termdeck",
+        "score": 0.199,
+        "metadata": { "importance": "important" },
+        "content": "Migration 032 adds memory_items.recall_boost numeric NOT NULL DEFAULT 1.0 — a bounded multiplicative ranking factor that is a strict no-op at 1.0. Rumen's recall-feedback loop populates it; the ranking effect stays inert until then. The pruning moratorium still holds: never penalize recall_count=0."
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000e2",
+        "source_type": "architecture",
+        "project": "termdeck",
+        "score": 0.142,
+        "content": "recall_boost is written ONLY by Rumen (doctrine-clean, like doctrine_registry.occurrence_count); it never mutates memory content or embeddings, and memory_hybrid_search multiplies it into the score bounded so 1.0 changes nothing."
+      }
+    ]
+  },
+  "rrf-meaning": {
+    "project": null,
+    "hits": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000f1",
+        "source_type": "fact",
+        "project": "termdeck",
+        "score": 0.231,
+        "content": "Mnestra's memory_hybrid_search combines full-text and semantic ranking via Reciprocal Rank Fusion (RRF) with rrf_k=60. The resulting RRF score sits in the 0.01 to 0.3 band, not a 0 to 1 cosine similarity — a distinction that matters when weighting similarity against other ranking signals."
+      }
+    ]
+  }
+}

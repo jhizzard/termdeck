@@ -1,3 +1,19 @@
+## [1.14.0] - 2026-07-05
+
+### Added — recall→reinjection proof surface + enforcement gates (Sprint 81 T3/T4/T5)
+- **Memory-proof surface (T4)**: `GET /api/recall-events` + `/api/recall-events/:sessionId` read `public.memory_recall_log` (incl. engram 031's provenance cols) via the daily-driver pool, LEFT JOIN `memory_items`, grouped into reinjection events by `recall_group_id`; **fail-soft empty** (`200 {events:[],degraded}`) when the DB/cols aren't there yet so the panel never breaks. Pure dep-free `packages/server/src/recall-events.js::groupRecallEvents` (11 tests). The per-panel **Memory drawer** (`app.js`) gains a durable reinjection-events section with a 📜 **doctrine chip**, `recall_group_id` grouping, RRF score, and a source-agent/session backlink — a panel shows its OWN recalls.
+- **Trusted provenance producer (T4, R2)**: `spawnTerminalSession` exports `MNESTRA_SESSION_ID=session.id` + `MNESTRA_SOURCE_AGENT=<sourceAgent||name>` into every panel's env, so engram's `recall_log.ts` env-reader writes non-NULL, unspoofable provenance for the everyday MCP-stdio path.
+- **advise→gate enforcement (T3)**: two net-new **fail-soft** bundled PreToolUse deny gates — `gate-publish-before-push.js` (denies a `git push` on the default branch when a local `@jhizzard/*` version leads npm) and `gate-migration-without-rls.js` (denies a `git commit` staging `create table public.X` without RLS). Registry-driven (**inert no-ops until `doctrine promote`d**), never `exit 2`, non-writing `--dry-run`/`--help` probes allowed. Installer trio (matcher `Bash`) + byte-identical `init-mnestra` refresh twin + `runSettingsJsonMigration` wiring.
+- **`doctrine/render.js` + `doctrine/checks.js` (T4)**: renderer extracted from `doctrine-sync.js` into a zero-dep shared module (both importers updated + identity-guard test); starter checks suite (`frontmatter-present`, `one-principle-shape`) with the remaining 13-battery honestly `deferred`; `SCHEMA.md` frontmatter contract. Both added to `package.json` `files[]`.
+- **Cold-vs-warm proof harness (T5)**: `scripts/proof/` (repo-resident) — a frozen+locked-probe, run-all/report-all A/B that holds task identical and varies only the reinjected memory, reporting rows/tokens/source-type-mix/provenance + a mechanical fact-key verdict (21 tests). `docs/WEB-WRITE-ACTIVATION-RUNBOOK.md` (Josh-go-gated, docs only).
+
+### Changed
+- **Pre-compact hook → `ingest_capture` (T3)**: `memory-pre-compact.js` POSTs `/rest/v1/rpc/ingest_capture` (primary) with a transition-safe fallback to the raw `/memory_items` append on any non-clear-success (no double-write on success); round-trips against engram's arbiter-free 030 RPC. Hook stamp v2→v3.
+- **Migration-bundle-sync (T3, R1)**: `packages/server/src/setup/mnestra-migrations/` was bundled-FIRST but stalled at `022`, silently shadowing engram `023–029` (privacy-tags, recall-telemetry, capture-gates, doctrine) from `termdeck init --mnestra`. Synced `023–032` byte-identical + 10 `MIGRATION_PROBES` + a drift-fence test + a dev-only `scripts/sync-mnestra-migrations.js`. Re-bundled the Rumen Edge Functions (adds `rumen-reinforce`).
+
+### Notes
+- Sprint 81 T3/T4/T5, FINAL-VERDICT green (T7 + T8 Codex auditors); the **miser (T6) lane was dropped** after an adversarial review found its core not ready to sit in the model path (see `docs/RESTART-PROMPT-2026-07-05-evening.md`). Root `npm test` **~1049** (0 fail, browser skips); recall-events 11/11, proof 21/21, doctrine 36/36, gates 35/35. Companions: `@jhizzard/mnestra@0.9.0` + `@jhizzard/rumen@0.8.0` + `@jhizzard/termdeck-stack@1.12.0`.
+
 ## [1.13.0] - 2026-07-05
 
 ### Added — doctrine materialize + ratify (Sprint 79 T3)

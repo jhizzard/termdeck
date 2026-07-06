@@ -20,6 +20,7 @@ const { execFileSync } = require('node:child_process');
 
 const doctrineSync = require('../src/doctrine-sync');
 const doctrine = require('../../../doctrine');
+const render = require('../../../doctrine/render'); // Sprint 81 T4 — extracted render/naming module
 
 const GITLEAKS_BIN = '/usr/local/bin/gitleaks';
 const SENTINEL = 'FORBIDDEN-SENTINEL-D0C7R1NE';
@@ -51,6 +52,35 @@ function sampleRow(overrides = {}) {
     updated_at: '2026-06-01T00:00:00.000Z',
   }, overrides);
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 81 T4 — render.js extraction guard. The render + naming helpers moved
+// to the shared zero-dep doctrine/render.js; doctrine-sync requires + re-exports
+// them. Pin the invariant that the re-exports are the SAME function objects (a
+// pure move, not a fork) AND that the extracted module works required directly.
+// ---------------------------------------------------------------------------
+
+test('doctrine-sync re-exports ARE the doctrine/render functions (pure move, not a fork)', () => {
+  for (const name of ['slugify', 'shortId', 'branchNameFor', 'docRelPathFor', 'registryEntryIdFor', 'renderDoctrineMarkdown', 'buildRegistryEntry']) {
+    assert.equal(typeof render[name], 'function', `doctrine/render exports ${name}`);
+    assert.equal(doctrineSync[name], render[name], `doctrine-sync.${name} IS doctrine/render.${name} (re-export, not a copy)`);
+  }
+  // render.js is zero-dep — requiring it must not have pulled fs/path/os/child_process
+  // deps in a way that changes doctrine-sync's still-present exports.
+  assert.equal(typeof doctrineSync.runPreflight, 'function', 'doctrine-sync keeps its own git/preflight surface');
+  assert.equal(typeof doctrineSync.screenableFromRow, 'function', 'screenableFromRow stayed in doctrine-sync (scrub-prep, not render)');
+});
+
+test('doctrine/render works required directly (independent of doctrine-sync)', () => {
+  const row = sampleRow();
+  const md = render.renderDoctrineMarkdown(row);
+  assert.ok(md.startsWith('---\n'), 'direct render emits front-matter');
+  assert.ok(md.includes('## Principle'), 'direct render emits the Principle section');
+  const entry = render.buildRegistryEntry(row, render.docRelPathFor(row));
+  assert.equal(entry.id, render.registryEntryIdFor(row));
+  assert.equal(doctrine.validateEntry(entry).valid, true, 'directly-built entry validates');
+  assert.equal(render.branchNameFor(row), `doctrine/${render.shortId(row.id)}-${render.slugify(row.title)}`);
+});
 
 // ---------------------------------------------------------------------------
 // Naming determinism — the load-bearing substitute for a pr_url column.

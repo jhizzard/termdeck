@@ -1,0 +1,34 @@
+{
+  "_generated": "by build-recall-fixtures.js from recall-hits.json — do not hand-edit; re-run the generator",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000a1",
+      "source_type": "decision",
+      "project": "termdeck",
+      "score": 0.214,
+      "metadata": {
+        "importance": "critical"
+      },
+      "content": "TermDeck's canonical sprint role architecture is 3+1+1: 1 Orchestrator + 3 Claude workers on disjoint lanes + 1 non-Claude auditor (Codex preferred; Gemini/Grok also work) for adversarial, out-of-distribution review. Shared-model lanes share blind spots; the out-of-distribution auditor breaks the tie."
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000a2",
+      "source_type": "decision",
+      "project": "termdeck",
+      "score": 0.161,
+      "content": "Sprint 51.5 to 51.6 is the canonical case for the 3+1+1 audit pattern: an all-Claude sprint missed 4 bugs; adding Codex as the T4 auditor caught all 4 in ~14 minutes."
+    }
+  ],
+  "tokens_used": 127,
+  "text": "2 memories (127 tokens, project: termdeck):\n\n- (decision/critical) TermDeck's canonical sprint role architecture is 3+1+1: 1 Orchestrator + 3 Claude workers on disjoint lanes + 1 non-Claude auditor (Codex preferred; Gemini/Grok also work) for adversarial, out-of-distribution review. Shared-model lanes share blind spots; the out-of-distribution auditor breaks the ti...\n- (decision) Sprint 51.5 to 51.6 is the canonical case for the 3+1+1 audit pattern: an all-Claude sprint missed 4 bugs; adding Codex as the T4 auditor caught all 4 in ~14 minutes.",
+  "log": {
+    "recall_group_id": "rg-sprint-role-architecture",
+    "source_session_id": "proof-harness-fixture",
+    "source_agent": "proof-harness",
+    "token_budget": 2000,
+    "source_type_mix": {
+      "decision": 2
+    },
+    "origin": "recall_log"
+  }
+}

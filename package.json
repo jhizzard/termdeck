@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "description": "Browser-based terminal multiplexer with metadata overlays, panel flashback memory recall, and AI-aware session management",
   "bin": {
     "termdeck": "./packages/cli/src/index.js"
@@ -21,6 +21,8 @@
     "docs/orchestrator-guide.md",
     "docs/multi-agent-substrate/boot-prompts/*.md",
     "doctrine/index.js",
+    "doctrine/render.js",
+    "doctrine/checks.js",
     "doctrine/registry.jsonl",
     "doctrine/SCHEMA.md",
     "LICENSE",

@@ -93,6 +93,52 @@ leak). If gitleaks is absent or errors, the screen **fails soft**: one warning,
 entries pass unscreened (the repo registry is gitleaks-clean via the pre-commit
 hook; overlays are operator-local + lower-risk).
 
+## Doctrine document front-matter (rendered docs)
+
+> **Two artifacts, do not conflate.** `doctrine/registry.jsonl` holds one JSON
+> **entry** per rule (the fields above). A **doctrine document** is the separate
+> human-readable procedure a proposed rule materializes into at
+> `docs/doctrine/D-<shortId>-<slug>.md`. `doctrine/render.js::renderDoctrineMarkdown`
+> emits it; `doctrine/checks.js` validates it; the registry entry's
+> `advisory.procedure_path` / `enforcement.ref` point at it.
+
+Every doctrine document opens with a flat `key: value` YAML front-matter block
+(NOT nested YAML — the parser in `doctrine/checks.js::parseFrontmatter` is
+line-based and zero-dep).
+
+| Front-matter key | Required | Notes |
+|---|:--:|---|
+| `id` | ✅ | `D-<shortId>` — the deterministic 8-char id derived from the rumen `doctrine_registry` row UUID (`render.js::shortId`). |
+| `title` | ✅ | JSON-quoted human title. |
+| `status` | ✅ | Doc lifecycle: `proposed` at materialization; a merged+ratified doc's registry entry flips to `active`. |
+| `source` | – | `rumen-doctrine-scan` (provenance of the synthesis). |
+| `occurrence_count` | – | Reinforcement count at materialization. |
+| `projects` | – | JSON array of the projects the pattern recurred across. |
+| `rumen_doctrine_registry_id` | – | Back-pointer to the source row (recompute the branch/PR from it). |
+| `created_at` | – | ISO timestamp; clock-stamped (the one non-deterministic field — names are clock-free). |
+
+### Body section contract (checked by `one-principle-shape`)
+
+`# <title>` then, in order: **`## Principle`** (exactly ONE, non-empty — it is
+ONE principle, not several fused) · `## Why (evidence ledger)` ·
+`## How to apply` · `## Machine-checkable hook` · `## Provenance`.
+
+### Checks suite (`doctrine/checks.js`)
+
+Sprint 81 T4 ships the **starter** subset — two structural checks, pure
+functions over the markdown string (zero-dep, fail-soft, never throw):
+
+- **`frontmatter-present`** — the doc opens with a well-formed front-matter
+  block carrying the required keys (`id`, `title`, `status`).
+- **`one-principle-shape`** — exactly one non-empty `## Principle` section.
+
+`runChecks(markdown)` → `{ ok, results, deferred }`. The **deferred** field
+names the rest of the 13-check battery (ULTRAPLAN §6 L200:
+`status-lint, checkpoint-cadence, done-periphery, anchor-check, publish-order,
+in-glob, tarball, rls-audit ×5, htmlbody`), targeted for the Sprint 80
+doc-enforcement sprint — surfaced so a coverage report can't lie by omission
+(the `check.type='manual'` honesty principle, applied to the checks themselves).
+
 ## `doctrine/index.js` API (consumed by T2 + Sprint 79/80)
 
 ```js

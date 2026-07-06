@@ -1,7 +1,7 @@
 /**
  * TermDeck pre-compact memory hook (Mnestra-direct, no rag-system dependency).
  *
- * @termdeck/stack-installer-hook v2
+ * @termdeck/stack-installer-hook v3
  *
  * ^ Stamp lives at the TOP of the docblock — both readers scan only the first
  *   4096 bytes (Sprint 73 T1 hit this on the session-end hook when its
@@ -42,8 +42,11 @@
  *   - Embed via the session-end hook's embedText (text-embedding-3-large at
  *     dimensions:1536 since v5 there — recall-parity with mnestra's query
  *     embedder; this hook has NO embed call of its own).
- *   - POST ONE row to /rest/v1/memory_items with
- *     source_type='pre_compact_snapshot', category='workflow'.
+ *   - CAPTURE via the ingest_capture RPC (Sprint 81 T3, v3): POST to
+ *     /rest/v1/rpc/ingest_capture with source_type='pre_compact_snapshot',
+ *     category='workflow'. The RPC rolls ONE row per session (no per-compaction
+ *     append) and is idempotent. Falls back to a raw /rest/v1/memory_items
+ *     append on any non-clear-success (transition-safe; see the v3 note).
  *
  * Fail-soft contract: any error (network, parse, env-var-missing, malformed
  * transcript) logs and exits 0. NEVER blocks compaction — PreCompact CAN block
@@ -67,6 +70,31 @@
  *       session-end (still embedding 3-small) exports none, the row stays
  *       unmarked, and the backfill correctly re-embeds it — a false marker on
  *       a mis-embedded row would permanently hide it from repair.
+ *
+ *   v3 (Sprint 81 T3 — ingest_capture adoption, ULTRAPLAN §6 hook-tier noise
+ *   controls; closes RESTART Follow-up-A):
+ *     - PRIMARY write path is now the ingest_capture(jsonb) RPC (engram
+ *       migration 028), POSTed to /rest/v1/rpc/ingest_capture. For
+ *       source_type='pre_compact_snapshot' + a stable source_session_id it
+ *       keeps ONE ROLLING row per session (replace-in-place) instead of the
+ *       old append-a-row-per-compaction behavior that accumulated dup snapshots
+ *       (429 on the daily-driver by Sprint 79). source_session_id is guaranteed
+ *       non-null (the hook bails at `no-session-id` above) — the rolling
+ *       ON-CONFLICT/redefined-arbiter-free path only engages with it.
+ *     - TRANSITION-SAFE FALLBACK: if ingest_capture does not clearly succeed
+ *       (anything other than HTTP 2xx AND body.ok===true) the hook falls back
+ *       to the proven raw /rest/v1/memory_items append (postPreCompactSnapshot).
+ *       This makes the hook NEVER WORSE than the v2 baseline and correct across
+ *       the whole 030 close-out window, regardless of ordering, because:
+ *         (a) 028's ON-CONFLICT precompact branch needs the deferred partial-
+ *             unique arbiter index; T1 redefines ingest_capture arbiter-free in
+ *             030 (ORCH R3), but on a store where 030 has not yet applied the
+ *             RPC can 42P10; and
+ *         (b) TermDeck bundles mnestra migrations only through 022 today (ORCH
+ *             R1), so ingest_capture may be undeployed (PostgREST PGRST202)
+ *             until the migration-bundle-sync lands.
+ *       The fallback fires ONLY on non-clear-success, so a successful RPC write
+ *       is never double-written by a second append.
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
@@ -135,10 +163,68 @@ function loadHelpers() {
 const MIN_TRANSCRIPT_BYTES_PRE_COMPACT =
   parseInt(process.env.TERMDECK_PRECOMPACT_MIN_BYTES || '5000', 10);
 
-// Inline POST to /rest/v1/memory_items so we can set source_type='pre_compact_snapshot'
-// without touching memory-session-end.js's postMemoryItem (which hardcodes
-// source_type='session_summary'). Inlining keeps the Sprint 62 close-out path
-// untouched — zero regression risk for SessionEnd flow.
+// The pre_compact_snapshot row shape — shared by the ingest_capture RPC primary
+// path AND the raw-append fallback so the two paths write a byte-identical row.
+function buildCapturePayload({ content, embedding, project, sessionId, sourceAgent, embeddingModelMarker }) {
+  return {
+    content,
+    embedding: `[${embedding.join(',')}]`,
+    source_type: 'pre_compact_snapshot',
+    category: 'workflow',
+    project,
+    source_session_id: sessionId || null,
+    source_agent: sourceAgent,
+    // v2 — backfill-idempotency marker, present ONLY when the loaded helpers
+    // export one (i.e. the embed actually ran on that model). See the v2 header
+    // note for the stale-helpers rationale.
+    ...(embeddingModelMarker ? { metadata: { embedding_model: embeddingModelMarker } } : {}),
+  };
+}
+
+// Sprint 81 T3 (v3) — PRIMARY write path: the ingest_capture(jsonb) RPC (engram
+// migration 028 / redefined arbiter-free in 030). For pre_compact_snapshot +
+// a stable source_session_id it keeps ONE ROLLING row per session. PostgREST
+// RPC call shape is POST /rest/v1/rpc/<fn> with a body of {<argname>: value},
+// so the jsonb param `p_payload` is nested under that key.
+//
+// Returns { ok, status, body }. ok===true ONLY on HTTP 2xx AND the RPC's own
+// {ok:true} success contract — every other outcome (HTTP error, PGRST202
+// undeployed, 42P10 no-arbiter, non-JSON body, {ok:false}) returns ok:false so
+// the caller can fall back to the raw append WITHOUT risking a double-write on
+// a real success.
+async function postViaIngestCapture(args) {
+  try {
+    const res = await fetch(`${args.supabaseUrl}/rest/v1/rpc/ingest_capture`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': args.supabaseKey,
+        'Authorization': `Bearer ${args.supabaseKey}`,
+      },
+      body: JSON.stringify({ p_payload: buildCapturePayload(args) }),
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      log(`ingest_capture-http-${res.status}: ${text.slice(0, 200)}`);
+      return { ok: false, status: res.status, body: text };
+    }
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (_) { /* non-JSON 2xx → treat as non-clear-success */ }
+    if (parsed && parsed.ok === true) return { ok: true, status: res.status, body: text };
+    log(`ingest_capture-non-ok-body: ${String(text).slice(0, 200)}`);
+    return { ok: false, status: res.status, body: text };
+  } catch (e) {
+    log(`ingest_capture-exception: ${e.message}`);
+    return { ok: false, status: null, body: e.message };
+  }
+}
+
+// FALLBACK write path (transition-safe — see the v3 header note). Raw POST to
+// /rest/v1/memory_items with source_type='pre_compact_snapshot'. This is the
+// pre-Sprint-81 behavior (append a row per compaction); it runs ONLY when
+// ingest_capture did not clearly succeed, so the hook is never worse than the
+// v2 baseline and stays correct where ingest_capture isn't deployed / the
+// arbiter isn't present yet. Inlining keeps the SessionEnd path untouched.
 async function postPreCompactSnapshot({
   supabaseUrl, supabaseKey,
   content, embedding,
@@ -155,21 +241,9 @@ async function postPreCompactSnapshot({
         'Authorization': `Bearer ${supabaseKey}`,
         'Prefer': 'return=minimal',
       },
-      body: JSON.stringify({
-        content,
-        embedding: `[${embedding.join(',')}]`,
-        source_type: 'pre_compact_snapshot',
-        category: 'workflow',
-        project,
-        source_session_id: sessionId || null,
-        source_agent: sourceAgent,
-        // v2 — backfill-idempotency marker, present ONLY when the loaded
-        // helpers export one (i.e. the embed actually ran on that model).
-        // See the v2 header note for the stale-helpers rationale.
-        ...(embeddingModelMarker
-          ? { metadata: { embedding_model: embeddingModelMarker } }
-          : {}),
-      }),
+      body: JSON.stringify(buildCapturePayload({
+        content, embedding, project, sessionId, sourceAgent, embeddingModelMarker,
+      })),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -261,18 +335,31 @@ async function processPreCompactPayload(input, helpers) {
   const embedding = await helpers.embedText(content, env.openaiKey);
   if (!embedding) return { status: 'embed-failed' };
 
-  const ok = await postPreCompactSnapshot({
+  const writeArgs = {
     supabaseUrl: env.supabaseUrl,
     supabaseKey: env.supabaseKey,
     content, embedding, project, sessionId, sourceAgent,
     // Marker travels with the embedder: undefined on a pre-v5 session-end
     // hook (3-small embeds → row stays unmarked → backfill repairs it).
     embeddingModelMarker: helpers.EMBEDDING_MODEL_MARKER || null,
-  });
+  };
 
+  // Sprint 81 T3 (v3) — PRIMARY: ingest_capture RPC (rolling one-row-per-session,
+  // idempotent). On any non-clear-success, FALL BACK to the raw append so the
+  // hook is never worse than the v2 baseline and stays correct across the 030
+  // transition + on installs where ingest_capture isn't deployed. The fallback
+  // fires ONLY when ingest_capture did not clearly succeed → no double-write.
+  const rpc = await postViaIngestCapture(writeArgs);
+  if (rpc.ok) {
+    log(`ingested-${mode} via ingest_capture: project="${project}" session=${sessionId} trigger=${trigger} agent=${sourceAgent} bytes=${content.length} messages=${messagesCount} factsExtracted=${factsExtracted}`);
+    return { status: 'ingested', via: 'ingest_capture', project, sessionId, sourceAgent, mode, trigger, messagesCount };
+  }
+
+  log(`ingest_capture non-success (status=${rpc.status}) → raw-append fallback`);
+  const ok = await postPreCompactSnapshot(writeArgs);
   if (ok) {
-    log(`ingested-${mode}: project="${project}" session=${sessionId} trigger=${trigger} agent=${sourceAgent} bytes=${content.length} messages=${messagesCount} factsExtracted=${factsExtracted}`);
-    return { status: 'ingested', project, sessionId, sourceAgent, mode, trigger, messagesCount };
+    log(`ingested-${mode} via append-fallback: project="${project}" session=${sessionId} trigger=${trigger} agent=${sourceAgent} bytes=${content.length} messages=${messagesCount} factsExtracted=${factsExtracted}`);
+    return { status: 'ingested', via: 'append-fallback', project, sessionId, sourceAgent, mode, trigger, messagesCount };
   }
   return { status: 'insert-failed' };
 }
@@ -296,6 +383,8 @@ if (require.main === module) {
 } else {
   module.exports = {
     loadHelpers,
+    buildCapturePayload,
+    postViaIngestCapture,
     postPreCompactSnapshot,
     processPreCompactPayload,
     resolveFiringContext,

@@ -107,6 +107,7 @@ const claudeAdapter = require('../src/agent-adapters/claude');
 const codexAdapter = require('../src/agent-adapters/codex');
 const geminiAdapter = require('../src/agent-adapters/gemini');
 const grokAdapter = require('../src/agent-adapters/grok');
+const webChatGrokAdapter = require('../src/agent-adapters/web-chat-grok'); // Sprint 81 T4 (R2) — aliased adapter (name≠sourceAgent)
 const serverModule = require('../src/index.js');
 const { createServer, _resetTermdeckSecretsCache } = serverModule;
 
@@ -187,6 +188,27 @@ test('every spawn-declaring (PTY) adapter declares spawn.shellWrap === false (ca
   }
 });
 
+test('Sprint 81 T4 (R2): recall-provenance source-agent uses the `sourceAgent || name` convention (alias-aware, canonical)', () => {
+  // The env producer computes MNESTRA_SOURCE_AGENT via `adapter.sourceAgent ||
+  // adapter.name` (packages/server/src/index.js in spawnTerminalSession) —
+  // matching the two existing memory writers. Direct-spawn agents omit
+  // sourceAgent → canonical `name`; an aliased adapter must resolve to its
+  // canonical sourceAgent, NOT its registry name, so a panel never stamps a
+  // non-canonical recall agent Engram's source_agent taxonomy would reject.
+  const resolve = (a) => a.sourceAgent || a.name;
+  assert.equal(resolve(claudeAdapter), 'claude');
+  assert.equal(resolve(codexAdapter), 'codex');
+  assert.equal(resolve(geminiAdapter), 'gemini');
+  assert.equal(resolve(grokAdapter), 'grok');
+  // The distinguishing case (web-chat-grok is CDP-driven, not pty-spawned, so
+  // it never reaches the producer today — but locks the convention against
+  // future path convergence + any other aliased adapter): the alias wins.
+  assert.notEqual(webChatGrokAdapter.name, webChatGrokAdapter.sourceAgent,
+    'fixture precondition: web-chat-grok name must differ from sourceAgent');
+  assert.equal(resolve(webChatGrokAdapter), 'grok-web',
+    'aliased adapter resolves to its canonical sourceAgent, not the raw registry name');
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // Server-level dispatch fences.
 // ─────────────────────────────────────────────────────────────────────────
@@ -206,6 +228,9 @@ test('POST /api/sessions with command="claude" spawns claude directly (no `zsh -
       assert.deepEqual(call.args, [], 'expected empty defaultArgs from claude adapter');
       assert.ok(call.opts.env, 'pty.spawn opts must include env');
       assert.equal(call.opts.env.TERMDECK_SESSION, body.id, 'TERMDECK_SESSION env must be set');
+      // Sprint 81 T4 (R2) — trusted recall-provenance producer.
+      assert.equal(call.opts.env.MNESTRA_SESSION_ID, body.id, 'MNESTRA_SESSION_ID must equal the panel session id');
+      assert.equal(call.opts.env.MNESTRA_SOURCE_AGENT, 'claude', 'MNESTRA_SOURCE_AGENT must be the resolved adapter name');
     } finally {
       await closeTestServer(handle);
     }
@@ -233,6 +258,9 @@ test('POST /api/sessions with command="codex" spawns codex directly with OPENAI_
       assert.equal(call.shell, 'codex',
         `expected direct spawn of 'codex', got shell='${call.shell}' args=${JSON.stringify(call.args)}`);
       assert.deepEqual(call.args, []);
+      // Sprint 81 T4 (R2) — provenance producer works for the codex agent too.
+      assert.equal(call.opts.env.MNESTRA_SESSION_ID, body.id, 'MNESTRA_SESSION_ID = codex panel id');
+      assert.equal(call.opts.env.MNESTRA_SOURCE_AGENT, 'codex', 'MNESTRA_SOURCE_AGENT = codex');
     } finally {
       if (origKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = origKey;
@@ -380,6 +408,39 @@ test('explicit request type wins over direct-spawn promotion (no override of cal
       assert.equal(body.meta.type, 'custom-shell',
         'explicit type from request body must NOT be overwritten by direct-spawn adapter promotion');
     } finally {
+      await closeTestServer(handle);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sprint 81 T4 (R2) — trusted recall-provenance producer. The claude/codex
+// fences above assert the agent-panel case (MNESTRA_SESSION_ID = panel id,
+// MNESTRA_SOURCE_AGENT = adapter name). This asserts the bare-shell case: the
+// panel id still flows (harmless if it never recalls), but no source-agent is
+// sent (omitted, never blank), so a shell can't masquerade as an agent.
+// ─────────────────────────────────────────────────────────────────────────
+
+test('Sprint 81 T4 (R2): MNESTRA_SESSION_ID set for every panel; MNESTRA_SOURCE_AGENT only for agent panels', { skip: !_ptyFakeAvailable }, async () => {
+  await withTempHome(async () => {
+    // Env hygiene: the producer sets MNESTRA_* explicitly; `...process.env`
+    // could otherwise leak an inherited value (e.g. the TermDeck server itself
+    // launched inside a panel). Clear both so the negative assertion is clean.
+    const origSid = process.env.MNESTRA_SESSION_ID;
+    const origAgent = process.env.MNESTRA_SOURCE_AGENT;
+    delete process.env.MNESTRA_SESSION_ID;
+    delete process.env.MNESTRA_SOURCE_AGENT;
+    _capturedSpawns.length = 0;
+    const handle = await bootTestServer();
+    try {
+      const { status, body } = await postSession(handle.port, { command: 'ls', cwd: '/tmp', label: 't4-r2-shell' });
+      assert.equal(status, 201);
+      const call = _capturedSpawns[0];
+      assert.equal(call.opts.env.MNESTRA_SESSION_ID, body.id, 'session id set even for a bare shell');
+      assert.equal(call.opts.env.MNESTRA_SOURCE_AGENT, undefined, 'no MNESTRA_SOURCE_AGENT for a non-agent shell (omitted, never blank)');
+    } finally {
+      if (origSid === undefined) delete process.env.MNESTRA_SESSION_ID; else process.env.MNESTRA_SESSION_ID = origSid;
+      if (origAgent === undefined) delete process.env.MNESTRA_SOURCE_AGENT; else process.env.MNESTRA_SOURCE_AGENT = origAgent;
       await closeTestServer(handle);
     }
   });

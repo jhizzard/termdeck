@@ -1,0 +1,8 @@
+# Proof-run outputs are generated artifacts — ignore all of them EXCEPT the
+# committed SAMPLE (kept as documentation of the report shape) and this dir's
+# own metadata.
+*
+!.gitignore
+!README.md
+!SAMPLE-*.md
+!SAMPLE-*.json

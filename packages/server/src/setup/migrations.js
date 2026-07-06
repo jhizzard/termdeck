@@ -136,7 +136,38 @@ const MIGRATION_PROBES = Object.freeze({
   // migration body is gated on `source_agent IS NULL` and a re-apply against
   // an already-tagged corpus is a 0-row no-op. Sprint 62 T3.
   '022_source_agent_backfill.sql':
-    "select 1 where not exists (select 1 from memory_items where source_agent is null and (source_type in ('decision','bug_fix','architecture','preference','code_context') or (source_type='fact' and source_session_id is not null) or source_type='document_chunk'))"
+    "select 1 where not exists (select 1 from memory_items where source_agent is null and (source_type in ('decision','bug_fix','architecture','preference','code_context') or (source_type='fact' and source_session_id is not null) or source_type='document_chunk'))",
+  // Sprint 81 T3 (ORCH R1) — 023-029 synced byte-identical from engram HEAD so
+  // `termdeck init --mnestra` stops shadowing them (bundled-first). Probes are
+  // presence-style; 025 is a COMMENT-only migration (no schema artifact → null,
+  // like 003), so its first apply runs the COMMENT and the tracker prevents re-run.
+  '023_privacy_tags_column.sql':
+    "select 1 from information_schema.columns where table_schema='public' and table_name='memory_items' and column_name='privacy_tags'",
+  '024_email_assistant_recall.sql':
+    "select 1 from pg_proc where proname='email_assistant_recall'",
+  '025_source_agent_web_surfaces.sql':
+    null,
+  '026_memory_inbox.sql':
+    "select 1 from information_schema.tables where table_schema='public' and table_name='memory_inbox'",
+  '027_recall_telemetry.sql':
+    "select 1 from information_schema.tables where table_schema='public' and table_name='memory_recall_log'",
+  '028_capture_gates.sql':
+    "select 1 from pg_proc where proname='ingest_capture'",
+  // 029 rewrites memory_hybrid_search with the doctrine ×1.5 type-weight + 365d
+  // decay tier; probe the function BODY for 'doctrine' to distinguish it from
+  // the pre-029 (002-era) version that only presence-matches on the name.
+  '029_doctrine_recall_boost.sql':
+    "select 1 from pg_proc where proname='memory_hybrid_search' and prosrc like '%doctrine%'",
+  // Sprint 81 T1/T3 (ORCH R1 + R3) — 030-032. 030 redefines ingest_capture with
+  // an ARBITER-FREE precompact branch (advisory-lock, no ON CONFLICT); presence
+  // on the name matches from 028, so probe the BODY for the advisory lock to
+  // distinguish 030's version. 031/032 probe their new columns.
+  '030_precompact_rolling.sql':
+    "select 1 from pg_proc where proname='ingest_capture' and prosrc like '%advisory_xact_lock%'",
+  '031_recall_provenance.sql':
+    "select 1 from information_schema.columns where table_schema='public' and table_name='memory_recall_log' and column_name='recall_group_id'",
+  '032_recall_boost.sql':
+    "select 1 from information_schema.columns where table_schema='public' and table_name='memory_items' and column_name='recall_boost'"
 });
 
 // Sprint 61 T2 — self-transactional detection.

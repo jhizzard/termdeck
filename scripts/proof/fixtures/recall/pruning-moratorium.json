@@ -1,0 +1,24 @@
+{
+  "_generated": "by build-recall-fixtures.js from recall-hits.json — do not hand-edit; re-run the generator",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000c1",
+      "source_type": "decision",
+      "project": "termdeck",
+      "score": 0.188,
+      "content": "Mnestra recall telemetry (migration 027) pruning moratorium: nobody acts on recall_count=0 for at least 1 full sprint cycle. A freshly added memory simply lacks telemetry, so a zero count must never be read as 'unused' during that window."
+    }
+  ],
+  "tokens_used": 63,
+  "text": "1 memories (63 tokens, project: termdeck):\n\n- (decision) Mnestra recall telemetry (migration 027) pruning moratorium: nobody acts on recall_count=0 for at least 1 full sprint cycle. A freshly added memory simply lacks telemetry, so a zero count must never be read as 'unused' during that window.",
+  "log": {
+    "recall_group_id": "rg-pruning-moratorium",
+    "source_session_id": "proof-harness-fixture",
+    "source_agent": "proof-harness",
+    "token_budget": 2000,
+    "source_type_mix": {
+      "decision": 1
+    },
+    "origin": "recall_log"
+  }
+}

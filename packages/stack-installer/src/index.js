@@ -86,6 +86,26 @@ const PRECOMPACT_HOOK_DEST = path.join(HOOK_DEST_DIR, 'memory-pre-compact.js');
 const PRECOMPACT_HOOK_SOURCE = path.join(__dirname, '..', 'assets', 'hooks', 'memory-pre-compact.js');
 const PRECOMPACT_HOOK_COMMAND = _hookCommandFor('memory-pre-compact.js');
 const PRECOMPACT_HOOK_TIMEOUT_SECONDS = 30;
+
+// Sprint 81 T3 — PreToolUse deny gates (ULTRAPLAN §6 advise→gate). Two
+// self-contained fail-soft hooks that can DENY a Bash tool call. Registry-
+// driven: each enforces ONLY when its doctrine rule is promoted to
+// enforcement.surface='preToolUse-deny'/max_severity='block' (inert — allow
+// everything — until then), so installing them is always safe. Live alongside
+// the SessionEnd/PreCompact hooks in ~/.claude/hooks/; wired under
+// hooks.PreToolUse with matcher 'Bash'.
+const PRETOOLUSE_HOOK_TIMEOUT_SECONDS = 20; // gates may spawn git + `npm view`
+const PRETOOLUSE_GATE_FILES = [
+  'gate-publish-before-push.js',
+  'gate-migration-without-rls.js',
+];
+const PRETOOLUSE_GATE_SOURCES = PRETOOLUSE_GATE_FILES.map(
+  (f) => path.join(__dirname, '..', 'assets', 'hooks', f)
+);
+const PRETOOLUSE_GATE_DESTS = PRETOOLUSE_GATE_FILES.map(
+  (f) => path.join(HOOK_DEST_DIR, f)
+);
+
 const SECRETS_PATH = path.join(HOME, '.termdeck', 'secrets.env');
 
 // Sprint 78 T1 — doctrine registry vendoring. A READ-ONLY copy of the doctrine
@@ -613,6 +633,72 @@ function _mergePreCompactHookEntry(settings, opts = {}) {
   return { settings, status: 'installed' };
 }
 
+// Sprint 81 T3 — PreToolUse gate entry detection + merge. Parallel to the
+// PreCompact helpers, but registers TWO commands (the two gate files) under a
+// single 'Bash'-matcher group, and is idempotent per-gate (a partial install
+// with only one gate present gets the other added, not a duplicate). No legacy
+// migration branch (PreToolUse gates are new in Sprint 81).
+function _isPreToolUseHookEntry(entry) {
+  return entry && typeof entry.command === 'string'
+    && PRETOOLUSE_GATE_FILES.some((f) => entry.command.includes(f));
+}
+
+// Pure: ensures each gate command is present under a 'Bash'-matcher group in
+// the settings object. Mutates the input. Returns { settings, status } where
+// status ∈ 'already-installed' | 'installed' | 'migrated-tilde-path'.
+function _mergePreToolUseHookEntry(settings, opts = {}) {
+  const files = opts.files || PRETOOLUSE_GATE_FILES;
+  const commandFor = opts.commandFor || _hookCommandFor;
+  const timeout = opts.timeout != null ? opts.timeout : PRETOOLUSE_HOOK_TIMEOUT_SECONDS;
+  const matcher = opts.matcher || 'Bash';
+
+  if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
+  if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
+
+  // Rewrite any stale literal-`~` command for OUR gates to the absolute form
+  // (same reasoning as the SessionEnd/PreCompact tilde rewrite).
+  let tildeMigrated = false;
+  for (const group of settings.hooks.PreToolUse) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (_isPreToolUseHookEntry(e) && _isTildeHookCommand(e.command)) {
+        const f = files.find((ff) => e.command.includes(ff));
+        if (f) { e.command = commandFor(f); tildeMigrated = true; }
+      }
+    }
+  }
+
+  // Which gate files are already wired (anywhere, any matcher)?
+  const present = new Set();
+  for (const group of settings.hooks.PreToolUse) {
+    if (!group || !Array.isArray(group.hooks)) continue;
+    for (const e of group.hooks) {
+      if (!_isPreToolUseHookEntry(e)) continue;
+      const f = files.find((ff) => e.command.includes(ff));
+      if (f) present.add(f);
+    }
+  }
+
+  const missing = files.filter((f) => !present.has(f));
+  if (!missing.length) {
+    return { settings, status: tildeMigrated ? 'migrated-tilde-path' : 'already-installed' };
+  }
+
+  // Append the missing gate commands into a 'Bash'-matcher group (reuse one if
+  // present; a user's hand-edited group with a different matcher is left intact).
+  let bashGroup = settings.hooks.PreToolUse.find(
+    (g) => g && g.matcher === matcher && Array.isArray(g.hooks)
+  );
+  if (!bashGroup) {
+    bashGroup = { matcher, hooks: [] };
+    settings.hooks.PreToolUse.push(bashGroup);
+  }
+  for (const f of missing) {
+    bashGroup.hooks.push({ type: 'command', command: commandFor(f), timeout });
+  }
+  return { settings, status: tildeMigrated ? 'migrated-tilde-path' : 'installed' };
+}
+
 function _readSettingsJson(filePath) {
   if (!fs.existsSync(filePath)) {
     return { settings: {}, status: 'no-file' };
@@ -954,6 +1040,121 @@ async function installPreCompactHook(opts = {}) {
   return { fileStatus, settingsStatus };
 }
 
+// Sprint 81 T3 — install the two PreToolUse deny gates (advise→gate). Mirrors
+// installPreCompactHook: version-stamp-gated file copy (per gate) + a single
+// settings merge under hooks.PreToolUse matcher 'Bash'. File copy and settings
+// merge are independent; both fail-soft. The gates are inert until their
+// doctrine rule is promoted to preToolUse-deny, so installing them changes
+// nothing until the operator opts in via `doctrine promote <rule>`.
+async function installPreToolUseHook(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const sources = opts.sources || PRETOOLUSE_GATE_SOURCES;
+  const dests = opts.dests || PRETOOLUSE_GATE_DESTS;
+  const settingsPath = opts.settingsPath || SETTINGS_JSON;
+  const promptInstall = opts.promptInstall
+    || (() => promptYesNo({ question: "Install TermDeck's PreToolUse enforcement gates? (publish-before-push + migration-RLS; stay inert until you promote them)", defaultYes: true }));
+
+  rule();
+  process.stdout.write(`${ANSI.bold}PreToolUse enforcement gates${ANSI.reset}\n`);
+  process.stdout.write(`${ANSI.dim}  Two fail-soft Bash gates — publish-before-push and migration-without-RLS. Registry-driven: they allow everything until you run \`doctrine promote <rule>\`, so installing them is safe and changes nothing until you opt in.${ANSI.reset}\n\n`);
+
+  const userWantsInstall = opts.assumeYes ? true
+    : opts.assumeNo ? false
+    : await promptInstall();
+
+  if (!userWantsInstall) {
+    statusLine(`${ANSI.dim}─${ANSI.reset}`, 'PreToolUse gates', 'skipped (user declined)');
+    process.stdout.write('\n');
+    return { fileStatuses: sources.map(() => 'declined'), settingsStatus: 'declined' };
+  }
+
+  // 1. File copy — one per gate, each through the version-stamp gate.
+  const fileStatuses = [];
+  for (let i = 0; i < sources.length; i++) {
+    const sourcePath = sources[i];
+    const destPath = dests[i];
+    const label = path.basename(destPath);
+    if (!fs.existsSync(sourcePath)) {
+      statusLine(`${ANSI.yellow}!${ANSI.reset}`, label, 'skipped (bundled source missing)');
+      fileStatuses.push('no-bundled-asset');
+      continue;
+    }
+    const cmp = _compareHookFiles(sourcePath, destPath);
+    if (cmp === 'missing-dest') {
+      if (dryRun) {
+        statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would copy ${label} to ${destPath}`);
+        fileStatuses.push('would-copy');
+      } else {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.copyFileSync(sourcePath, destPath);
+        fs.chmodSync(destPath, 0o644);
+        statusLine(`${ANSI.green}+${ANSI.reset}`, `${label} file`, `copied to ${destPath}`);
+        fileStatuses.push('copied');
+      }
+    } else if (cmp === 'identical') {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, `${label} file`, 'already present, identical contents');
+      fileStatuses.push('already-current');
+    } else {
+      const overwrite = opts.assumeYes
+        ? _hookSignatureUpgradeAvailable(sourcePath, destPath)
+        : opts.forceOverwrite ? true
+        : await promptYesNo({ question: `Existing ${label} found at ${destPath}. Overwrite?`, defaultYes: false });
+      if (!overwrite) {
+        statusLine(`${ANSI.dim}=${ANSI.reset}`, `${label} file`, 'existing kept (differs from vendored copy)');
+        fileStatuses.push('kept-existing');
+      } else if (dryRun) {
+        statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would overwrite ${destPath}`);
+        fileStatuses.push('would-overwrite');
+      } else {
+        const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+        try { fs.copyFileSync(destPath, `${destPath}.bak.${stamp}`); } catch (_) { /* best-effort */ }
+        fs.copyFileSync(sourcePath, destPath);
+        fs.chmodSync(destPath, 0o644);
+        statusLine(`${ANSI.green}↻${ANSI.reset}`, `${label} file`, `overwrote ${destPath}`);
+        fileStatuses.push('overwritten');
+      }
+    }
+  }
+
+  // 2. Settings.json merge (both gate commands, matcher 'Bash').
+  const read = _readSettingsJson(settingsPath);
+  let settingsStatus;
+  if (read.status === 'malformed') {
+    statusLine(`${ANSI.red}✗${ANSI.reset}`, 'settings.json', `malformed (${read.error}); not modified`);
+    settingsStatus = 'malformed';
+  } else {
+    const merged = _mergePreToolUseHookEntry(read.settings);
+    if (merged.status === 'already-installed') {
+      statusLine(`${ANSI.dim}=${ANSI.reset}`, 'settings.json PreToolUse gates', 'already installed');
+      settingsStatus = 'already-installed';
+    } else if (merged.status === 'migrated-tilde-path') {
+      if (dryRun) {
+        statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would rewrite legacy ~ gate command to absolute path in ${settingsPath}`);
+        settingsStatus = 'would-migrate-tilde';
+      } else {
+        _writeSettingsJson(settingsPath, merged.settings);
+        statusLine(`${ANSI.green}↻${ANSI.reset}`, 'settings.json PreToolUse gates', 'rewrote legacy ~ command to absolute path');
+        settingsStatus = 'migrated-tilde';
+      }
+    } else if (dryRun) {
+      statusLine(`${ANSI.yellow}↩${ANSI.reset}`, '(dry-run)', `would merge PreToolUse gates into ${settingsPath}`);
+      settingsStatus = 'would-install';
+    } else {
+      _writeSettingsJson(settingsPath, merged.settings);
+      statusLine(`${ANSI.green}+${ANSI.reset}`, 'settings.json PreToolUse gates', 'merged');
+      settingsStatus = 'installed';
+    }
+  }
+
+  process.stdout.write('\n');
+  if (!dryRun && (fileStatuses.includes('copied') || settingsStatus === 'installed')) {
+    process.stdout.write(`  ${ANSI.dim}PreToolUse gates installed. They stay INERT (allow everything) until you run \`doctrine promote publish-before-push\` / \`doctrine promote rls-five-gates\`.${ANSI.reset}\n`);
+    process.stdout.write(`  ${ANSI.dim}Sprint 81 / ULTRAPLAN §6 advise→gate.${ANSI.reset}\n\n`);
+  }
+
+  return { fileStatuses, settingsStatus };
+}
+
 // ── Doctrine registry (Sprint 78 T1) ──────────────────────────────────
 //
 // CRITICAL — FULL-FILE stamp, NOT the 4KB-head stamp. `_readHookSignatureVersion`
@@ -1151,6 +1352,14 @@ async function main(argv) {
     assumeYes: args.yes,
   });
 
+  // Sprint 81 T3 — bundle the two PreToolUse deny gates (advise→gate). Same
+  // default-on/opt-out UX; the gates are inert until their doctrine rule is
+  // promoted, so installing them is safe and changes nothing until opt-in.
+  await installPreToolUseHook({
+    dryRun: args.dryRun,
+    assumeYes: args.yes,
+  });
+
   // Sprint 78 T1 — vendor the read-only doctrine registry copy (audience:'all'
   // + active entries, baked at publish) so Brad has an inspectable artifact.
   // Promptless; full-file-hash refresh gate; fail-soft (never aborts install).
@@ -1207,6 +1416,14 @@ module.exports.PRECOMPACT_HOOK_COMMAND = PRECOMPACT_HOOK_COMMAND;
 module.exports.PRECOMPACT_HOOK_SOURCE = PRECOMPACT_HOOK_SOURCE;
 module.exports.PRECOMPACT_HOOK_DEST = PRECOMPACT_HOOK_DEST;
 module.exports.PRECOMPACT_HOOK_TIMEOUT_SECONDS = PRECOMPACT_HOOK_TIMEOUT_SECONDS;
+// Sprint 81 T3 — PreToolUse deny gates (advise→gate) exports.
+module.exports.installPreToolUseHook = installPreToolUseHook;
+module.exports._isPreToolUseHookEntry = _isPreToolUseHookEntry;
+module.exports._mergePreToolUseHookEntry = _mergePreToolUseHookEntry;
+module.exports.PRETOOLUSE_GATE_FILES = PRETOOLUSE_GATE_FILES;
+module.exports.PRETOOLUSE_GATE_SOURCES = PRETOOLUSE_GATE_SOURCES;
+module.exports.PRETOOLUSE_GATE_DESTS = PRETOOLUSE_GATE_DESTS;
+module.exports.PRETOOLUSE_HOOK_TIMEOUT_SECONDS = PRETOOLUSE_HOOK_TIMEOUT_SECONDS;
 module.exports._mcpInternals = _mcpInternals;
 module.exports.MCP_CONFIG_PATH = MCP_CONFIG;
 module.exports.CLAUDE_MCP_PATH_CANONICAL = CLAUDE_MCP_PATH_CANONICAL;

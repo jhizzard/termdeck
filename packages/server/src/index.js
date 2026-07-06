@@ -86,6 +86,7 @@ const { RAGIntegration } = require('./rag');
 const { createBridge } = require('./mnestra-bridge');
 const flashbackDiag = require('./flashback-diag');
 const advisor = require('./advisor');
+const { groupRecallEvents } = require('./recall-events'); // Sprint 81 T4 — memory-proof surface
 const { submitToPty } = require('./pty-submit');
 const {
   computeContextK,
@@ -2398,6 +2399,26 @@ function createServer(config) {
             secretFallback[k] = v;
           }
         }
+
+        // Sprint 81 T4 (R2 — docs/sprint-81-recall-reinjection-proof/ORCH-RESOLUTIONS.md):
+        // resolve this panel's recall-provenance source-agent — the resolved
+        // adapter's canonical name (claude|codex|gemini|grok|...), matching the
+        // mnestra source_agent enum; '' for a bare shell with no agent adapter.
+        // Prefer `directSpawnAdapter` (already resolved above for the bare-binary
+        // direct-spawn agents) so this is correct regardless of whether the
+        // `session.meta.type='shell'→adapter.sessionType` promotion has landed
+        // yet; fall back to type lookup for the shell-wrap path (e.g. `claude
+        // --resume <uuid>`, where the launcher sets an explicit type). Use the
+        // ESTABLISHED provenance convention `sourceAgent || name` (matching the
+        // two existing memory writers at ~index.js:350 and ~:418): an adapter
+        // may declare an explicit canonical sourceAgent distinct from its
+        // registry/binary-match `name` (web-chat-grok name='web-chat-grok' →
+        // sourceAgent='grok-web'; agy binary → name='antigravity'). Using `.name`
+        // alone would stamp a non-canonical agent Engram's taxonomy rejects.
+        const provenanceAdapter = directSpawnAdapter
+          || getAdapterForSessionType((session.meta && session.meta.type) || type);
+        const rawSourceAgent = provenanceAdapter && (provenanceAdapter.sourceAgent || provenanceAdapter.name);
+        const mnestraSourceAgent = (typeof rawSourceAgent === 'string') ? rawSourceAgent : '';
         // Sprint 64 T2 (carve-out 2.3) — codex pre-spawn version probe.
         // Fire-and-forget; never blocks spawn. WARN-only when
         // CODEX_PINNED_VERSION drifts from observed (default install: no probe
@@ -2425,6 +2446,17 @@ function createServer(config) {
             ...adapterSpawnEnv,
             TERMDECK_SESSION: session.id,
             TERMDECK_PROJECT: project || '',
+            // Sprint 81 T4 (R2) — TRUSTED recall-provenance producer. The mnestra
+            // MCP server (spawned by the agent, inheriting this env) reads these
+            // as the recall-log's source_session_id / source_agent, so "which
+            // panel pulled which memory" is unspoofable: TermDeck sets them here;
+            // an agent cannot forge another panel's id. MNESTRA_SESSION_ID mirrors
+            // TERMDECK_SESSION under the name engram's recall_log.ts reads;
+            // MNESTRA_SOURCE_AGENT is omitted for a bare shell (no agent adapter).
+            // (Codex's MCP config is a STATIC ~/.codex/config.toml that cannot
+            // carry a per-session id, so env inheritance is the only viable path.)
+            MNESTRA_SESSION_ID: session.id,
+            ...(mnestraSourceAgent ? { MNESTRA_SOURCE_AGENT: mnestraSourceAgent } : {}),
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
             // Kill macOS Terminal.app's zsh session save on teardown.
@@ -3724,6 +3756,68 @@ function createServer(config) {
     }
     const updated = flashbackDiag.markClickedThrough(db, id);
     res.json({ ok: true, updated });
+  });
+
+  // GET /api/recall-events[/:sessionId] — Sprint 81 T4 (the memory-proof
+  // surface / centerpiece). Reads public.memory_recall_log (engram, extended by
+  // migration 031) via the daily-driver pg pool and groups rows into
+  // "reinjection events" (one recall_group_id = one recall call = the K hits
+  // reinjected together), each carrying source_session_id (which panel),
+  // source_agent, token_budget, and a source_type mix. The per-session variant
+  // filters to one panel's recalls.
+  //
+  // FAIL-SOFT EMPTY (charter contract): no DATABASE_URL, a missing table/columns
+  // (031 not applied yet), or ANY query error returns HTTP 200 { events: [] }
+  // with a `degraded` reason, so the Memory panel never breaks — the durable
+  // proof simply shows nothing until ORCH applies 031 and recalls start flowing
+  // with the R2 provenance producer. Read-only; no live writes from this lane.
+  function _recallEventsLimit(req) {
+    const raw = req.query && req.query.limit;
+    const n = raw != null ? parseInt(raw, 10) : NaN;
+    return (Number.isFinite(n) && n > 0) ? Math.min(n, 1000) : 200;
+  }
+  async function _handleRecallEvents(req, res, sessionId) {
+    const pool = getRumenPool();
+    if (!pool) {
+      return res.json({ ok: true, events: [], eventCount: 0, rowCount: 0, degraded: 'no-database' });
+    }
+    const limit = _recallEventsLimit(req);
+    try {
+      const where = sessionId ? 'where l.source_session_id = $1' : '';
+      const limitParam = sessionId ? '$2' : '$1';
+      const params = sessionId ? [sessionId, limit] : [limit];
+      const sql = `
+        select l.memory_id, l.query_preview, l.score, l.rank, l.surface,
+               l.source_session_id, l.source_agent, l.source_type, l.token_budget,
+               l.recall_group_id, l.created_at,
+               m.project as memory_project,
+               left(m.content, 160) as memory_preview
+          from public.memory_recall_log l
+          left join public.memory_items m on m.id = l.memory_id
+         ${where}
+         order by l.created_at desc
+         limit ${limitParam}`;
+      const result = await pool.query(sql, params);
+      const events = groupRecallEvents(result.rows, { maxEvents: 50 });
+      return res.json({
+        ok: true,
+        events,
+        eventCount: events.length,
+        rowCount: result.rows.length,
+        degraded: null,
+      });
+    } catch (err) {
+      console.warn('[recall-events] query failed (fail-soft empty):', err.message);
+      return res.json({ ok: true, events: [], eventCount: 0, rowCount: 0, degraded: 'query-failed' });
+    }
+  }
+  app.get('/api/recall-events', (req, res) => _handleRecallEvents(req, res, null));
+  app.get('/api/recall-events/:sessionId', (req, res) => {
+    const sid = req.params.sessionId;
+    if (typeof sid !== 'string' || !sid || sid.length > 200) {
+      return res.status(400).json({ ok: false, error: 'invalid sessionId' });
+    }
+    return _handleRecallEvents(req, res, sid);
   });
 
   // GET /api/pty-reaper/status — Sprint 42 T2 observability surface.

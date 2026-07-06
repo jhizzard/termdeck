@@ -1870,6 +1870,81 @@
       background: var(--tg-surface);
     }
 
+    /* Sprint 81 T4 — memory-proof surface: doctrine chip + reinjection-event log */
+    .chip-doctrine {
+      display: inline-block;
+      padding: 0 5px;
+      border-radius: 3px;
+      font-size: 9px;
+      font-family: var(--tg-mono);
+      color: #c792ea;
+      background: var(--tg-surface);
+      font-weight: 600;
+    }
+    .reinject-head {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--tg-text-dim);
+      border-top: 1px solid var(--tg-border);
+      padding: 8px 2px 4px;
+      margin-top: 8px;
+    }
+    .reinject-event {
+      padding: 5px 8px;
+      border-radius: 3px;
+      background: var(--tg-bg);
+      border: 1px solid var(--tg-border);
+      margin-bottom: 4px;
+    }
+    .reinject-event.has-doctrine { border-color: #c792ea55; }
+    .reinject-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 9px;
+      color: var(--tg-text-dim);
+      margin-bottom: 3px;
+    }
+    .reinject-agent { color: var(--tg-text); font-family: var(--tg-mono); }
+    .reinject-mix {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+    .reinject-x { font-size: 9px; color: var(--tg-text-dim); }
+    .reinject-query {
+      font-size: 10px;
+      font-style: italic;
+      color: var(--tg-text-dim);
+      margin-bottom: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .reinject-hit {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+      font-size: 10px;
+      padding: 1px 0;
+    }
+    .reinject-rank {
+      min-width: 20px;
+      color: var(--tg-text-dim);
+      font-family: var(--tg-mono);
+    }
+    .reinject-proj { color: var(--tg-text-dim); }
+    .reinject-score { color: var(--tg-text-dim); font-family: var(--tg-mono); }
+    .reinject-prev {
+      color: var(--tg-text);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .term-panel.exited .drawer-overview .ctrl-input,
     .term-panel.exited .drawer-overview .theme-select,
     .term-panel.exited .drawer-overview .ctrl-btn { pointer-events: none; opacity: 0.55; }

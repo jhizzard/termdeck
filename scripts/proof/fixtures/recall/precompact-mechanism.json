@@ -1,0 +1,24 @@
+{
+  "_generated": "by build-recall-fixtures.js from recall-hits.json — do not hand-edit; re-run the generator",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000d1",
+      "source_type": "architecture",
+      "project": "termdeck",
+      "score": 0.176,
+      "content": "Auto-commit on context-compaction-near: Claude Code panels fire the PreCompact harness hook (memory-pre-compact.js), which writes a source_type='pre_compact_snapshot' row to Mnestra before the context is compacted. Non-Claude panels (Codex/Gemini/Grok) have no PreCompact equivalent, so TermDeck's server runs a periodic-capture timer for them instead."
+    }
+  ],
+  "tokens_used": 80,
+  "text": "1 memories (80 tokens, project: termdeck):\n\n- (architecture) Auto-commit on context-compaction-near: Claude Code panels fire the PreCompact harness hook (memory-pre-compact.js), which writes a source_type='pre_compact_snapshot' row to Mnestra before the context is compacted. Non-Claude panels (Codex/Gemini/Grok) have no PreCompact equivalent, so TermDeck's se...",
+  "log": {
+    "recall_group_id": "rg-precompact-mechanism",
+    "source_session_id": "proof-harness-fixture",
+    "source_agent": "proof-harness",
+    "token_budget": 2000,
+    "source_type_mix": {
+      "architecture": 1
+    },
+    "origin": "recall_log"
+  }
+}

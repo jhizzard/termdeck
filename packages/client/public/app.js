@@ -2373,28 +2373,26 @@
       setBadge(id, 'commands', entry.commandHistory.length);
     }
 
-    function renderMemoryTab(id) {
-      const entry = state.sessions.get(id);
-      const container = document.getElementById(`dp-memory-${id}`);
-      if (!entry || !container) return;
-
-      const hits = entry.memoryHits || [];
-      if (hits.length === 0) {
-        container.innerHTML = '<div class="empty-msg">No memory hits yet. Ask about this terminal or wait for a proactive lookup.</div>';
-        setBadge(id, 'memory', 0);
-        return;
+    // Sprint 81 T4 — source_type chip with a distinct doctrine highlight (📜).
+    // Elevated doctrine memories get a purple accent so a doctrine reinjection
+    // is visible at a glance; every other type renders as a plain dim span.
+    function sourceTypeChip(type) {
+      const t = escapeHtml(type || 'memory');
+      if (type === 'doctrine') {
+        return `<span class="chip-doctrine" title="Elevated doctrine">📜 ${t}</span>`;
       }
+      return `<span>${t}</span>`;
+    }
 
-      const rows = hits.slice(0, 40);
-      container.innerHTML = rows.map(m => {
-        const score = typeof m.similarity === 'number' ? `${(m.similarity * 100).toFixed(0)}%` : '';
-        const proj = m.project ? escapeHtml(m.project) : '';
-        const type = escapeHtml(m.source_type || m.sourceType || 'memory');
-        const ts = m.cachedAt ? timeAgo(m.cachedAt) : '';
-        return `
+    function renderMemoryHitRow(m) {
+      const score = typeof m.similarity === 'number' ? `${(m.similarity * 100).toFixed(0)}%` : '';
+      const proj = m.project ? escapeHtml(m.project) : '';
+      const type = m.source_type || m.sourceType || 'memory';
+      const ts = m.cachedAt ? timeAgo(m.cachedAt) : '';
+      return `
           <div class="drawer-row">
             <div class="row-meta">
-              <span>${type}</span>
+              ${sourceTypeChip(type)}
               ${proj ? `<span>${proj}</span>` : ''}
               ${score ? `<span>${score}</span>` : ''}
               ${ts ? `<span>${ts}</span>` : ''}
@@ -2402,8 +2400,108 @@
             <div class="row-content">${escapeHtml(m.content || m.text || '(empty)')}</div>
           </div>
         `;
-      }).join('');
+    }
+
+    function renderMemoryTab(id) {
+      const entry = state.sessions.get(id);
+      const container = document.getElementById(`dp-memory-${id}`);
+      if (!entry || !container) return;
+
+      const hits = entry.memoryHits || [];
+      const liveHtml = hits.length === 0
+        ? '<div class="empty-msg">No live memory hits yet. Ask about this terminal or wait for a proactive lookup.</div>'
+        : hits.slice(0, 40).map(renderMemoryHitRow).join('');
+
+      // Live per-panel hits (proactive WS frames) + the durable reinjection-event
+      // log (Sprint 81 T4 memory-proof surface), filled async + fail-soft below.
+      container.innerHTML =
+        `<div class="mem-live">${liveHtml}</div>` +
+        `<div class="mem-reinject" id="dp-reinject-${id}"></div>`;
+
       setBadge(id, 'memory', hits.length);
+      loadReinjectionEvents(id);
+    }
+
+    // Sprint 81 T4 — the memory-proof surface. Fetch THIS panel's durable
+    // reinjection events (one recall_group_id = one recall call = the K hits
+    // reinjected together) from GET /api/recall-events/:sessionId and render
+    // them under the live hits. Fully FAIL-SOFT: any error / empty result / DB
+    // not configured leaves the section blank and never disturbs the live hits.
+    // Cached on the session entry with a 10s TTL so WS-driven re-renders don't
+    // spam the endpoint.
+    function loadReinjectionEvents(id) {
+      const target = document.getElementById(`dp-reinject-${id}`);
+      const entry = state.sessions.get(id);
+      if (!target || !entry) return;
+
+      const now = Date.now();
+      const fresh = entry._reinjectAt && (now - entry._reinjectAt < 10000);
+      if (entry.reinjectionEvents && fresh) {
+        renderReinjectionEvents(target, entry.reinjectionEvents);
+        return;
+      }
+      if (entry._reinjectLoading) {
+        if (entry.reinjectionEvents) renderReinjectionEvents(target, entry.reinjectionEvents);
+        return;
+      }
+
+      entry._reinjectLoading = true;
+      fetch(`/api/recall-events/${encodeURIComponent(id)}?limit=200`)
+        .then((r) => (r && r.ok) ? r.json() : null)
+        .then((data) => {
+          entry._reinjectLoading = false;
+          entry._reinjectAt = Date.now();
+          entry.reinjectionEvents = (data && Array.isArray(data.events)) ? data.events : [];
+          const t2 = document.getElementById(`dp-reinject-${id}`);
+          if (t2) renderReinjectionEvents(t2, entry.reinjectionEvents);
+        })
+        .catch(() => { entry._reinjectLoading = false; /* fail-soft: leave blank */ });
+    }
+
+    function renderReinjectionEvents(target, events) {
+      if (!target) return;
+      if (!Array.isArray(events) || events.length === 0) {
+        target.innerHTML = ''; // fail-soft: nothing durable yet (or DB not wired)
+        return;
+      }
+      const head = `<div class="reinject-head">Reinjection events — durable recall log (${events.length})</div>`;
+      const body = events.map((ev) => {
+        const when = ev.createdAt ? timeAgo(ev.createdAt) : '';
+        const agent = ev.sourceAgent ? escapeHtml(ev.sourceAgent) : 'unknown';
+        const budget = (typeof ev.tokenBudget === 'number') ? `${ev.tokenBudget} tok` : '';
+        const surface = ev.surface ? escapeHtml(ev.surface) : '';
+        const sid = ev.sourceSessionId ? escapeHtml(String(ev.sourceSessionId).slice(0, 8)) : '';
+        const mix = Object.keys(ev.sourceTypeMix || {})
+          .map((t) => `${sourceTypeChip(t)}<span class="reinject-x">×${ev.sourceTypeMix[t]}</span>`).join(' ');
+        const query = ev.queryPreview ? `<div class="reinject-query">“${escapeHtml(ev.queryPreview)}”</div>` : '';
+        const hits = (ev.hits || []).map((h) => {
+          const rank = (typeof h.rank === 'number') ? `#${h.rank}` : '';
+          const sc = (typeof h.score === 'number') ? h.score.toFixed(3) : '';
+          const proj = h.project ? escapeHtml(h.project) : '';
+          const prev = h.preview ? escapeHtml(h.preview)
+            : (h.memoryId ? escapeHtml(String(h.memoryId).slice(0, 8)) : '(memory)');
+          return `<div class="reinject-hit">
+              <span class="reinject-rank">${rank}</span>
+              ${sourceTypeChip(h.sourceType || 'memory')}
+              ${proj ? `<span class="reinject-proj">${proj}</span>` : ''}
+              ${sc ? `<span class="reinject-score" title="RRF score">${sc}</span>` : ''}
+              <span class="reinject-prev">${prev}</span>
+            </div>`;
+        }).join('');
+        return `<div class="reinject-event${ev.hasDoctrine ? ' has-doctrine' : ''}">
+            <div class="reinject-meta">
+              <span class="reinject-agent" title="consuming panel${sid ? ' ' + sid : ''}">${agent}</span>
+              <span>${ev.hitCount} hit${ev.hitCount === 1 ? '' : 's'}</span>
+              ${surface ? `<span>${surface}</span>` : ''}
+              ${budget ? `<span>${budget}</span>` : ''}
+              ${when ? `<span>${when}</span>` : ''}
+            </div>
+            ${mix ? `<div class="reinject-mix">${mix}</div>` : ''}
+            ${query}
+            ${hits}
+          </div>`;
+      }).join('');
+      target.innerHTML = head + body;
     }
 
     function renderStatusLogTab(id) {
