@@ -56,7 +56,7 @@ function maybeBootstrapAndDetach() {
     return false;
   }
   const argv = process.argv.slice(2);
-  const SKIP_SUBCOMMANDS = new Set(['init', 'forge', 'doctor', 'stack', 'doctrine']);
+  const SKIP_SUBCOMMANDS = new Set(['init', 'forge', 'doctor', 'stack', 'doctrine', 'vault']);
   if (argv.length > 0 && SKIP_SUBCOMMANDS.has(argv[0])) return false;
   if (process.stdout.isTTY || process.stderr.isTTY) return false;
   const argvSet = new Set(argv);
@@ -352,12 +352,26 @@ if (args[0] === 'doctrine') {
   return;
 }
 
+// `termdeck vault export <dir>` — Sprint 83 T3: generate a READ-ONLY Obsidian
+// projection of the memory graph. One note per memory, wikilinks from typed
+// live edges. No import path — the vault is a view, never a second source of
+// truth. Lazy-loaded like every other subcommand so the launcher startup path
+// stays unaffected.
+if (args[0] === 'vault') {
+  const vaultExport = require(path.join(__dirname, 'vault-export.js'));
+  vaultExport(args.slice(1)).then((code) => process.exit(code || 0)).catch((err) => {
+    console.error('[cli] vault failed:', err && err.stack || err);
+    process.exit(2);
+  });
+  return;
+}
+
 // Sprint 24: when `termdeck` is invoked with no subcommand AND a configured
 // stack is detected, route through stack.js so users don't have to remember
 // the `stack` subcommand. `--no-stack` is the explicit opt-out.
 const { shouldAutoOrchestrate } = require(path.join(__dirname, 'auto-orchestrate.js'));
 
-const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack', 'doctor', 'doctrine']);
+const KNOWN_SUBCOMMANDS = new Set(['init', 'forge', 'stack', 'doctor', 'doctrine', 'vault']);
 const noStackIdx = args.indexOf('--no-stack');
 const noStackRequested = noStackIdx !== -1;
 if (noStackRequested) args.splice(noStackIdx, 1); // strip before flag parsing

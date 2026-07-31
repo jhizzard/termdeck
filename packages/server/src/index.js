@@ -83,8 +83,10 @@ function getRumenPool() {
 const { SessionManager } = require('./session');
 const { initDatabase, logCommand, getSessionHistory, getProjectSessions } = require('./database');
 const { RAGIntegration } = require('./rag');
-const { createBridge } = require('./mnestra-bridge');
+const { createBridge, stripServerOnlyFields } = require('./mnestra-bridge');
 const flashbackDiag = require('./flashback-diag');
+// Sprint 83 T3 — additive, read-only typed graph expansion on the error path.
+const { createExpander } = require('./graph-expansion');
 const advisor = require('./advisor');
 const { groupRecallEvents } = require('./recall-events'); // Sprint 81 T4 — memory-proof surface
 const { submitToPty } = require('./pty-submit');
@@ -1292,6 +1294,23 @@ function createServer(config) {
   const rag = new RAGIntegration(config, db);
   const mnestraBridge = createBridge(config);
   console.log(`[mnestra-bridge] mode=${mnestraBridge.mode}`);
+
+  // Sprint 83 T3 — typed graph expansion for the error/flashback path. Shared
+  // by BOTH emit surfaces (the WS `proactive_memory` frame and the HTTP
+  // proactive query) so the capability latch is probed once, not twice, and
+  // the two surfaces cannot drift on whether expansion is available — the
+  // exact drift class Sprint 82 T2 found between those same two paths.
+  //
+  // Read-only and additive: it runs AFTER selection, contributes a `related`
+  // payload, and can neither change nor suppress the hit. Requires Supabase
+  // credentials (it speaks PostgREST directly, independent of bridge mode);
+  // a webhook-only install simply has no expansion.
+  const graphExpander = createExpander(config);
+  console.log(
+    graphExpander.available()
+      ? `[graph-expansion] enabled (depth<=${graphExpander.settings.maxDepth}, rows<=${graphExpander.settings.maxRows}, seeds<=${graphExpander.settings.maxSeeds}, timeout=${graphExpander.settings.timeoutMs}ms)`
+      : '[graph-expansion] disabled (no Supabase credentials or TERMDECK_GRAPH_EXPANSION=0)'
+  );
 
   // Sprint 38 / T3 — let RAGIntegration delegate vector recall to the
   // bridge so we don't duplicate the embed pipeline. Graph recall stays
@@ -2787,7 +2806,7 @@ function createServer(config) {
               lastCommands: sess.meta.lastCommands.slice(-5),
               status: 'errored'
             }
-          }).then((result) => {
+          }).then(async (result) => {
             const memories = (result && result.memories) || [];
             const count = memories.length;
             console.log(`[flashback] query returned ${count} matches for session ${sess.id}`);
@@ -2861,7 +2880,40 @@ function createServer(config) {
               // Final landed/queued/dropped status lives in advisory_events.
               // Default false (e.g. a Claude/shell panel onTrigger no-ops on).
               const agent_injected = !!(sess._lastAdvisorMatch && sess._lastAdvisorMatch.willDeliver);
-              const frame = JSON.stringify({ type: 'proactive_memory', hit, flashback_event_id, agent_injected });
+              // Sprint 83 T3 — typed graph expansion. Deliberately placed
+              // HERE: after `pickNextNonDismissed` has already chosen `hit`
+              // and after the flashback_events row is written, so expansion
+              // cannot influence selection, the quality gate, or the funnel.
+              // It is strictly a rider on a frame that was already going to
+              // be sent. Fails open to [] — `expand` never rejects — and is
+              // time-capped, so the worst case is the current behavior plus a
+              // bounded delay.
+              const expansion = await graphExpander.expand({
+                hit, memories, project: sess.meta.project || null, sessionId: sess.id,
+                // `question` is Sprint 82's isolated error line (the matched
+                // line, not the buffer tail), which is exactly what the I3
+                // normalizer wants — it makes the live error hashable into
+                // the same key space the write side stored.
+                errorText: question,
+              });
+              // `metadata` and `category` are carried through the bridge for
+              // seed classification (I3) but deliberately do NOT ride the
+              // wire: keeping them off the frame preserves the pre-83 frame
+              // shape and its `frame_size_bytes` telemetry, and the browser
+              // has no use for a memory's internal metadata blob. Both emit
+              // surfaces call the SAME strip helper — a hand-rolled
+              // destructure at each site is how one of them ends up leaking
+              // the next field somebody adds to the mapper.
+              const hitForFrame = stripServerOnlyFields(hit);
+              const frame = JSON.stringify({
+                type: 'proactive_memory',
+                hit: hitForFrame,
+                flashback_event_id,
+                agent_injected,
+                // Additive key. Older clients ignore it; the current client
+                // renders it as a secondary line under the primary hit.
+                ...(expansion.related.length > 0 ? { related: expansion.related } : {}),
+              });
               try {
                 sess.ws.send(frame);
                 console.log(`[flashback] proactive_memory sent to session ${sess.id} (source_type=${hit.source_type}, project=${hit.project}, event_id=${flashback_event_id})`);
@@ -2880,6 +2932,15 @@ function createServer(config) {
                   threshold_applied: thresholdApplied,
                   min_similarity: minSimilarity,
                   hit_similarity: flashbackDiag.semanticSimilarityOf(hit),
+                  // Sprint 83 T3 — expansion funnel. `expansion_reason`
+                  // distinguishes "the graph had nothing to say" (no_edges)
+                  // from "we never asked" (no_solved_problem_seeds /
+                  // unsupported / disabled), which is the difference between
+                  // a data problem and a wiring problem.
+                  expansion_reason: expansion.reason,
+                  expansion_count: expansion.related.length,
+                  expansion_seeds: expansion.seedCount,
+                  expansion_ms: expansion.durationMs,
                 });
               } catch (err) {
                 console.error('[flashback] proactive_memory send failed:', err);
@@ -4216,7 +4277,26 @@ function createServer(config) {
           // event_id is null only when SQLite is unavailable on this install
           // — the same degradation the WS path has always had. Show the
           // toast anyway rather than going dark on a no-DB install.
-          flashback = { event_id: selected.event_id, hit: selected.hit };
+          //
+          // Sprint 83 T3 — the SAME expansion the WS path gets. Wiring only
+          // one of the two toast surfaces is precisely how these two paths
+          // drifted before (Sprint 82 T2 found this surface firing real
+          // toasts with no flashback_events row at all); one expander
+          // instance, one call site shape, both surfaces.
+          const expansion = await graphExpander.expand({
+            hit: selected.hit,
+            memories,
+            project: (session && session.meta.project) || project || null,
+            sessionId: sessionId || null,
+            errorText: question,
+          });
+          // Same strip as the WS surface, same helper — see the note there.
+          const hitForClient = stripServerOnlyFields(selected.hit);
+          flashback = {
+            event_id: selected.event_id,
+            hit: hitForClient,
+            ...(expansion.related.length > 0 ? { related: expansion.related } : {}),
+          };
         } else {
           console.log(`[flashback] ${selected.reason} — no toast for session ${sessionId}`);
         }

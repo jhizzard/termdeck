@@ -27,16 +27,50 @@ const flashbackDiag = require('../flashback-diag');
 // Normalizes one row from any of the three backends into the bridge's
 // public memory shape. Kept in one place so `direct`, `webhook` and `mcp`
 // cannot drift on which fields survive the hop.
+// Fields Sprint 83 T3 added to the bridge's memory shape for SERVER-SIDE use
+// only. They are stripped before any memory crosses the wire to a browser, so
+// the client-facing frame stays byte-shaped exactly as it was pre-83 (and its
+// `frame_size_bytes` telemetry stays comparable across the change). Exported
+// so both emit surfaces strip the same list — two hand-maintained destructures
+// is how one of them ends up leaking the next field somebody adds.
+const SERVER_ONLY_MEMORY_FIELDS = ['metadata', 'category'];
+
+function stripServerOnlyFields(memory) {
+  if (!memory || typeof memory !== 'object') return memory;
+  const out = { ...memory };
+  for (const field of SERVER_ONLY_MEMORY_FIELDS) delete out[field];
+  return out;
+}
+
 function mapMemoryRow(m) {
   const sem = (m && typeof m.semantic_similarity === 'number'
     && Number.isFinite(m.semantic_similarity))
     ? m.semantic_similarity
     : null;
+  // Sprint 83 T3 — `metadata` joins the contract for the same reason `id`
+  // did in Sprint 82: memory_hybrid_search has always returned it (033:303)
+  // and this mapper dropped it, so every consumer downstream of the bridge
+  // was structurally unable to read anything stored there. T2's
+  // `problem_signature` lands in exactly this column, and the graph-expansion
+  // seed classifier (I3) is its first reader. Normalized to `null` for
+  // non-object values so a malformed blob can't break the shape; it is
+  // deliberately NOT forwarded onto the WS frame (see index.js frame build).
+  const meta = (m && m.metadata && typeof m.metadata === 'object' && !Array.isArray(m.metadata))
+    ? m.metadata
+    : null;
   return {
     id: (m && m.id) || null,
     content: m.content,
     source_type: m.source_type,
+    // Sprint 83 T3 — `category` joins for the same reason as `metadata`, and
+    // it is not optional for correctness. T2's solved-problem trigger (I3) is
+    // `source_type === 'bug_fix' || category === 'debugging'`, and `debugging`
+    // is a CATEGORY value that migration 028's source_type CHECK forbids as a
+    // source_type. Without this field the classifier degrades to bug_fix-only
+    // and misses the majority of the debugging-class corpus.
+    category: (m && m.category) ?? null,
     project: m.project,
+    metadata: meta,
     // memory_hybrid_search returns `score`, not `similarity`. This stays the
     // ORDINAL composite — see the header note; it must not be rendered as a
     // percentage anywhere.
@@ -402,4 +436,9 @@ function createBridge(config) {
   return { mode, queryMnestra };
 }
 
-module.exports = { createBridge };
+module.exports = {
+  createBridge,
+  mapMemoryRow,
+  stripServerOnlyFields,
+  SERVER_ONLY_MEMORY_FIELDS,
+};

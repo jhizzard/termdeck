@@ -603,7 +603,7 @@
               updatePanelMeta(id, msg.session.meta);
               break;
             case 'proactive_memory':
-              showProactiveToast(id, msg.hit, msg.flashback_event_id);
+              showProactiveToast(id, msg.hit, msg.flashback_event_id, msg.related);
               break;
             case 'exit':
               updatePanelMeta(id, {
@@ -1025,7 +1025,7 @@
           updatePanelMeta(id, msg.session.meta);
           break;
         case 'proactive_memory':
-          showProactiveToast(id, msg.hit, msg.flashback_event_id);
+          showProactiveToast(id, msg.hit, msg.flashback_event_id, msg.related);
           break;
         case 'exit': {
           updatePanelMeta(id, { status: 'exited', statusDetail: `Exited (${msg.exitCode})` });
@@ -1778,7 +1778,9 @@
         // `flashback` key at all, which lands here as "no toast" — the safe
         // direction to fail.)
         if (!result.flashback || !result.flashback.hit) return;
-        showProactiveToast(id, result.flashback.hit, result.flashback.event_id);
+        // `related` rides on the flashback object here (the HTTP surface),
+        // and beside the hit on the WS frame — same payload, same renderer.
+        showProactiveToast(id, result.flashback.hit, result.flashback.event_id, result.flashback.related);
       } catch (err) {
         console.error('[client] proactive memory query failed:', err);
       }
@@ -1808,7 +1810,36 @@
     // effective threshold is still exposed on /api/config for the
     // diagnostics panel — as an operator-visible value, not a control.
 
-    function showProactiveToast(id, hit, flashbackEventId) {
+    // Sprint 83 T3 — renders the graph-derived `related` payload, when the
+    // server sent one, as a SECONDARY line beneath the primary hit.
+    //
+    // Deliberately secondary: these memories were reached by walking typed
+    // relationship edges, not by scoring against the query, so they carry no
+    // similarity of any kind. Presenting one as a peer of the ranked hit would
+    // make an unscored neighbor look like it had been ranked. `related` is an
+    // optional key — an older server simply omits it and this renders nothing.
+    function renderRelatedLine(related) {
+      if (!Array.isArray(related) || related.length === 0) return '';
+      const top = related[0];
+      if (!top || !top.content) return '';
+      const label = escapeHtml(top.relation_label || 'Related by graph');
+      const snippet = escapeHtml(String(top.content).slice(0, 140));
+      const hops = Number.isFinite(top.hops) ? top.hops : null;
+      // The provenance is stated in the UI, not just the payload: "via
+      // <edge_type>, N hop(s)" is the difference between a claim the user can
+      // evaluate and one they have to take on faith.
+      const via = [top.edge_type ? escapeHtml(top.edge_type) : null, hops ? `${hops} hop${hops === 1 ? '' : 's'}` : null]
+        .filter(Boolean).join(', ');
+      const more = related.length > 1 ? ` <span class="t-graph-more">+${related.length - 1} more</span>` : '';
+      return `
+        <div class="t-graph">
+          <span class="t-graph-label">🔗 ${label}</span>${via ? ` <span class="t-graph-via">(via ${via})</span>` : ''}${more}
+          <div class="t-graph-snippet">${snippet}</div>
+        </div>
+      `;
+    }
+
+    function showProactiveToast(id, hit, flashbackEventId, related) {
       const entry = state.sessions.get(id);
       if (!entry || !entry.el) return;
 
@@ -1836,6 +1867,7 @@
         <div class="t-title">Mnestra — possible match</div>
         <div class="t-body">Found a similar error in <b>${proj}</b> · ${qualifier} — click to see.</div>
         <div class="t-meta">${snippet}</div>
+        ${renderRelatedLine(related)}
       `;
 
       entry.el.appendChild(toast);
@@ -2705,7 +2737,7 @@
               updatePanelMeta(id, msg.session.meta);
               break;
             case 'proactive_memory':
-              showProactiveToast(id, msg.hit, msg.flashback_event_id);
+              showProactiveToast(id, msg.hit, msg.flashback_event_id, msg.related);
               break;
             case 'exit':
               updatePanelMeta(id, { status: 'exited', statusDetail: `Exited (${msg.exitCode})` });

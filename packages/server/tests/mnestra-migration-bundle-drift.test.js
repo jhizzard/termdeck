@@ -48,7 +48,11 @@ const SYNC_MIN = 23;
 // a "pending close-out sync". ORCH: revert this one line if you would rather the
 // bump stay a close-out action; the probe entry in migrations.js is the part
 // that is actually load-bearing for the suite.
-const BUNDLE_MAX = 33;
+//
+// Sprint 83 T1: 34, same reasoning — the vendored copy of 034_graph_layer.sql is
+// a lane deliverable (byte-identical, verified by the layer-2 fence below), so
+// leaving this at 33 would report an already-synced migration as pending.
+const BUNDLE_MAX = 34;
 const TRACKER_FILE = '020_migration_tracking.sql'; // bootstrap-special-cased; no probe
 
 function sqlFiles(dir) {

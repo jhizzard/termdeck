@@ -179,7 +179,26 @@ const MIGRATION_PROBES = Object.freeze({
   // output column — 033's distinguishing artifact — following the 029/030
   // prosrc-probe precedent.
   '033_two_phase_hybrid_search.sql':
-    "select 1 from pg_proc p where p.proname='memory_hybrid_search' and p.prosrc like '%semantic_similarity%' and exists (select 1 from pg_indexes where schemaname='public' and tablename='memory_items' and indexname='memory_items_content_fts_gin')"
+    "select 1 from pg_proc p where p.proname='memory_hybrid_search' and p.prosrc like '%semantic_similarity%' and exists (select 1 from pg_indexes where schemaname='public' and tablename='memory_items' and indexname='memory_items_content_fts_gin')",
+  // Sprint 83 T1 — 034 is the graph layer: edge temporality, an FK-governed
+  // predicate vocabulary, the entity tables, the citation RPC, typed expansion,
+  // and a same-signature repair of 033's solved-problem decay profile.
+  //
+  // Two-sided, following 033's precedent, because either half alone is a broken
+  // install. The FUNCTION half probes memory_expand_typed — the one artifact no
+  // earlier migration defines, so unlike memory_hybrid_search (002/023/029/032/
+  // 033 all define that name) a bare name match is already conclusive. The
+  // COLUMN half probes memory_relationships.invalid_at, the temporal artifact
+  // every traversal in 034 filters on.
+  //
+  // Deliberately NOT probed here: the §2c decay repair. It lives in
+  // memory_hybrid_search's BODY, and probing prosrc for it would make this entry
+  // false on an install whose 034 applied but whose 033 was later re-applied
+  // over it — a state the runner should repair by re-running 034, which is
+  // exactly what a false probe would prevent. The two artifacts above are
+  // create-once and cannot be undone by a re-apply of an earlier file.
+  '034_graph_layer.sql':
+    "select 1 from pg_proc p where p.proname='memory_expand_typed' and exists (select 1 from information_schema.columns where table_schema='public' and table_name='memory_relationships' and column_name='invalid_at')"
 });
 
 // Sprint 61 T2 — self-transactional detection.
