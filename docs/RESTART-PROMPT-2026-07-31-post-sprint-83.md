@@ -31,7 +31,21 @@ is not independent confirmation."
 2. `memory_recall(query="recent decisions Phase 4 promotion dry-run consolidation")`
 3. Read `~/.claude/CLAUDE.md` (note the NEW § "Cite the memories you actually use") and
    termdeck `./CLAUDE.md`; then this doc.
-4. Substrate preflight only if dispatching panels: `GET /api/sessions` on the port Josh names.
+4. **Shard/index the prior orchestrator transcript — the arc continues and it is live
+   substrate.** Session `cb6cb639-57d0-41a3-b1a1-454bdef49c00` at
+   `~/.claude/projects/-Users-joshuaizzard-Documents-Graciella-ChopinNashville-SideHustles-TermDeck/cb6cb639-57d0-41a3-b1a1-454bdef49c00.jsonl`
+   holds the full Sprint 83 arc: all six ORCH rulings, the SCHEMA-READY-2 reconciliation,
+   the `hnsw.ef_search` non-superuser incident + fix, and every close-out receipt.
+   Procedure (exactly as this session executed for `b7a9bbf1`):
+   (a) verify the hourly `~/.claude/session-index/` launchd has indexed + archived it
+   (`grep -rl cb6cb639 ~/.claude/session-index/`; run `build-index.py`/`sync.sh` manually
+   if not); (b) produce the complementary Mnestra summary — extract user/assistant TEXT
+   turns from the JSONL (skip tool_use/tool_result noise, cap ~700 chars/turn, shard to
+   ≤36K chars), prepend a one-line provenance header, feed each shard to
+   `memory_summarize_session(project="termdeck")`; (c) for deep context mid-work, grep the
+   JSONL or resume it:
+   `cd /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck && claude --resume cb6cb639-57d0-41a3-b1a1-454bdef49c00`
+5. Substrate preflight only if dispatching panels: `GET /api/sessions` on the port Josh names.
 
 ## 2. Immediate tail (execute-on-sight, ~15 min, no panels needed)
 
@@ -53,6 +67,16 @@ is not independent confirmation."
    03:30 UTC (doctrine-scan owns it); stagger to 04:00 UTC**, 1 h after graph-inference.
 4. **MacBook Air Part-B mirror** still open (`ACTIVATION-DAY-2026-07-30.md` §4).
 5. First doctrine candidate still awaits `termdeck doctrine ratify`.
+6. **Obsidian vault — first live export already DONE (2026-07-31):** 8,930 notes +
+   5,810 typed-edge wikilinks at
+   `~/Documents/Graciella/ChopinNashville/SideHustles/TermDeck/mnestra-vault/`
+   (Josh opens it via Obsidian "Open folder as vault"). It is a READ-ONLY projection —
+   never edit-back, never a second source of truth. Regenerate on demand from the termdeck
+   repo: `node packages/cli/src/index.js vault export <same-dir>` (env from
+   `~/.termdeck/secrets.env`). The exporter refuses directories it did not create. The
+   nightly-regeneration cron decision is still OPEN — decide it together with the
+   consolidation cron (§2.3), after edge density grows enough that regeneration cadence
+   matters. Mention the vault's existence to Josh in the first status message.
 
 ## 3. Phase 4 gate (~2026-08-13) — Sprint 84 "Write-Side Completion"
 
