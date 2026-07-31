@@ -546,7 +546,14 @@ class Session {
         : '';
       const tail = this._outputBuffer.slice(-200).replace(/\x1b\[[\?]?[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
       try {
-        this.onErrorDetected(this, { lastCommand, tail });
+        // Sprint 82 T2: pass the MATCHED ERROR LINE, not just the raw tail.
+        // `matchedLine` is what the pattern actually fired on — the error
+        // itself. `tail` is the last 200 chars of the buffer, which is
+        // whatever the PTY happened to be painting: progress bars, prompt
+        // redraws, half a spinner. Flashback used to embed the tail, so the
+        // vector query was mostly terminal noise. Still passed for the
+        // fallback path and for callers that predate this field.
+        this.onErrorDetected(this, { lastCommand, tail, matchedLine });
       } catch (err) {
         console.error('[flashback] onErrorDetected handler threw:', err);
         console.error('[session] onErrorDetected handler error:', err);

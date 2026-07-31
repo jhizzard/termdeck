@@ -167,7 +167,19 @@ const MIGRATION_PROBES = Object.freeze({
   '031_recall_provenance.sql':
     "select 1 from information_schema.columns where table_schema='public' and table_name='memory_recall_log' and column_name='recall_group_id'",
   '032_recall_boost.sql':
-    "select 1 from information_schema.columns where table_schema='public' and table_name='memory_items' and column_name='recall_boost'"
+    "select 1 from information_schema.columns where table_schema='public' and table_name='memory_items' and column_name='recall_boost'",
+  // Sprint 82 T1 — 033 rewrites memory_hybrid_search as a two-phase indexed
+  // top-k AND creates the GIN index that rewrite depends on. Both halves are
+  // probed, because either one alone is a broken install: the function without
+  // the index seq-scans the full-text branch exactly as 032 did (the index the
+  // rewrite assumes has never existed — 001's only GIN index is gin_trgm_ops,
+  // which cannot serve @@), and the index without the function is inert. Name
+  // presence is useless here since 002/023/029/032 all define a function by
+  // this name, so the function half probes the BODY for the semantic_similarity
+  // output column — 033's distinguishing artifact — following the 029/030
+  // prosrc-probe precedent.
+  '033_two_phase_hybrid_search.sql':
+    "select 1 from pg_proc p where p.proname='memory_hybrid_search' and p.prosrc like '%semantic_similarity%' and exists (select 1 from pg_indexes where schemaname='public' and tablename='memory_items' and indexname='memory_items_content_fts_gin')"
 });
 
 // Sprint 61 T2 — self-transactional detection.

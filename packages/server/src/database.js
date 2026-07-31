@@ -225,6 +225,33 @@ function initDatabase(Database) {
     console.warn('[db] flashback_events migration failed:', err.message);
   }
 
+  // Migration (Sprint 82 T2): add flashback_events.expired_at so an
+  // unattended 30s toast timeout is recorded distinctly from an explicit
+  // user dismissal. Pre-82 both wrote dismissed_at, and the blacklist read
+  // path treats dismissed_at as a permanent global rejection — so every
+  // error the user wasn't watching burned a memory out of the pool forever.
+  //
+  // In-place ALTER rather than a new numbered .sql: 001's CREATE is
+  // IF NOT EXISTS, so editing it would only reach fresh installs and leave
+  // every existing ~/.termdeck/termdeck.db behind. Same PRAGMA-check shape
+  // as command_history.source / sessions.theme_override / sessions.role
+  // above (SQLite has no `ADD COLUMN IF NOT EXISTS`). No backfill: historical
+  // rows were written under the conflated semantics and there is no way to
+  // recover which of them were timeouts, so they stay expired_at=NULL and
+  // keep their original meaning. Fail-soft — flashback-diag capability-probes
+  // for this column and degrades to ring-only expiry observability if the
+  // ALTER never ran.
+  try {
+    const cols = db.prepare(`PRAGMA table_info(flashback_events)`).all();
+    const hasExpiredAt = cols.some((c) => c.name === 'expired_at');
+    if (!hasExpiredAt) {
+      db.exec(`ALTER TABLE flashback_events ADD COLUMN expired_at TEXT`);
+      console.log("[db] Migrated flashback_events: added 'expired_at' column");
+    }
+  } catch (err) {
+    console.warn('[db] flashback_events.expired_at migration failed:', err.message);
+  }
+
   // Sprint 78 T2: advisory_events + advisory_quarantine. Inline-only (no
   // repo-root migration file — SQLite-only, offline-complete this sprint).
   // Idempotent CREATE; fail-soft so a broken advisor schema can never block

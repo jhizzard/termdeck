@@ -129,6 +129,7 @@
     }
     .fb-funnel-row[data-tier="fires"] .fb-funnel-bar-fill { background: var(--tg-purple); }
     .fb-funnel-row[data-tier="dismissed"] .fb-funnel-bar-fill { background: var(--tg-amber); }
+    .fb-funnel-row[data-tier="expired"] .fb-funnel-bar-fill { background: var(--tg-border); }
     .fb-funnel-row[data-tier="clicked"] .fb-funnel-bar-fill { background: var(--tg-green); }
     .fb-funnel-count {
       font-family: var(--tg-mono);
@@ -254,6 +255,9 @@
     }
     .fb-pill-clicked { color: var(--tg-green); border-color: var(--tg-green); }
     .fb-pill-dismissed { color: var(--tg-amber); border-color: var(--tg-amber); }
+    /* Sprint 82 T2 — expiry is neutral, not a rejection: deliberately styled
+       with the dim default rather than the amber "dismissed" warning tone. */
+    .fb-pill-expired { color: var(--tg-text-dim); border-color: var(--tg-border); }
     .fb-pill-pending { color: var(--tg-purple); border-color: var(--tg-purple); }
 
     .fb-loading {
@@ -343,10 +347,15 @@
           <div class="fb-funnel-bar"><div class="fb-funnel-bar-fill" id="fbBarFires"></div></div>
           <span class="fb-funnel-count"><span id="fbCountFires">—</span></span>
         </div>
-        <div class="fb-funnel-row" data-tier="dismissed">
+        <div class="fb-funnel-row" data-tier="dismissed" title="Explicit user rejection — the × button. Suppresses that memory for 14 days.">
           <span class="fb-funnel-label">Dismissed</span>
           <div class="fb-funnel-bar"><div class="fb-funnel-bar-fill" id="fbBarDismissed"></div></div>
           <span class="fb-funnel-count"><span id="fbCountDismissed">—</span><span class="fb-funnel-pct" id="fbPctDismissed"></span></span>
+        </div>
+        <div class="fb-funnel-row" data-tier="expired" title="The 30s timer ran out with no interaction. Carries no negative signal and never suppresses the memory.">
+          <span class="fb-funnel-label">Expired unseen</span>
+          <div class="fb-funnel-bar"><div class="fb-funnel-bar-fill" id="fbBarExpired"></div></div>
+          <span class="fb-funnel-count"><span id="fbCountExpired">—</span><span class="fb-funnel-pct" id="fbPctExpired"></span></span>
         </div>
         <div class="fb-funnel-row" data-tier="clicked">
           <span class="fb-funnel-label">Clicked through</span>

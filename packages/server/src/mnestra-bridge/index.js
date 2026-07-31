@@ -4,7 +4,19 @@
 //   - mcp:     spawn the @jhizzard/mnestra binary and talk JSON-RPC over stdio
 //
 // All three modes return the same shape:
-//   { memories: Array<{ content, source_type, project, similarity, created_at }>, total }
+//   { memories: Array<{ id, content, source_type, project, similarity,
+//                       semantic_similarity, created_at }>, total }
+//
+// Sprint 82 T2 added `id` and `semantic_similarity` to that contract:
+//   • `id` — the memory's uuid. memory_hybrid_search has always returned it
+//     (032:169) but the mappers dropped it, so `top_hit_id` was written NULL
+//     on every flashback_events row and the Sprint 57 dismissal blacklist
+//     matched nothing. The feature existed on paper only.
+//   • `semantic_similarity` — raw cosine, migration 033's absolute signal.
+//     Normalized to null when the store predates 033, which is the
+//     feature-detection signal every consumer keys off. NEVER conflate it
+//     with `similarity`: that field is the ordinal RRF composite (ceiling
+//     ~0.074) and is not a percentage of anything.
 //
 // Errors are thrown as plain Error objects; the caller maps them to HTTP responses.
 
@@ -12,11 +24,44 @@ const { spawn } = require('child_process');
 const { resolveProjectName } = require('../rag');
 const flashbackDiag = require('../flashback-diag');
 
+// Normalizes one row from any of the three backends into the bridge's
+// public memory shape. Kept in one place so `direct`, `webhook` and `mcp`
+// cannot drift on which fields survive the hop.
+function mapMemoryRow(m) {
+  const sem = (m && typeof m.semantic_similarity === 'number'
+    && Number.isFinite(m.semantic_similarity))
+    ? m.semantic_similarity
+    : null;
+  return {
+    id: (m && m.id) || null,
+    content: m.content,
+    source_type: m.source_type,
+    project: m.project,
+    // memory_hybrid_search returns `score`, not `similarity`. This stays the
+    // ORDINAL composite — see the header note; it must not be rendered as a
+    // percentage anywhere.
+    similarity: m.similarity ?? m.score ?? null,
+    semantic_similarity: sem,
+    created_at: m.created_at
+  };
+}
+
 function createBridge(config) {
   const mode = config.rag?.mnestraMode || 'direct';
-  const state = { mcpChild: null, mcpQueue: [], mcpNextId: 1, mcpBuffer: '' };
+  const state = {
+    mcpChild: null,
+    mcpQueue: [],
+    mcpNextId: 1,
+    mcpBuffer: '',
+    // Sprint 82 T2 — tri-state capability cache for migration 033's
+    // p_decay_profile arg in DIRECT mode. null = unknown (probe on next
+    // call), true = the store accepted it, false = pre-033 store, stop
+    // sending it. See the PostgREST overload-resolution note in queryDirect
+    // for why this must be a probe rather than an unconditional send.
+    decayProfileSupported: null,
+  };
 
-  async function queryDirect({ question, project, searchAll }) {
+  async function queryDirect({ question, project, searchAll, decayProfile }) {
     const supabaseUrl = config.rag?.supabaseUrl;
     const supabaseKey = config.rag?.supabaseKey;
     const openaiKey = config.rag?.openaiApiKey || process.env.OPENAI_API_KEY;
@@ -55,7 +100,15 @@ function createBridge(config) {
     // extra key (e.g. recency_weight, decay_days) makes it fail to resolve the
     // overload and return 404 "Could not find the function". That was silently
     // killing every Flashback query for 15 sprints.
-    const rpcBody = {
+    //
+    // Sprint 82 T2: migration 033 adds an optional `p_decay_profile`, and that
+    // 404 trap is exactly why it cannot just be added to the body — against a
+    // pre-033 store an unconditional extra key re-creates the 15-sprint
+    // outage verbatim. So the key is sent optimistically and, on the specific
+    // "could not find the function" 404, retried once without it while the
+    // verdict is cached on the bridge instance. Post-033 stores pay nothing;
+    // pre-033 stores pay one extra round-trip, once, ever.
+    const baseBody = {
       query_text: question,
       query_embedding: `[${embedding.join(',')}]`,
       match_count: 10,
@@ -65,38 +118,55 @@ function createBridge(config) {
       filter_project: searchAll ? null : (project || null),
       filter_source_type: null
     };
-    console.log(`[flashback] direct RPC → memory_hybrid_search project=${rpcBody.filter_project ?? 'ALL'} q="${question.slice(0, 60)}"`);
-    const searchRes = await fetch(`${supabaseUrl}/rest/v1/rpc/memory_hybrid_search`, {
+    const wantsProfile = !!decayProfile && state.decayProfileSupported !== false;
+    const rpcBody = wantsProfile
+      ? { ...baseBody, p_decay_profile: decayProfile }
+      : baseBody;
+
+    console.log(`[flashback] direct RPC → memory_hybrid_search project=${rpcBody.filter_project ?? 'ALL'} profile=${wantsProfile ? decayProfile : 'standard'} q="${question.slice(0, 60)}"`);
+
+    const callRpc = (body) => fetch(`${supabaseUrl}/rest/v1/rpc/memory_hybrid_search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`
       },
-      body: JSON.stringify(rpcBody)
+      body: JSON.stringify(body)
     });
+
+    let searchRes = await callRpc(rpcBody);
     if (!searchRes.ok) {
-      const err = await searchRes.text();
-      console.error(`[flashback] direct RPC failed ${searchRes.status}:`, err);
-      console.error('[mnestra-bridge:direct] supabase search failed:', err);
-      throw new Error(`Memory search failed (${searchRes.status})`);
+      const errText = await searchRes.text();
+      // Overload-resolution failure ⇒ this store predates 033. Latch the
+      // capability off and retry with the 8-arg body so the flashback still
+      // fires (degraded to the 'standard' decay profile, never dropped).
+      const isOverloadMiss = searchRes.status === 404
+        && /could not find the function/i.test(errText || '');
+      if (wantsProfile && isOverloadMiss) {
+        state.decayProfileSupported = false;
+        console.warn('[mnestra-bridge:direct] p_decay_profile rejected (pre-033 store) — retrying without it; solved-problem decay unavailable until migration 033 lands');
+        searchRes = await callRpc(baseBody);
+      }
+      if (!searchRes.ok) {
+        const err = searchRes.bodyUsed ? errText : await searchRes.text();
+        console.error(`[flashback] direct RPC failed ${searchRes.status}:`, err);
+        console.error('[mnestra-bridge:direct] supabase search failed:', err);
+        throw new Error(`Memory search failed (${searchRes.status})`);
+      }
+    } else if (wantsProfile) {
+      state.decayProfileSupported = true;
     }
+
     const rows = await searchRes.json();
     console.log(`[flashback] direct RPC returned ${rows.length} rows`);
     return {
-      memories: rows.map((m) => ({
-        content: m.content,
-        source_type: m.source_type,
-        project: m.project,
-        // memory_hybrid_search returns `score`, not `similarity`.
-        similarity: m.similarity ?? m.score ?? null,
-        created_at: m.created_at
-      })),
+      memories: rows.map(mapMemoryRow),
       total: rows.length
     };
   }
 
-  async function queryWebhook({ question, project, searchAll }) {
+  async function queryWebhook({ question, project, searchAll, decayProfile }) {
     const url = config.rag?.mnestraWebhookUrl || 'http://localhost:37778/mnestra';
     // mnestra ≥ 0.7.0 fail-closes the webhook: present the shared secret when
     // it's configured (sourced into this process's env from secrets.env).
@@ -112,7 +182,15 @@ function createBridge(config) {
         op: 'recall',
         question,
         project: searchAll ? null : (project || null),
-        min_results: 5
+        min_results: 5,
+        // Sprint 82 T2: forward-compat only. Mnestra's webhook `recall` op
+        // builds its recall input from a fixed arg list and silently drops
+        // keys it doesn't know, so this is INERT today — it becomes live
+        // when engram plumbs decay_profile through recall(). Safe to send
+        // now (unknown keys don't error, unlike PostgREST's overload
+        // resolution in direct mode); do not read it as "webhook mode has
+        // solved-problem decay."
+        ...(decayProfile ? { decay_profile: decayProfile } : {})
       })
     });
     if (!res.ok) {
@@ -121,15 +199,14 @@ function createBridge(config) {
       throw new Error(`Mnestra webhook returned ${res.status}`);
     }
     const data = await res.json();
-    const rows = data.memories || [];
+    // Sprint 82 T2: mnestra's webhook responds `{ok, hits, tokens_used, text}`
+    // (engram/src/webhook-server.ts, `case 'recall'`) — there is no
+    // `memories` key, so the old `data.memories || []` made EVERY webhook-mode
+    // flashback resolve to zero hits and log a truthful-looking "0 matches".
+    // Both keys are accepted so the bridge works against any mnestra build.
+    const rows = data.memories || data.hits || [];
     return {
-      memories: rows.map((m) => ({
-        content: m.content,
-        source_type: m.source_type,
-        project: m.project,
-        similarity: m.similarity ?? m.score ?? null,
-        created_at: m.created_at
-      })),
+      memories: rows.map(mapMemoryRow),
       total: rows.length
     };
   }
@@ -212,15 +289,14 @@ function createBridge(config) {
           match_count: 10
         }
       });
-      const rows = (result && (result.memories || result.content || [])) || [];
+      // Sprint 82 T2: mapper unified with direct/webhook so `id` and
+      // `semantic_similarity` survive here too. No arg changes — the MCP
+      // tool schema may reject unknown properties, and this mode is the
+      // least-proven of the three (BACKLOG V5-5); not regressing it beats
+      // extending it.
+      const rows = (result && (result.memories || result.hits || result.content || [])) || [];
       return {
-        memories: rows.map((m) => ({
-          content: m.content,
-          source_type: m.source_type,
-          project: m.project,
-          similarity: m.similarity ?? m.score ?? null,
-          created_at: m.created_at
-        })),
+        memories: rows.map(mapMemoryRow),
         total: rows.length
       };
     } catch (err) {
@@ -233,7 +309,7 @@ function createBridge(config) {
     }
   }
 
-  async function queryMnestra({ question, project, searchAll, sessionContext, cwd, sessionId }) {
+  async function queryMnestra({ question, project, searchAll, sessionContext, cwd, sessionId, decayProfile }) {
     // Flashback callers pass the session's project (from config.yaml). If that
     // slot is empty — e.g. a session created without an explicit project — fall
     // back to resolving the session's cwd against config.projects so queries
@@ -261,14 +337,14 @@ function createBridge(config) {
     try {
       switch (mode) {
         case 'webhook':
-          result = await queryWebhook({ question, project: effectiveProject, searchAll });
+          result = await queryWebhook({ question, project: effectiveProject, searchAll, decayProfile });
           break;
         case 'mcp':
           result = await queryMcp({ question, project: effectiveProject, searchAll });
           break;
         case 'direct':
         default:
-          result = await queryDirect({ question, project: effectiveProject, searchAll });
+          result = await queryDirect({ question, project: effectiveProject, searchAll, decayProfile });
           break;
       }
     } catch (err) {
@@ -291,6 +367,11 @@ function createBridge(config) {
         project: projectTagInFilter,
         searchAll: !!searchAll,
         project_source: searchAll ? 'searchAll' : projectSource,
+        // Sprint 82 T2 — what the caller ASKED for vs what the store could
+        // actually honor. `decay_profile_supported` stays null until a
+        // direct-mode probe has resolved it.
+        decay_profile: decayProfile || null,
+        decay_profile_supported: state.decayProfileSupported,
       },
       duration_ms: durationMs,
     });

@@ -338,14 +338,29 @@ test('isMemoryDismissed returns true after a recorded fire is dismissed', () => 
   }
 });
 
-test('isMemoryDismissed returns true after click-through (implicit dismiss)', () => {
+// Sprint 82 T2 — INVERTED from Sprint 57's assertion, deliberately.
+//
+// The old test asserted that a click-through blacklists the memory, because
+// markClickedThrough stamps dismissed_at (correct for the FUNNEL — the toast
+// did leave the screen) and isMemoryDismissed keyed purely off dismissed_at.
+// The consequence was that opening a memory — the single strongest signal
+// that it was useful — permanently suppressed it from ever surfacing again.
+// Reading a memory must never be the thing that buries it, so the blacklist
+// read now excludes clicked_through rows. dismissed_at is still stamped;
+// only its interpretation by isMemoryDismissed changed.
+test('isMemoryDismissed returns FALSE after click-through (engagement is not rejection)', () => {
   const db = freshDb();
   try {
     const id = flashbackDiag.recordFlashback(db, {
       sessionId: 's', error_text: 'x', top_hit_id: 'mem-uuid-abc',
     });
     flashbackDiag.markClickedThrough(db, id);
-    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), true);
+    // The funnel still sees the implicit dismiss…
+    const row = db.prepare(`SELECT dismissed_at, clicked_through FROM flashback_events WHERE id = ?`).get(id);
+    assert.ok(row.dismissed_at, 'click-through still stamps dismissed_at for funnel accounting');
+    assert.equal(row.clicked_through, 1);
+    // …but the blacklist does not.
+    assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-uuid-abc'), false);
   } finally {
     db.close();
   }
@@ -430,11 +445,23 @@ test('isMemoryDismissed returns false for empty / non-string memoryId', () => {
 // don't prove the selection logic is correct — extracting the loop into a
 // pure helper here lets the integration test exist without a live PTY.
 
+// Sprint 82 T2 widened this return shape with the quality-gate counters
+// (belowThresholdCount / thresholdApplied / minSimilarity / topSimilarity).
+// The original three keys keep their exact meaning; these assertions check
+// the empty-shape contract on those three rather than pinning the whole
+// object, so a future additive field doesn't fail a test about emptiness.
+function assertEmptyPick(out) {
+  assert.equal(out.hit, null);
+  assert.equal(out.dismissedCount, 0);
+  assert.equal(out.scannedCount, 0);
+  assert.equal(out.belowThresholdCount, 0);
+  assert.equal(out.thresholdApplied, false);
+}
+
 test('pickNextNonDismissed: empty list returns null hit, zero counts', () => {
   const db = freshDb();
   try {
-    const out = flashbackDiag.pickNextNonDismissed(db, []);
-    assert.deepEqual(out, { hit: null, dismissedCount: 0, scannedCount: 0 });
+    assertEmptyPick(flashbackDiag.pickNextNonDismissed(db, []));
   } finally {
     db.close();
   }
@@ -443,10 +470,8 @@ test('pickNextNonDismissed: empty list returns null hit, zero counts', () => {
 test('pickNextNonDismissed: non-array (null / undefined) returns the empty shape', () => {
   const db = freshDb();
   try {
-    assert.deepEqual(flashbackDiag.pickNextNonDismissed(db, null),
-      { hit: null, dismissedCount: 0, scannedCount: 0 });
-    assert.deepEqual(flashbackDiag.pickNextNonDismissed(db, undefined),
-      { hit: null, dismissedCount: 0, scannedCount: 0 });
+    assertEmptyPick(flashbackDiag.pickNextNonDismissed(db, null));
+    assertEmptyPick(flashbackDiag.pickNextNonDismissed(db, undefined));
   } finally {
     db.close();
   }
@@ -562,8 +587,7 @@ test('pickNextNonDismissed: null db falls back to legacy first-candidate semanti
 });
 
 test('pickNextNonDismissed: null db with empty memories returns the empty shape', () => {
-  const out = flashbackDiag.pickNextNonDismissed(null, []);
-  assert.deepEqual(out, { hit: null, dismissedCount: 0, scannedCount: 0 });
+  assertEmptyPick(flashbackDiag.pickNextNonDismissed(null, []));
 });
 
 test('pickNextNonDismissed: stops scanning at first non-dismissed (no extra DB queries)', () => {
@@ -653,7 +677,10 @@ test('getFunnelStats reports zero counts on empty table', () => {
   const db = freshDb();
   try {
     const stats = flashbackDiag.getFunnelStats(db);
-    assert.deepEqual(stats, { fires: 0, dismissed: 0, clicked_through: 0 });
+    // `expired` is Sprint 82 T2's fourth tier — it reports 0 (not absent)
+    // even on installs whose expired_at column never landed, so the
+    // dashboard never has to distinguish "no expiries" from "old server".
+    assert.deepEqual(stats, { fires: 0, dismissed: 0, expired: 0, clicked_through: 0 });
   } finally {
     db.close();
   }
@@ -740,6 +767,26 @@ function attachHistoryRoutes(app, db) {
     const updated = flashbackDiag.markClickedThrough(db, id);
     res.json({ ok: true, updated });
   });
+  // Sprint 82 T2 — the expiry route. Mirrors index.js
+  // `POST /api/flashback/:id/expired`, minus the diag-ring log (the ring is
+  // covered by tests/flashback-diag.test.js).
+  app.post('/api/flashback/:id/expired', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
+    const updated = flashbackDiag.markExpired(db, id);
+    res.json({ ok: true, updated, persisted: updated });
+  });
+}
+
+// Sprint 82 T2 — a DB carrying the in-place `expired_at` ALTER that
+// database.js applies at server start. freshDb() deliberately stays at the
+// migrations/001 shape so the column-absent degradation keeps its coverage.
+function freshDbWithExpiry() {
+  const db = freshDb();
+  db.exec(`ALTER TABLE flashback_events ADD COLUMN expired_at TEXT`);
+  return db;
 }
 
 test('GET /api/flashback/history returns { count, events, funnel } shape', async () => {
@@ -761,7 +808,7 @@ test('GET /api/flashback/history returns { count, events, funnel } shape', async
       assert.equal(res.status, 200);
       assert.equal(body.count, 2);
       assert.equal(body.events.length, 2);
-      assert.deepEqual(body.funnel, { fires: 2, dismissed: 1, clicked_through: 1 });
+      assert.deepEqual(body.funnel, { fires: 2, dismissed: 1, expired: 0, clicked_through: 1 });
     } finally {
       server.close();
     }
@@ -809,7 +856,7 @@ test('GET /api/flashback/history returns empty arrays / zero funnel when no rows
       const body = await res.json();
       assert.equal(body.count, 0);
       assert.deepEqual(body.events, []);
-      assert.deepEqual(body.funnel, { fires: 0, dismissed: 0, clicked_through: 0 });
+      assert.deepEqual(body.funnel, { fires: 0, dismissed: 0, expired: 0, clicked_through: 0 });
     } finally {
       server.close();
     }
@@ -907,6 +954,147 @@ test('POST /api/flashback/:id/clicked returns updated=false for unknown id', asy
       assert.equal(res.status, 200);
       assert.equal(body.ok, true);
       assert.equal(body.updated, false, 'no row to update — graceful');
+    } finally {
+      server.close();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+// ---- POST /api/flashback/:id/expired (Sprint 82 T2) ---------------------
+
+test('POST /api/flashback/:id/expired stamps expired_at and leaves dismissed_at NULL', async () => {
+  // The route-level half of the pool-drain fix. markExpired is unit-tested
+  // in tests/flashback-hygiene.test.js; this pins the HTTP contract the
+  // toast's 30s timer actually calls, so a route rename or a handler wired
+  // to the wrong helper is caught here rather than in production silence.
+  const db = freshDbWithExpiry();
+  try {
+    const id = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', project: 'p', error_text: 'x', top_hit_id: 'mem-1',
+    });
+    const app = express();
+    attachHistoryRoutes(app, db);
+    const { server, port } = await listenOnce(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/flashback/${id}/expired`, {
+        method: 'POST',
+      });
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.updated, true);
+      assert.equal(body.persisted, true);
+
+      const row = db.prepare(
+        `SELECT dismissed_at, expired_at FROM flashback_events WHERE id = ?`
+      ).get(id);
+      assert.ok(row.expired_at, 'expired_at stamped');
+      assert.equal(row.dismissed_at, null, 'dismissal is NOT implied by expiry');
+      // …and the memory is still selectable, which is the whole point.
+      assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-1'), false);
+    } finally {
+      server.close();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('POST /api/flashback/:id/expired is idempotent and yields to a prior dismissal', async () => {
+  const db = freshDbWithExpiry();
+  try {
+    const expiredId = flashbackDiag.recordFlashback(db, { sessionId: 's', error_text: 'a' });
+    const dismissedId = flashbackDiag.recordFlashback(db, { sessionId: 's', error_text: 'b' });
+    flashbackDiag.markDismissed(db, dismissedId);
+
+    const app = express();
+    attachHistoryRoutes(app, db);
+    const { server, port } = await listenOnce(app);
+    try {
+      const post = (id) => fetch(`http://127.0.0.1:${port}/api/flashback/${id}/expired`, { method: 'POST' })
+        .then((r) => r.json());
+
+      assert.equal((await post(expiredId)).updated, true);
+      assert.equal((await post(expiredId)).updated, false, 'second expiry is a no-op');
+
+      // A late timer losing a race with the user's × must not re-label the
+      // row as an unseen expiry.
+      assert.equal((await post(dismissedId)).updated, false);
+      const row = db.prepare(`SELECT expired_at FROM flashback_events WHERE id = ?`).get(dismissedId);
+      assert.equal(row.expired_at, null);
+    } finally {
+      server.close();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('POST /api/flashback/:id/expired returns 400 on invalid id', async () => {
+  const db = freshDbWithExpiry();
+  try {
+    const app = express();
+    attachHistoryRoutes(app, db);
+    const { server, port } = await listenOnce(app);
+    try {
+      for (const bad of ['abc', '0', '-1']) {
+        const res = await fetch(`http://127.0.0.1:${port}/api/flashback/${bad}/expired`, {
+          method: 'POST',
+        });
+        assert.equal(res.status, 400, `id "${bad}" rejected`);
+      }
+    } finally {
+      server.close();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('POST /api/flashback/:id/expired returns updated=false for an unknown id', async () => {
+  const db = freshDbWithExpiry();
+  try {
+    const app = express();
+    attachHistoryRoutes(app, db);
+    const { server, port } = await listenOnce(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/flashback/9999/expired`, {
+        method: 'POST',
+      });
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.updated, false, 'no row to update — graceful');
+    } finally {
+      server.close();
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('POST /api/flashback/:id/expired degrades to 200/persisted=false without the column', async () => {
+  // Install whose in-place ALTER never ran. The route must not 500 — the
+  // behavioral fix (no dismissal written on timeout) holds regardless,
+  // because the client simply never calls /dismissed for a timeout.
+  const db = freshDb();
+  try {
+    const id = flashbackDiag.recordFlashback(db, {
+      sessionId: 's', error_text: 'x', top_hit_id: 'mem-1',
+    });
+    const app = express();
+    attachHistoryRoutes(app, db);
+    const { server, port } = await listenOnce(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/flashback/${id}/expired`, {
+        method: 'POST',
+      });
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.persisted, false, 'honest about the missing column');
+      assert.equal(flashbackDiag.isMemoryDismissed(db, 'mem-1'), false, 'still not blacklisted');
     } finally {
       server.close();
     }

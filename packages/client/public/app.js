@@ -1752,6 +1752,12 @@
           question: question || `${type} error ${meta.statusDetail || ''}`.trim(),
           sessionId: id,
           project: meta.project || null,
+          // Sprint 82 T2 — server-owned gate + durable flashback_events row.
+          // Pre-82 this path toasted `memories[0]` client-side with no event
+          // id, so its dismiss / expire / click-through writes were dropped
+          // and the whole surface was invisible to the funnel that T3's
+          // calibration reads. The server now decides and records; we render.
+          proactive: true,
         });
         if (result?.error) return;
         if (!Array.isArray(result?.memories) || result.memories.length === 0) return;
@@ -1764,11 +1770,43 @@
         setBadge(id, 'memory', entry.memoryHits.length);
         if (entry.drawerOpen && entry.activeTab === 'memory') renderMemoryTab(id);
 
-        showProactiveToast(id, result.memories[0]);
+        // The server applied the quality gate and, when something cleared
+        // it, minted the flashback_events row. `flashback` is null when
+        // nothing was worth interrupting for — stay silent rather than
+        // toasting whatever happened to rank first in an unrelated corpus.
+        // (An older server that doesn't know `proactive` returns no
+        // `flashback` key at all, which lands here as "no toast" — the safe
+        // direction to fail.)
+        if (!result.flashback || !result.flashback.hit) return;
+        showProactiveToast(id, result.flashback.hit, result.flashback.event_id);
       } catch (err) {
         console.error('[client] proactive memory query failed:', err);
       }
     }
+
+    // ===== Flashback quality helpers (Sprint 82 T2) =====
+
+    // The ONLY field either flashback surface may render as a percentage.
+    // `hit.similarity` is the RRF composite and is not a fraction of
+    // anything; `hit.semantic_similarity` is raw cosine in [0,1]. Returns an
+    // integer percent, or null when the store predates migration 033 (in
+    // which case callers must show a neutral label, not a fabricated number).
+    function flashbackMatchPct(hit) {
+      const v = hit && hit.semantic_similarity;
+      if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+      return Math.round(Math.max(0, Math.min(1, v)) * 100);
+    }
+
+    // NOTE (Sprint 82 T2): there is deliberately no client-side quality gate.
+    // Both toast surfaces — the WS `proactive_memory` frame and the HTTP
+    // proactive query — are gated and recorded on the server, so the client
+    // never decides whether a memory is good enough to interrupt for. A
+    // mirrored client gate was the first shape of this fix and was removed:
+    // two implementations of one threshold drift, and the client's copy
+    // could only ever suppress toasts the server had already recorded as
+    // fired, putting the funnel and the screen out of agreement. The
+    // effective threshold is still exposed on /api/config for the
+    // diagnostics panel — as an operator-visible value, not a control.
 
     function showProactiveToast(id, hit, flashbackEventId) {
       const entry = state.sessions.get(id);
@@ -1782,12 +1820,21 @@
       toast.className = 'proactive-toast';
       const proj = hit.project ? escapeHtml(hit.project) : 'another session';
       const snippet = escapeHtml((hit.content || hit.text || '').slice(0, 220));
-      const score = typeof hit.similarity === 'number' ? `${(hit.similarity * 100).toFixed(0)}%` : '';
+      // Sprint 82 T2 — this used to render `hit.similarity * 100` as a
+      // percentage. `hit.similarity` is the RRF composite (an ordinal fusion
+      // of 1/(60+rank) terms, hard ceiling ~0.074), so a genuinely excellent
+      // hit displayed as "2%" — it read as "the memory store is broken" and
+      // once set off a false store-health alarm. Only `semantic_similarity`
+      // (absolute cosine, migration 033) is a real fraction. When it's
+      // absent — pre-033 store — we show a neutral label and NO number
+      // rather than inventing one.
+      const sim = flashbackMatchPct(hit);
+      const qualifier = sim !== null ? `match ${sim}%` : 'related memory';
 
       toast.innerHTML = `
         <button class="t-dismiss" aria-label="Dismiss">×</button>
         <div class="t-title">Mnestra — possible match</div>
-        <div class="t-body">Found a similar error in <b>${proj}</b>${score ? ` · ${score}` : ''} — click to see.</div>
+        <div class="t-body">Found a similar error in <b>${proj}</b> · ${qualifier} — click to see.</div>
         <div class="t-meta">${snippet}</div>
       `;
 
@@ -1797,17 +1844,27 @@
       // The id is set server-side in the proactive_memory WS frame; if it's
       // missing (server-side INSERT failed, or older server) the POSTs are
       // skipped and the live toast still works — persistence is best-effort.
-      const dismiss = () => {
+      //
+      // Sprint 82 T2 splits the two ways a toast leaves the screen. They are
+      // not the same event and must not write the same row:
+      //   • dismissed — the user saw it and rejected it (× button). A real
+      //     negative signal; suppresses that memory globally for 14 days.
+      //   • expired — the 30s timer ran out while the user was heads-down in
+      //     another panel. Nobody rejected anything. Pre-82 this called the
+      //     dismiss endpoint, and since dismissal was a PERMANENT global
+      //     blacklist, unattended errors drained the useful memory pool one
+      //     memory at a time with no way to refill it.
+      const closeToast = (reason) => {
         toast.remove();
         clearTimeout(toast._autoTimer);
-        if (flashbackEventId) {
-          fetch(`${API}/api/flashback/${flashbackEventId}/dismissed`, { method: 'POST' })
-            .catch((err) => console.warn('[flashback] dismiss POST failed:', err.message));
-        }
+        if (!flashbackEventId) return;
+        const route = reason === 'expired' ? 'expired' : 'dismissed';
+        fetch(`${API}/api/flashback/${flashbackEventId}/${route}`, { method: 'POST' })
+          .catch((err) => console.warn(`[flashback] ${route} POST failed:`, err.message));
       };
       toast.querySelector('.t-dismiss').addEventListener('click', (e) => {
         e.stopPropagation();
-        dismiss();
+        closeToast('dismissed');
       });
       toast.addEventListener('click', () => {
         toast.remove();
@@ -1819,7 +1876,7 @@
         showFlashbackModal(hit, id);
       });
 
-      toast._autoTimer = setTimeout(dismiss, 30000);
+      toast._autoTimer = setTimeout(() => closeToast('expired'), 30000);
     }
 
     // ===== Flashback modal (Sprint 16 T2) =====
@@ -1848,7 +1905,12 @@
         sessionId: sessionId || null,
         project: hit?.project || null,
         sourceType: hit?.source_type || hit?.sourceType || null,
+        // Both, explicitly named: `similarity` is the ordinal RRF composite,
+        // `semanticSimilarity` the absolute cosine (Sprint 82 T2). Keeping
+        // them distinct here stops the next consumer re-making the mistake
+        // of treating the composite as a match fraction.
         similarity: typeof hit?.similarity === 'number' ? hit.similarity : null,
+        semanticSimilarity: typeof hit?.semantic_similarity === 'number' ? hit.semantic_similarity : null,
         contentPreview: (hit?.content || hit?.text || '').slice(0, 160),
         at: new Date().toISOString(),
       };
@@ -1865,8 +1927,11 @@
       const project = hit?.project || '';
       const sourceType = hit?.source_type || hit?.sourceType || '';
       const createdAt = hit?.created_at || hit?.createdAt || '';
-      const scoreNum = typeof hit?.similarity === 'number' ? hit.similarity : null;
-      const scorePct = scoreNum !== null ? `${(scoreNum * 100).toFixed(0)}%` : '';
+      // Sprint 82 T2 — cosine only, never the RRF composite. Null (pre-033
+      // store) means the chip is omitted entirely; the modal says nothing
+      // about match quality rather than saying something false about it.
+      const matchPct = flashbackMatchPct(hit);
+      const scorePct = matchPct !== null ? `match ${matchPct}%` : '';
 
       const overlay = document.createElement('div');
       overlay.className = 'flashback-modal open';
@@ -2385,7 +2450,11 @@
     }
 
     function renderMemoryHitRow(m) {
-      const score = typeof m.similarity === 'number' ? `${(m.similarity * 100).toFixed(0)}%` : '';
+      // Sprint 82 T2 — cosine or nothing. This drawer row was the third
+      // surface rendering the ordinal RRF composite as a percentage; the
+      // chip is simply omitted when the store predates migration 033.
+      const pct = flashbackMatchPct(m);
+      const score = pct !== null ? `match ${pct}%` : '';
       const proj = m.project ? escapeHtml(m.project) : '';
       const type = m.source_type || m.sourceType || 'memory';
       const ts = m.cachedAt ? timeAgo(m.cachedAt) : '';
@@ -2890,7 +2959,9 @@
 
           tw(`\r\n\x1b[36m━━━ Mnestra: ${result.total} memories found ━━━\x1b[0m\r\n`);
           for (const m of result.memories) {
-            const score = m.similarity ? `${(m.similarity * 100).toFixed(0)}%` : '';
+            // Sprint 82 T2 — cosine or nothing (see flashbackMatchPct).
+            const pct = flashbackMatchPct(m);
+            const score = pct !== null ? `match ${pct}%` : '';
             const proj = m.project ? m.project : '';
             tw(`\r\n\x1b[35m● ${m.source_type}\x1b[0m \x1b[90m${proj} ${score}\x1b[0m\r\n`);
             const contentLines = wrap(m.content || '(empty)', 2);
@@ -4692,11 +4763,21 @@
         </div>`;
       };
 
+      // Sprint 82 T2 — the effective flashback quality gate. Operator-visible
+      // because "flashback stopped firing" and "the threshold is set too
+      // high" look identical from the outside; this is the one place that
+      // tells them apart without reading the server's env.
+      const minSim = Number(data.flashbackMinSimilarity);
+      const gate = Number.isFinite(minSim)
+        ? (minSim > 0 ? `≥ ${minSim} cosine` : 'off (all hits fire)')
+        : '—';
+
       let html = ''
         + row('projects', projectCount)
         + row('default theme', defaultTheme)
         + row('RAG sync', rag, data.ragEnabled)
-        + row('AI query', aiQuery, data.aiQueryAvailable);
+        + row('AI query', aiQuery, data.aiQueryAvailable)
+        + row('flashback gate', gate);
 
       if (projectCount > 0) {
         html += `<div class="hd-detail" style="grid-column:1/-1;margin-top:6px;color:var(--tg-text-dim);font-size:10px">projects</div>`;

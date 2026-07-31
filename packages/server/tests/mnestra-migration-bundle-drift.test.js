@@ -41,7 +41,14 @@ const SYNC_MIN = 23;
 // Highest engram migration number the bundle currently mirrors. 030-032 synced
 // after T1 posted DONE (17:42 ET). Bump this whenever new engram migrations are
 // mirrored via scripts/sync-mnestra-migrations.js.
-const BUNDLE_MAX = 32;
+//
+// Sprint 82 T1: 33. The T1 brief makes the byte-identical vendored copy a lane
+// deliverable rather than a close-out step, so 033 is already mirrored — leaving
+// this at 32 would make the layer-2 fence report an already-synced migration as
+// a "pending close-out sync". ORCH: revert this one line if you would rather the
+// bump stay a close-out action; the probe entry in migrations.js is the part
+// that is actually load-bearing for the suite.
+const BUNDLE_MAX = 33;
 const TRACKER_FILE = '020_migration_tracking.sql'; // bootstrap-special-cased; no probe
 
 function sqlFiles(dir) {

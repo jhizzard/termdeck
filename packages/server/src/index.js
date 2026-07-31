@@ -2737,7 +2737,21 @@ function createServer(config) {
         // the catch below and should fire whenever the Mnestra bridge is
         // configured, regardless of the push-loop flag.
         session.onErrorDetected = (sess, ctx) => {
-          const question = `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
+          // Sprint 82 T2 — query construction. The old shape was
+          // `"<type> error <lastCommand> <tail>"`, where `tail` is the last
+          // 200 chars of the ANSI-stripped buffer: spinner frames, progress
+          // bars, prompt redraws. That noise went straight into the
+          // embedding, so the vector query described the terminal's paint
+          // state more than the failure. `_detectErrors` already isolates
+          // the line the pattern fired on — embed THAT, with the command as
+          // secondary context. The legacy shape survives only as a fallback
+          // for a ctx with no matchedLine (pre-82 callers, direct unit-test
+          // invocations), so no path loses its query.
+          const errorLine = typeof ctx.matchedLine === 'string' ? ctx.matchedLine.trim() : '';
+          const question = errorLine
+            ? [errorLine, ctx.lastCommand ? `while running: ${ctx.lastCommand}` : '']
+              .filter(Boolean).join(' — ')
+            : `${sess.meta.type} error ${ctx.lastCommand || ''} ${ctx.tail || ''}`.trim();
           console.log(`[flashback] error detected in session ${sess.id} (type=${sess.meta.type}, project=${sess.meta.project || 'none'}), querying Mnestra via ${mnestraBridge.mode}…`);
           // Sprint 78 T2 — agent-facing advisory. Registry-driven (T1 doctrine),
           // Mnestra-INDEPENDENT (A1, no embedding call), so it fires for EVERY
@@ -2757,6 +2771,15 @@ function createServer(config) {
             searchAll: false,
             cwd: sess.meta.cwd,
             sessionId: sess.id,
+            // Sprint 82 T2 — this recall is triggered BY an error, so the
+            // thing most worth surfacing is the time you solved this same
+            // error before. Under the standard profile `bug_fix`/`debugging`
+            // memories carry a 30-day half-life, so a six-month-old solved
+            // problem is multiplied by ~0.14 and buried at exactly the moment
+            // it is most valuable. 'solved-problem' flattens that half-life
+            // to 365d for those two types only. Feature-detected inside the
+            // bridge (pre-033 stores fall back to 'standard' after one probe).
+            decayProfile: 'solved-problem',
             sessionContext: {
               type: sess.meta.type,
               project: sess.meta.project,
@@ -2778,22 +2801,42 @@ function createServer(config) {
             // memories[0] without consulting dismissed history). Selection
             // logic lives in `flashbackDiag.pickNextNonDismissed` so the
             // integration shape stays testable without a live PTY.
-            const { hit, dismissedCount } =
-              flashbackDiag.pickNextNonDismissed(db, memories);
+            // Sprint 82 T2 adds the quality gate to this same selection pass.
+            // Pre-82 there was NO threshold anywhere in the pipeline: every
+            // surviving error fired a toast off whatever ranked first, even
+            // when the whole corpus was unrelated and something merely had
+            // to come first. The gate is on `semantic_similarity` (absolute
+            // cosine) — never on `similarity`/`score`, which is the ordinal
+            // RRF composite. Feature-detected: a pre-033 store carries no
+            // cosine, `thresholdApplied` comes back false, and firing
+            // behavior is byte-for-byte what it was.
+            const {
+              hit, dismissedCount, belowThresholdCount,
+              thresholdApplied, minSimilarity, topSimilarity,
+            } = flashbackDiag.pickNextNonDismissed(db, memories);
             const wsReadyState = sess.ws ? sess.ws.readyState : null;
             if (!hit) {
-              const allDismissed = count > 0 && dismissedCount === count;
-              const outcome = allDismissed ? 'dropped_dismissed' : 'dropped_empty';
-              console.log(`[flashback] ${allDismissed
-                ? `all ${count} candidate(s) previously dismissed`
-                : 'no matches'} — skipping proactive_memory send for session ${sess.id}`);
+              // Drop-reason attribution is shared with the HTTP proactive
+              // path via flashbackDiag.classifyDrop — two emit surfaces
+              // classifying independently is how their funnel numbers drift
+              // apart without anything looking broken.
+              const { outcome, reason } = flashbackDiag.classifyDrop({
+                count, belowThresholdCount, dismissedCount, minSimilarity, topSimilarity,
+              });
+              console.log(`[flashback] ${reason} — skipping proactive_memory send for session ${sess.id}`);
               flashbackDiag.log({
                 sessionId: sess.id,
                 event: 'proactive_memory_emit',
+                source: 'ws',
                 ws_ready_state: wsReadyState,
                 frame_size_bytes: 0,
-                result_count_in_frame: allDismissed ? dismissedCount : 0,
+                result_count_in_frame: count > 0 ? (belowThresholdCount + dismissedCount) : 0,
                 outcome,
+                below_threshold_count: belowThresholdCount,
+                dismissed_count: dismissedCount,
+                threshold_applied: thresholdApplied,
+                min_similarity: minSimilarity,
+                top_similarity: topSimilarity,
               });
               return;
             }
@@ -2825,11 +2868,18 @@ function createServer(config) {
                 flashbackDiag.log({
                   sessionId: sess.id,
                   event: 'proactive_memory_emit',
+                  source: 'ws',
                   ws_ready_state: 1,
                   frame_size_bytes: Buffer.byteLength(frame, 'utf8'),
                   result_count_in_frame: 1,
                   outcome: 'emitted',
                   flashback_event_id,
+                  // Sprint 82 T2 — what actually cleared the gate, so a
+                  // "why did THIS fire" question is answerable from the ring
+                  // without re-running the query.
+                  threshold_applied: thresholdApplied,
+                  min_similarity: minSimilarity,
+                  hit_similarity: flashbackDiag.semanticSimilarityOf(hit),
                 });
               } catch (err) {
                 console.error('[flashback] proactive_memory send failed:', err);
@@ -2837,6 +2887,7 @@ function createServer(config) {
                 flashbackDiag.log({
                   sessionId: sess.id,
                   event: 'proactive_memory_emit',
+                  source: 'ws',
                   ws_ready_state: 1,
                   frame_size_bytes: Buffer.byteLength(frame, 'utf8'),
                   result_count_in_frame: 1,
@@ -2849,6 +2900,7 @@ function createServer(config) {
               flashbackDiag.log({
                 sessionId: sess.id,
                 event: 'proactive_memory_emit',
+                source: 'ws',
                 ws_ready_state: wsReadyState,
                 frame_size_bytes: 0,
                 result_count_in_frame: count,
@@ -3512,6 +3564,13 @@ function createServer(config) {
         warnK: (config.context && config.context.warnK) || 350,
         overK: (config.context && config.context.overK) || 400,
       },
+      // Sprint 82 T2 — the flashback quality gate, so the CLIENT-side toast
+      // path (triggerProactiveMemoryQuery, fired on any status→errored
+      // transition) gates on the same number as the server-side WS path.
+      // Two independent toast paths with one threshold; without this the
+      // client path would keep firing on hits the server would have
+      // suppressed. Read-only projection of the env knob.
+      flashbackMinSimilarity: flashbackDiag.resolveMinSimilarity(),
       firstRun
     };
   }
@@ -3734,8 +3793,12 @@ function createServer(config) {
   });
 
   // POST /api/flashback/:id/dismissed - mark a flashback toast as dismissed.
-  // Called by the client when the user clicks ×, presses Escape, lets the
-  // 30s auto-timer fire, OR clicks "Not relevant" / "Dismiss" in the modal.
+  // Called by the client ONLY on an explicit user rejection: the × button,
+  // or "Not relevant" / "Dismiss" in the modal.
+  //
+  // Sprint 82 T2 removed the 30s auto-timer from that list — see
+  // /expired below. A dismissal is a user verdict and suppresses the memory
+  // globally (now for 14 days rather than forever); a timeout is not.
   // Idempotent: subsequent calls are no-ops (first dismiss timestamp wins).
   app.post('/api/flashback/:id/dismissed', (req, res) => {
     const id = parseInt(req.params.id, 10);
@@ -3743,7 +3806,41 @@ function createServer(config) {
       return res.status(400).json({ error: 'Invalid id' });
     }
     const updated = flashbackDiag.markDismissed(db, id);
+    flashbackDiag.log({
+      sessionId: (req.body && req.body.sessionId) || null,
+      event: 'flashback_outcome',
+      flashback_event_id: id,
+      outcome: 'dismissed',
+      persisted: updated,
+    });
     res.json({ ok: true, updated });
+  });
+
+  // POST /api/flashback/:id/expired - the toast's 30s auto-timer fired with
+  // no user interaction. Sprint 82 T2: this is deliberately NOT the dismiss
+  // endpoint. Pre-82 the timer called /dismissed, and because a dismissal is
+  // a permanent global blacklist, every error that happened while the user
+  // was looking at a different panel burned another memory out of the
+  // useful pool — a monotonic drain with no refill path.
+  //
+  // Writes expired_at only (never dismissed_at), so nothing here suppresses
+  // the memory. Degrades to a ring-only diag event on installs whose
+  // expired_at column is absent; the behavioral fix does not depend on the
+  // column, only the durable accounting does. Idempotent.
+  app.post('/api/flashback/:id/expired', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
+    const updated = flashbackDiag.markExpired(db, id);
+    flashbackDiag.log({
+      sessionId: (req.body && req.body.sessionId) || null,
+      event: 'flashback_outcome',
+      flashback_event_id: id,
+      outcome: 'expired',
+      persisted: updated,
+    });
+    res.json({ ok: true, updated, persisted: updated });
   });
 
   // POST /api/flashback/:id/clicked - mark a flashback toast as clicked-
@@ -4047,9 +4144,32 @@ function createServer(config) {
   });
 
   // POST /api/ai/query - query Mnestra memory via the bridge (direct|webhook|mcp)
+  //
+  // Sprint 82 T2 adds an opt-in `proactive: true` mode. The client fires a
+  // flashback toast on every panel status→errored transition (app.js
+  // triggerProactiveMemoryQuery), and pre-82 that path called this endpoint
+  // as a plain query and then toasted `memories[0]` itself — ungated, and
+  // with no flashback_events row behind it, so the toast's dismiss / expire
+  // / click-through POSTs had no id to send and were all silently dropped.
+  // A user-visible toast surface that never reaches the funnel is worse
+  // than a smaller funnel: nothing about it looks wrong, and that table is
+  // what T3's calibration reads as its label source.
+  //
+  // In proactive mode the SERVER now owns the decision — same gate, same
+  // recording, same diag outcomes as the WS emit path (both go through
+  // flashbackDiag) — and returns a `flashback: { event_id, hit }` envelope
+  // (or `flashback: null` when nothing clears the gate). The client renders
+  // what it is given and no longer decides anything.
   app.post('/api/ai/query', async (req, res) => {
-    let { question, sessionId, project } = req.body || {};
+    let { question, sessionId, project, proactive } = req.body || {};
     if (!question) return res.status(400).json({ error: 'Missing question' });
+
+    // Proactive mode mints a durable audit row, and recordFlashback requires
+    // a session id. Rejecting loudly beats minting an orphan row or silently
+    // falling back to the unrecorded behavior this mode exists to remove.
+    if (proactive && !sessionId) {
+      return res.status(400).json({ error: 'proactive queries require sessionId' });
+    }
 
     let searchAll = false;
     if (question.toLowerCase().startsWith('all:')) {
@@ -4072,16 +4192,50 @@ function createServer(config) {
         project,
         searchAll,
         cwd: session ? session.meta.cwd : undefined,
-        sessionContext
+        sessionId: sessionId || undefined,
+        sessionContext,
+        // Same rationale as the WS path: an error-triggered recall wants the
+        // time you solved this before, and the standard profile's 30-day
+        // half-life buries exactly that. Feature-detected in the bridge.
+        ...(proactive ? { decayProfile: 'solved-problem' } : {})
       });
+
+      // Gate + persist server-side so this surface is funnel-visible. Note
+      // `memories` (all of them) still goes back in the response — the
+      // client caches every hit into the Memory drawer, which is a browsable
+      // list, not an interruption. Only the TOAST is gated.
+      let flashback = null;
+      if (proactive) {
+        const selected = flashbackDiag.selectAndRecordFlashback(db, {
+          sessionId,
+          project: (session && session.meta.project) || project || null,
+          question,
+          memories,
+        });
+        if (selected.hit) {
+          // event_id is null only when SQLite is unavailable on this install
+          // — the same degradation the WS path has always had. Show the
+          // toast anyway rather than going dark on a no-DB install.
+          flashback = { event_id: selected.event_id, hit: selected.hit };
+        } else {
+          console.log(`[flashback] ${selected.reason} — no toast for session ${sessionId}`);
+        }
+      }
 
       res.json({
         question,
+        flashback,
         memories: memories.slice(0, 5).map((m) => ({
           content: m.content?.substring(0, 500),
           source_type: m.source_type,
           project: m.project,
+          // `similarity` is the ORDINAL RRF composite (ceiling ~0.074).
+          // `semantic_similarity` is the absolute cosine from migration 033,
+          // null on pre-033 stores. Only the latter may ever be rendered as
+          // a percentage — Sprint 82 T2; this mapper used to drop it, which
+          // left the client-side toast path with nothing honest to display.
           similarity: m.similarity,
+          semantic_similarity: m.semantic_similarity ?? null,
           created_at: m.created_at
         })),
         sessionContext,

@@ -25,11 +25,14 @@ const els = {    windowSel: document.getElementById('fbWindow'),
     content: document.getElementById('fbContent'),
     barFires: document.getElementById('fbBarFires'),
     barDismissed: document.getElementById('fbBarDismissed'),
+    barExpired: document.getElementById('fbBarExpired'),
     barClicked: document.getElementById('fbBarClicked'),
     countFires: document.getElementById('fbCountFires'),
     countDismissed: document.getElementById('fbCountDismissed'),
+    countExpired: document.getElementById('fbCountExpired'),
     countClicked: document.getElementById('fbCountClicked'),
     pctDismissed: document.getElementById('fbPctDismissed'),
+    pctExpired: document.getElementById('fbPctExpired'),
     pctClicked: document.getElementById('fbPctClicked'),
   };
 
@@ -92,34 +95,53 @@ const els = {    windowSel: document.getElementById('fbWindow'),
     }
   }
 
+  // Sprint 82 T2: `top_hit_score` is the RRF composite from
+  // memory_hybrid_search — an ORDINAL fusion score of `1/(60+rank)` terms
+  // whose hard ceiling is ~0.074. Multiplying it by 100 and appending "%"
+  // rendered a perfectly good top hit as "2%" and once triggered a false
+  // store-health alarm. It is not a fraction of anything, so it is shown as
+  // the raw magnitude it is, labelled with its scale. (The absolute cosine
+  // lives in `semantic_similarity`, which this durable table does not carry
+  // for historical rows — mixing two scales into one column would make
+  // every pre-82 row unreadable.)
   function fmtScore(score) {
     if (score == null || !Number.isFinite(score)) return '—';
-    return `${(score * 100).toFixed(0)}%`;
+    return `${score.toFixed(3)}`;
   }
 
   function renderFunnel(funnel) {
     const fires = Number(funnel?.fires || 0);
     const dismissed = Number(funnel?.dismissed || 0);
+    // Sprint 82 T2: expiry is now its own tier. Pre-82 an unattended 30s
+    // timeout incremented `dismissed`, so this funnel's rejection rate
+    // mostly measured whether the user was looking at that panel, while
+    // reading as though they had judged the memory and said no.
+    const expired = Number(funnel?.expired || 0);
     const clicked = Number(funnel?.clicked_through || 0);
 
     els.countFires.textContent = String(fires);
     els.countDismissed.textContent = String(dismissed);
+    if (els.countExpired) els.countExpired.textContent = String(expired);
     els.countClicked.textContent = String(clicked);
 
-    // Bar widths: fires is always 100% (the cohort baseline); dismissed and
-    // clicked are proportions of fires. Ratio out of fires (not out of
-    // dismissed) keeps the funnel-shape visual intuitive.
+    // Bar widths: fires is always 100% (the cohort baseline); the rest are
+    // proportions of fires. Ratio out of fires (not out of dismissed) keeps
+    // the funnel-shape visual intuitive.
     els.barFires.style.width = fires > 0 ? '100%' : '0%';
     if (fires > 0) {
       els.barDismissed.style.width = `${(dismissed / fires) * 100}%`;
       els.barClicked.style.width = `${(clicked / fires) * 100}%`;
       els.pctDismissed.textContent = ` · ${Math.round((dismissed / fires) * 100)}%`;
       els.pctClicked.textContent = ` · ${Math.round((clicked / fires) * 100)}%`;
+      if (els.barExpired) els.barExpired.style.width = `${(expired / fires) * 100}%`;
+      if (els.pctExpired) els.pctExpired.textContent = ` · ${Math.round((expired / fires) * 100)}%`;
     } else {
       els.barDismissed.style.width = '0%';
       els.barClicked.style.width = '0%';
       els.pctDismissed.textContent = '';
       els.pctClicked.textContent = '';
+      if (els.barExpired) els.barExpired.style.width = '0%';
+      if (els.pctExpired) els.pctExpired.textContent = '';
     }
   }
 
@@ -172,6 +194,11 @@ const els = {    windowSel: document.getElementById('fbWindow'),
         statusPills.push(`<span class="fb-pill fb-pill-clicked">clicked</span>`);
       } else if (e.dismissed_at) {
         statusPills.push(`<span class="fb-pill fb-pill-dismissed">dismissed</span>`);
+      } else if (e.expired_at) {
+        // Sprint 82 T2: distinct from "dismissed" on purpose — nobody
+        // rejected this, the 30s timer just ran out with the user looking
+        // elsewhere. It carries no negative signal and does not blacklist.
+        statusPills.push(`<span class="fb-pill fb-pill-expired">expired</span>`);
       } else {
         statusPills.push(`<span class="fb-pill fb-pill-pending">pending</span>`);
       }
@@ -199,7 +226,7 @@ const els = {    windowSel: document.getElementById('fbWindow'),
               <th>Project</th>
               <th>Search context</th>
               <th style="text-align:right">Hits</th>
-              <th style="text-align:right">Score</th>
+              <th style="text-align:right" title="Ordinal RRF fusion score — not a percentage; ceiling ~0.074">RRF</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -268,12 +295,12 @@ const els = {    windowSel: document.getElementById('fbWindow'),
     } catch (err) {
       showError(`Failed to load flashback history: ${err.message}`);
       els.content.innerHTML = '';
-      renderFunnel({ fires: 0, dismissed: 0, clicked_through: 0 });
+      renderFunnel({ fires: 0, dismissed: 0, expired: 0, clicked_through: 0 });
       return;
     }
 
     _allEvents = data.events || [];
-    renderFunnel(data.funnel || { fires: 0, dismissed: 0, clicked_through: 0 });
+    renderFunnel(data.funnel || { fires: 0, dismissed: 0, expired: 0, clicked_through: 0 });
 
     if (_allEvents.length === 0) {
       renderZeroState(winKey);
