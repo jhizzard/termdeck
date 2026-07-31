@@ -1006,3 +1006,70 @@ Phase: re-opened audit / pre-fix reproduction. I built a disposable local replay
 
 Preliminary superuser-masked sweep: no `ALTER SYSTEM`, `ALTER DATABASE`, `ALTER ROLE`, event trigger, FDW/server, or program-copy statements are present in 001→034. The role-sensitive classes found are (a) extension creation in `001_mnestra_tables.sql` (`vector`, `pg_trgm`, `pgcrypto`) — a true non-superuser fresh DB cannot create `vector`, so this replay preinstalls extensions to match Supabase/daily-driver assumptions; (b) function-level `SET` clauses, with `hnsw.ef_search` in 033 and 034 the only non-core custom GUC; (c) grants/revokes to Supabase roles, which applied under the non-superuser owner once those roles existed and extension-owned objects lived outside `public`. Pending: T1's patched 034, a fresh non-superuser full-chain replay, and the new vendored sha.
 Latest blocker: `[ORCH] BLOCKED 2026-07-31 15:36 ET`.
+
+### [T4-CODEX] GREEN-REAFFIRMED 2026-07-31 15:47 ET — reopened non-superuser gate passed; vendored sha c5960386d53e4b2ab19dd4ed8938173ed6d9d2ba57e503b3f3d75d1f4ae18066
+As non-superuser `t4_migrator` (`rolsuper=false`) with preinstalled extensions in `extensions`, I replayed clean 001→033, `033a`, 033, `034a`, patched 034, re-applied patched 034 idempotently, and ran `034b_verify.sql`; all passed. Engram and TermDeck vendored `034_graph_layer.sql` are byte-identical at sha256 `c5960386d53e4b2ab19dd4ed8938173ed6d9d2ba57e503b3f3d75d1f4ae18066`; static 034 hygiene passes 34/34, including the new "pgvector library load before hnsw.ef_search SET" assertion, and TermDeck bundle-drift passes 5/5. Superuser-masked sweep result: no additional blocker in 001→034 under the production-shaped non-superuser replay; static scan finds no `ALTER SYSTEM`, `ALTER DATABASE`, `ALTER ROLE`, event trigger, FDW/server, or program-copy class. Remaining caveat is pre-existing and now explicit: migration 001's `CREATE EXTENSION vector` is superuser-sensitive on a truly blank stock DB, so the honest non-superuser harness preinstalls `vector`/`pg_trgm`/`pgcrypto` to match the daily-driver/Supabase extension assumption. FINAL-VERDICT GREEN re-affirmed.
+
+### [T1] FIX-LANDED 2026-07-31 15:47 ET — live :679 failure root-caused, patched, and reproduced BOTH directions on a production-shaped DB; CI hardened so the class can't recur
+ORCH's hypothesis was right in substance and wrong in one detail that changes the CI fix. New vendored sha at the bottom.
+
+**Root cause — confirmed, with the asymmetry that made it invisible.**
+`hnsw.ef_search` is defined by pgvector's C library in `_PG_init()`. Until that library is loaded **into the backend process**, Postgres has never heard of the name and treats it as a *placeholder* custom GUC. Then:
+- a plain session `SET hnsw.ef_search = '120'` on a placeholder **succeeds** for any role (placeholders are created `PGC_USERSET`) — which is why my first probe wrongly looked clean;
+- `CREATE FUNCTION … SET hnsw.ef_search = '120'` on a placeholder **fails** for a non-superuser, because storing it in `proconfig` asserts the caller may set that parameter *later*, and Postgres cannot know a placeholder's eventual context — the library could define it superuser-only. So it refuses.
+
+Migration 033 survives the identical clause **purely by ordering accident**: it creates an HNSW index before its own `CREATE FUNCTION`, and building that index loads the library. 034 replaces the function without touching a vector first, so it inherited none of that protection. Nothing about that difference is visible reading either file.
+
+**Correction to my own earlier claim, because it changes what CI needs.** I told you at 15:18 that the `pgvector:pg16` CI image "cannot catch this class." **That was wrong.** I initially saw a bare `SET` succeed on pg16 and inferred a version gate. Completing the matrix properly:
+
+| | superuser | non-superuser |
+|---|---|---|
+| **PG 16.13** | created (masked) | `permission denied to set parameter "hnsw.ef_search"` |
+| **PG 17.10** | created (masked) | `permission denied…` ← **production** |
+
+**The discriminator is the ROLE, not the server version.** Every disposable replay — mine, CI's, T4's — connects as the container's `postgres` superuser, so all of us exercised only the masked row. Supabase's `postgres` is `usesuper = f`, which is why the **first non-superuser execution of this file was the production one**. That also means CI needs no image bump — just a non-superuser apply role.
+
+**(1) Reproduced, on a production-shaped database.** PG 17.10 · non-superuser `app` · pgvector in an `extensions` schema · superuser used only for platform-operator work (roles, extensions, schema ownership), exactly as Supabase provisions.
+```
+NEGATIVE CONTROL (guard stripped, same DB, same role, fresh backend):
+  psql:/mig_unguarded.sql:679: ERROR:  permission denied to set parameter "hnsw.ef_search"
+POSITIVE CONTROL (guard restored, same DB, same role, fresh backend):
+  clean
+```
+Same error, **same line — :679** — as the live failure. The guard is demonstrably the thing that fixes it, not an incidental change.
+
+**(2) The patch — §2c step 0, immediately before the `CREATE OR REPLACE`.** A `DO` block that resolves pgvector's schema from `pg_extension` (it is `extensions` on Supabase, `public` on a stock image — never assumed), evaluates `'[1]'::<schema>.vector` to force the library load, then asserts `hnsw.ef_search` is now present in `pg_settings` and **raises rather than continuing into a half-applied migration** if it somehow is not. Needs no privilege — evaluating any vector expression pulls in the library because the type's I/O functions live there. Idempotent: it reads catalogs and evaluates one literal. Chosen over `LOAD 'vector'` deliberately — `LOAD` is superuser-restricted for libraries outside `$libdir/plugins`, so it would have failed in exactly the situation it was meant to fix.
+
+**(3) Production-shaped clean replay — GREEN, against the exact shipped file.**
+```
+file under test sha256: c5960386d53e4b2ab19dd4ed8938173ed6d9d2ba57e503b3f3d75d1f4ae18066
+role applying migrations: app (superuser=false)     server: PostgreSQL 17.10
+  ok  001-032 (as non-superuser)   ok 033a   ok 033   ok 034a
+  ok  034        <- the statement that failed live
+  033b → complete (Sprint 82 regression-free)
+  034b → complete (all Sprint 83 acceptance)
+  ok  034 re-applies cleanly as non-superuser, FRESH backend   <- Josh's recovery path exactly
+  proconfig landed: search_path=public, extensions, pg_catalog; hnsw.ef_search=120
+```
+The re-apply line is the one that matters for recovery: ORCH's plan is "patch, then Josh re-applies the whole file," and that is a **fresh backend** where the library is again unloaded. The guard runs there too, so the recovery path is proven, not assumed.
+
+**(4) CI hardened — this class now fails in CI instead of in production.** `.github/workflows/ci.yml`: migrations are applied by a **non-superuser** `app` role, pgvector is installed into an `extensions` schema (so the `search_path` pins in 019/029/033/034 are exercised rather than satisfied by accident), plus a standalone `Confirm the apply role is NOT a superuser` step so the fence cannot rot silently if someone drifts back to `-U postgres`. **No image bump** — pg16 reproduces once the role is right.
+Not shipped untested: I ran the extracted provision block and the full sequence on the actual CI image, `pgvector/pgvector:pg16`, non-superuser — 001→034 + 033b + 034b all green.
+
+**Static fence:** new test `§2c forces the pgvector library to load BEFORE the hnsw.ef_search SET clause` asserts the guard exists, that it *precedes* the SET clause (a guard after it defends nothing), and that the schema is catalog-resolved rather than hard-coded.
+
+**Suites:** engram `npm test` 408/406 pass/**0 fail**/2 skip · `typecheck` clean · termdeck `npm test` 1110/1105 pass/**0 fail**/5 skip · bundle-drift 5/5.
+
+**NEW VENDORED SHA — both copies byte-identical:**
+```
+c5960386d53e4b2ab19dd4ed8938173ed6d9d2ba57e503b3f3d75d1f4ae18066
+  engram/migrations/034_graph_layer.sql
+  termdeck/packages/server/src/setup/mnestra-migrations/034_graph_layer.sql
+```
+(supersedes `118b0658…`; `MIGRATION_PROBES` and `BUNDLE_MAX`=34 are unchanged and still correct — the probe targets `memory_expand_typed` + `invalid_at`, neither of which this patch touches.)
+
+**For Josh's re-apply.** Re-run the whole patched file; no manual cleanup needed. Everything before :679 is idempotent and already committed live (temporal columns + 7,422-row backfill, vocabulary FK, entity DDL), so it re-applies as a no-op, and execution continues past the point of failure. Recall stays on 033 until §2c lands, which is the correct partial state.
+
+**Kitchen lesson, and it is not about pgvector.** *A disposable replay that runs as superuser is not a replay of production.* Four independent verifications — mine, CI's, T4's, and the pre-sprint one — all agreed, all were green, and all were testing a privilege level no production caller has. The container defaults to superuser, so this is the default failure mode of every containerised DB test, not a one-off. The general form: **when a test substrate grants more privilege than production, every privilege-gated failure is invisible, and unanimous green across many verifiers is no evidence at all** — they share the defect, so agreement between them is not independence. Worth generalising beyond Mnestra; any project testing against a throwaway Postgres has this hole today.
+
+T4: the artifacts to re-verify are the new sha on both copies, the §2c guard, the CI non-superuser change, and the negative/positive control pair (repro script is `s83-nonsuper-run.sh`; containers `mnestra-s83-pg17` and `mnestra-s83-ci16` are up if you want the final state).
