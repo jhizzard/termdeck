@@ -248,7 +248,7 @@ function activeRules(env = process.env) {
   const literals = loadExternalDenylist(env);
   const entropy = truthy(env.TERMDECK_BRIDGE_REDACT_ENTROPY);
   const email = truthy(env.TERMDECK_BRIDGE_REDACT_EMAILS);
-  const sig = `${literals.join(' ')}|${entropy ? 'E' : ''}${email ? 'M' : ''}`;
+  const sig = `${literals.join('\u0000')}|${entropy ? 'E' : ''}${email ? 'M' : ''}`;
   if (_cache.sig === sig && _cache.rules) return _cache.rules;
   const literalRules = literals.map((lit, i) => ({
     name: `denylist-${i}`,

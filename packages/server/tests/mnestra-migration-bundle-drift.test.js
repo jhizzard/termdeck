@@ -52,7 +52,14 @@ const SYNC_MIN = 23;
 // Sprint 83 T1: 34, same reasoning — the vendored copy of 034_graph_layer.sql is
 // a lane deliverable (byte-identical, verified by the layer-2 fence below), so
 // leaving this at 33 would report an already-synced migration as pending.
-const BUNDLE_MAX = 34;
+// Sprint 84 T2: 35, same reasoning again — 035_memory_session_record.sql is
+// vendored as a lane deliverable (byte-identical, verified by the layer-2 fence
+// below). T3 owns 036_memory_inbox_hygiene.sql and vendors it in their own lane;
+// whoever lands second raises this to 36. Do not LOWER it.
+// Sprint 84 ORCH close-out: 36 — 036_memory_inbox_hygiene.sql vendored
+// byte-identical (T3 authored it in engram; ORCH vendored per R4's ruling that
+// T2's lane owned the 035 vendoring and T3's 036 lands at close-out).
+const BUNDLE_MAX = 36;
 const TRACKER_FILE = '020_migration_tracking.sql'; // bootstrap-special-cased; no probe
 
 function sqlFiles(dir) {

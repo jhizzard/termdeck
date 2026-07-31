@@ -12,11 +12,12 @@
 //                                ships only read tools, but a registration-time
 //                                guard means a future write tool cannot be
 //                                mounted by accident. T1 calls this per tool.
-//                                ONE exact-name exemption: PROPOSE_TOOLS (see
-//                                below) — and only with verified-HONEST
-//                                annotations (readOnlyHint:false). A proposal
-//                                appends to the quarantined memory_inbox via a
-//                                validating RPC; it can never touch
+//                                Exact-name exemptions only: WRITE_CHANNEL_TOOLS
+//                                (see below) — and only with verified-HONEST
+//                                annotations (readOnlyHint:false). Each member
+//                                appends to a quarantine via a validating RPC
+//                                (memory_inbox for proposals, memory_sessions
+//                                for session records); neither can touch
 //                                memory_items, so canonical state stays
 //                                immutable from this surface.
 //   requiresApproval(toolName) — true for terminal-state tools (live local
@@ -30,11 +31,14 @@
 //                                project/panel allowlist. T3's panel tools call
 //                                it so an un-allowlisted panel is never exposed.
 //   loadProposeMap / mapClientToSourceAgent — server-side connector identity:
-//                                resolve the OAuth client behind a proposal to
-//                                one of the four *-web source_agent values.
-//                                FAIL-CLOSED: unmappable ⇒ the proposal is
+//                                resolve the OAuth client behind a write to one
+//                                of the four *-web source_agent values.
+//                                FAIL-CLOSED: unmappable ⇒ the call is
 //                                rejected; identity is never caller-supplied
-//                                and never defaulted.
+//                                and never defaulted. Sprint 84 adds
+//                                TERMDECK_BRIDGE_PROPOSE_STRICT_MAP=1
+//                                (default OFF) to drop the client_name
+//                                heuristic and require an explicit map entry.
 //
 // Dependency-free (Node built-ins only), matching redact.js — this is on the
 // security-critical path and must be trivially testable + supply-chain-inert.
@@ -64,20 +68,36 @@ const MUTATING_VERBS = new Set([
   'add', 'tag', 'untag', 'clear', 'purge', 'wipe', 'flush', 'archive',
   // Sprint 76: `propose` is a mutating verb too. Any *_propose tool that LIES
   // with readOnlyHint:true is rejected by-token here; the only way to mount a
-  // proposal channel is the exact-name PROPOSE_TOOLS registry below, which
-  // additionally demands HONEST annotations. Needle, not a hole.
+  // proposal channel is the exact-name WRITE_CHANNEL_TOOLS registry below,
+  // which additionally demands HONEST annotations. Needle, not a hole.
   'propose', 'proposal',
+  // Sprint 84: same treatment for the session-capture verbs. `memory_session_record`
+  // is a write, so a future tool named *_record / *_capture that forgot (or
+  // lied about) its hints must be rejected by-token exactly like *_propose.
+  'record', 'capture',
 ]);
 
-// ── PROPOSE_TOOLS — the one quarantined write channel (Sprint 76) ───────────
+// ── WRITE_CHANNEL_TOOLS — the quarantined write channels (S76, S84) ─────────
 
 // Exact tool names allowed to be non-read-only. Membership alone is NOT
-// enough: assertReadOnly additionally requires the honest proposal annotation
-// shape below, so neither a lying `memory_propose` (readOnlyHint:true) nor a
-// destructive impostor (destructiveHint:true) can mount. The channel appends
-// proposals to engram's quarantined `memory_inbox` (status='pending', invisible
-// to every recall path until Rumen promotes) — it cannot reach memory_items.
-const PROPOSE_TOOLS = new Set(['memory_propose']);
+// enough: assertReadOnly additionally requires the honest annotation shape
+// below, so neither a lying `memory_propose` (readOnlyHint:true) nor a
+// destructive impostor (destructiveHint:true) can mount.
+//
+// Both members write to a QUARANTINE, never to canonical memory:
+//   memory_propose (S76)        → memory_inbox (status='pending', invisible to
+//                                 every recall path until Rumen promotes).
+//   memory_session_record (S84) → memory_sessions, which no recall path reads
+//                                 either — it is the Rumen tick's input queue,
+//                                 and that tick's synthesis pass is the gate.
+// Neither can reach memory_items. Adding a THIRD name here is a trust-boundary
+// change, not a refactor: it must terminate in a table recall cannot see.
+const WRITE_CHANNEL_TOOLS = new Set(['memory_propose', 'memory_session_record']);
+
+// Wire-compatible alias — server.js consults `policy.PROPOSE_TOOLS` to decide
+// which tools keep their honest readOnlyHint:false instead of being stamped
+// read-only. Same Set object, so the two can never drift.
+const PROPOSE_TOOLS = WRITE_CHANNEL_TOOLS;
 
 // The ONLY annotation shape a PROPOSE_TOOLS member may declare. Honesty is the
 // point: readOnlyHint:false because the tool DOES write (to quarantine);
@@ -122,10 +142,10 @@ function assertReadOnly(toolDef) {
   // honest annotation shape, or nothing. A lying readOnlyHint:true here is as
   // fatal as a destructive hint: the carve-out exists precisely so the Bridge
   // never has to lie about a write tool to mount it.
-  if (PROPOSE_TOOLS.has(name)) {
+  if (WRITE_CHANNEL_TOOLS.has(name)) {
     if (!isHonestProposeShape(toolDef)) {
       throw new Error(
-        `Bridge policy: tool "${name}" is a registered proposal channel but does not declare the exact honest `
+        `Bridge policy: tool "${name}" is a registered write channel but does not declare the exact honest `
         + 'proposal annotations { readOnlyHint:false, destructiveHint:false, idempotentHint:false, openWorldHint:true }; refusing to mount.',
       );
     }
@@ -169,10 +189,10 @@ function requiresApproval(toolName) {
   const n = String(toolName || '').trim();
   if (MEMORY_TOOLS.has(n)) return false;
   if (TERMINAL_STATE_TOOLS.has(n)) return true;
-  // The proposal channel is EXPLICITLY approval-gated (not via the fallthrough):
+  // The write channels are EXPLICITLY approval-gated (not via the fallthrough):
   // a write crossing the Bridge gets per-call human approval in the connector
   // UI. Ships conservative; relaxing this is an ORCH decision with field data.
-  if (PROPOSE_TOOLS.has(n)) return true;
+  if (WRITE_CHANNEL_TOOLS.has(n)) return true;
   return true; // default-deny
 }
 
@@ -237,14 +257,37 @@ const SOURCE_AGENT_HEURISTICS = [
   { agent: 'gemini-web', re: /gemini|google/i },
 ];
 
-// mapClientToSourceAgent({ clientId, clientName, map }) → one of
-// WEB_SOURCE_AGENTS or null (= unmappable ⇒ caller MUST reject the proposal).
-// Order: operator-explicit map (by client_id) wins; else the client_name
-// heuristic. NEVER defaults — identity is derived or the call is refused.
-function mapClientToSourceAgent({ clientId, clientName, map } = {}) {
-  const m = map || loadProposeMap();
+// Sprint 84 T2 — STRICT MAP mode (DEFAULT OFF).
+//
+// The heuristic above resolves identity from `client_name`, which the
+// connector supplies at DCR time. That is weaker than it looks: on this host
+// the operator map named only the Claude clients, yet the ChatGPT and Grok
+// registrations still resolved — via their names — and could already propose.
+// Provenance was therefore selectable by whoever picked the registration
+// name. It is NOT an escalation path (the heuristic can only ever mint one of
+// the four *-web values, never a CLI identity, and the RPC whitelist re-checks
+// server-side), but "fail-closed identity" should not rest on a display name.
+//
+// TERMDECK_BRIDGE_PROPOSE_STRICT_MAP=1 turns the fallback off: only client_ids
+// the operator has explicitly listed resolve, and every other connector is
+// refused. Default OFF so enabling it is a deliberate operator step and no
+// existing connector silently stops working on upgrade. See
+// docs/WEB-WRITE-ACTIVATION-RUNBOOK.md § Part B4.
+function isStrictMapMode(env = process.env) {
+  return String((env && env.TERMDECK_BRIDGE_PROPOSE_STRICT_MAP) || '') === '1';
+}
+
+// mapClientToSourceAgent({ clientId, clientName, map, env }) → one of
+// WEB_SOURCE_AGENTS or null (= unmappable ⇒ caller MUST reject the write).
+// Order: operator-explicit map (by client_id) wins; else — unless strict-map
+// mode is on — the client_name heuristic. NEVER defaults: identity is derived
+// or the call is refused.
+function mapClientToSourceAgent({ clientId, clientName, map, env } = {}) {
+  const environ = env || process.env;
+  const m = map || loadProposeMap(environ);
   const id = String(clientId == null ? '' : clientId).trim();
   if (id && m.has(id)) return m.get(id);
+  if (isStrictMapMode(environ)) return null; // explicit map or nothing
   const name = String(clientName == null ? '' : clientName).trim();
   if (!name) return null;
   const matches = SOURCE_AGENT_HEURISTICS.filter((h) => h.re.test(name));
@@ -322,12 +365,14 @@ module.exports = {
   requiresApproval,
   visiblePanels,
   loadAllowlist,
-  // the quarantined proposal channel (Sprint 76)
-  PROPOSE_TOOLS,
+  // the quarantined write channels (Sprint 76 propose, Sprint 84 session record)
+  WRITE_CHANNEL_TOOLS,
+  PROPOSE_TOOLS, // alias of WRITE_CHANNEL_TOOLS — server.js reads this name
   PROPOSE_ANNOTATIONS,
   WEB_SOURCE_AGENTS,
   loadProposeMap,
   mapClientToSourceAgent,
+  isStrictMapMode,
   // exported for tests / introspection
   MUTATING_VERBS,
   TERMINAL_STATE_TOOLS,

@@ -9,8 +9,8 @@ const assert = require('node:assert');
 const path = require('node:path');
 const {
   assertReadOnly, requiresApproval, visiblePanels,
-  PROPOSE_TOOLS, PROPOSE_ANNOTATIONS, WEB_SOURCE_AGENTS,
-  loadProposeMap, mapClientToSourceAgent, normalizeWebSourceAgent,
+  PROPOSE_TOOLS, WRITE_CHANNEL_TOOLS, PROPOSE_ANNOTATIONS, WEB_SOURCE_AGENTS,
+  loadProposeMap, mapClientToSourceAgent, normalizeWebSourceAgent, isStrictMapMode,
 } = require('../src/policy');
 
 // The exact honest proposal annotation shape (and the ONLY shape that mounts).
@@ -91,8 +91,14 @@ test('carve-out: memory_propose with the exact honest proposal shape mounts', ()
   assert.equal(assertReadOnly({ name: 'memory_propose', annotations: { ...PROPOSE_ANNOTATIONS } }), true);
 });
 
-test('carve-out: the registry is exactly one name', () => {
-  assert.deepEqual([...PROPOSE_TOOLS], ['memory_propose']);
+test('carve-out: the registry is exactly the two sanctioned write channels', () => {
+  // Sprint 84 widened this from one name to two. Both terminate in a table no
+  // recall path reads (memory_inbox / memory_sessions). A third entry here is
+  // a trust-boundary change, not a refactor — this assertion is the tripwire.
+  assert.deepEqual([...PROPOSE_TOOLS].sort(), ['memory_propose', 'memory_session_record']);
+  // PROPOSE_TOOLS is a wire-compatible alias server.js reads by that name;
+  // they must be the same Set, never two that can drift.
+  assert.equal(PROPOSE_TOOLS, WRITE_CHANNEL_TOOLS);
 });
 
 test('carve-out: canonical write tools still throw — with honest-propose annotations AND with lying readOnlyHint:true', () => {

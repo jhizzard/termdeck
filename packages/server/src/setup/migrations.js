@@ -198,7 +198,42 @@ const MIGRATION_PROBES = Object.freeze({
   // exactly what a false probe would prevent. The two artifacts above are
   // create-once and cannot be undone by a re-apply of an earlier file.
   '034_graph_layer.sql':
-    "select 1 from pg_proc p where p.proname='memory_expand_typed' and exists (select 1 from information_schema.columns where table_schema='public' and table_name='memory_relationships' and column_name='invalid_at')"
+    "select 1 from pg_proc p where p.proname='memory_expand_typed' and exists (select 1 from information_schema.columns where table_schema='public' and table_name='memory_relationships' and column_name='invalid_at')",
+
+  // Sprint 84 T2 — web-surface session capture: memory_sessions provenance
+  // columns + the memory_session_record RPC.
+  //
+  // Two-sided, following 033/034's precedent, because either half alone is a
+  // broken install: the RPC writes both new columns, so a bundle where only
+  // the function landed 42703s on first call.
+  //
+  // The FUNCTION half probes memory_session_record — a name no earlier
+  // migration defines, so a bare name match is conclusive (unlike
+  // memory_hybrid_search, which 002/023/029/032/033 all define). The COLUMN
+  // half probes memory_sessions.source_agent rather than .metadata: `metadata`
+  // is declared by migration 001, so on a canonical (non-rag-system-shaped)
+  // install it exists BEFORE 035 runs and would report the migration applied
+  // when it has not been. source_agent is introduced here and nowhere else.
+  '035_memory_session_record.sql':
+    "select 1 from pg_proc p where p.proname='memory_session_record' and exists (select 1 from information_schema.columns where table_schema='public' and table_name='memory_sessions' and column_name='source_agent')",
+
+  // Sprint 84 T3 (vendored at ORCH close-out) — inbox hygiene: the settled-row
+  // purge RPC + the drain-liveness health view.
+  //
+  // Two-sided, following 033/034/035's precedent, because either half alone is
+  // a broken install: the purge without the view ages out the audit trail with
+  // no way to see whether the drain is alive; the view without the purge
+  // reports on an inbox that grows forever.
+  //
+  // The FUNCTION half probes purge_memory_inbox — a name no earlier migration
+  // defines, so a bare name match is conclusive. The VIEW half probes
+  // memory_inbox_health via pg_class relkind='v' — also introduced here and
+  // nowhere else. Deliberately NOT probed: the mnestra-inbox-purge pg_cron
+  // registration — 036 registers it fail-soft only when pg_cron exists, so a
+  // cron probe would report the migration un-applied on any install without
+  // the extension and re-run it forever.
+  '036_memory_inbox_hygiene.sql':
+    "select 1 from pg_proc p where p.proname='purge_memory_inbox' and exists (select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='memory_inbox_health' and c.relkind='v')"
 });
 
 // Sprint 61 T2 — self-transactional detection.

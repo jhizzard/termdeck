@@ -13,14 +13,17 @@
 //                         (resolved by bootstrap). A panel-less host (cloud origin,
 //                         no TermDeck server) must not expose panel tools at all.
 //   identity            : OPTIONAL { getClient(clientId) } — the OAuth clients
-//                         store (Sprint 76). The memory_propose quarantined
-//                         proposal channel mounts ONLY when this is present AND
-//                         policy carries the identity fns: no identity source ⇒
-//                         no write channel (fail-closed; legacy callers without
-//                         it keep today's tool set untouched). Orthogonal to
-//                         memoryOnly — propose is a memory-family tool.
-//   env                 : OPTIONAL env bag for the propose channel (hermetic
-//                         tests; defaults to process.env).
+//                         store (Sprint 76). BOTH quarantined write channels
+//                         (memory_propose, memory_session_record) mount ONLY
+//                         when this is present AND policy carries the identity
+//                         fns: no identity source ⇒ no write channel
+//                         (fail-closed; legacy callers without it keep today's
+//                         tool set untouched). Orthogonal to memoryOnly — both
+//                         are memory-family tools.
+//   env                 : OPTIONAL env bag for the write channels (hermetic
+//                         tests; defaults to process.env). Each channel has its
+//                         own default-OFF gate: TERMDECK_BRIDGE_ENABLE_PROPOSE
+//                         and TERMDECK_BRIDGE_ENABLE_SESSION_RECORD.
 //
 // Returned descriptor shape (T1 mounts each):
 //   { name, title, description,
@@ -32,6 +35,7 @@
 const { buildMemoryTools } = require('./memory');
 const { buildPanelTools } = require('./panels');
 const { buildProposeTools } = require('./propose');
+const { buildSessionRecordTools } = require('./session-record');
 
 function buildTools({ withEgressRedaction, policy, clients, memoryOnly = false, identity, env }) {
   if (typeof withEgressRedaction !== 'function') {
@@ -56,12 +60,28 @@ function buildTools({ withEgressRedaction, policy, clients, memoryOnly = false, 
   // every piece of its fail-closed pipeline is present (identity source +
   // policy identity fns + a propose-capable mnestra client). Anything
   // missing ⇒ the tool simply does not exist on this origin.
-  const proposeEnabled = String((env || process.env).TERMDECK_BRIDGE_ENABLE_PROPOSE || '') === '1';
-  const canPropose = !!(proposeEnabled
-    && identity && typeof identity.getClient === 'function'
+  const environ = env || process.env;
+  const proposeEnabled = String(environ.TERMDECK_BRIDGE_ENABLE_PROPOSE || '') === '1';
+  const identityReady = !!(identity && typeof identity.getClient === 'function'
     && typeof policy.mapClientToSourceAgent === 'function'
-    && typeof policy.loadProposeMap === 'function'
+    && typeof policy.loadProposeMap === 'function');
+  const canPropose = !!(proposeEnabled
+    && identityReady
     && clients.mnestra && typeof clients.mnestra.propose === 'function');
+
+  // Sprint 84: the session-capture channel gets its OWN gate,
+  // TERMDECK_BRIDGE_ENABLE_SESSION_RECORD=1 — DEFAULT-OFF, and independent of
+  // the propose gate on purpose. They are different trust surfaces (one queues
+  // a single vetted fact for promotion; the other files a whole conversation
+  // into the learning pass's input queue), so an operator who wants one is not
+  // forced to take the other. Same fail-closed pipeline requirements: absent
+  // any piece — flag, identity source, policy identity fns, or a
+  // session-record-capable mnestra client — the tool is absent from the
+  // listing entirely rather than present-and-erroring.
+  const sessionRecordEnabled = String(environ.TERMDECK_BRIDGE_ENABLE_SESSION_RECORD || '') === '1';
+  const canRecordSession = !!(sessionRecordEnabled
+    && identityReady
+    && clients.mnestra && typeof clients.mnestra.sessionRecord === 'function');
 
   // memoryOnly: the panel family is never BUILT — absent from tools/list rather
   // than present-but-always-erroring, so a panel-less host doesn't burn the
@@ -70,6 +90,7 @@ function buildTools({ withEgressRedaction, policy, clients, memoryOnly = false, 
     ...buildMemoryTools({ clients, policy }),
     ...(memoryOnly ? [] : buildPanelTools({ clients, policy })),
     ...(canPropose ? buildProposeTools({ clients, identity, policy, env }) : []),
+    ...(canRecordSession ? buildSessionRecordTools({ clients, identity, policy, env }) : []),
   ];
 
   return raw.map((t) => {

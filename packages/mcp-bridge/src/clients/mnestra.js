@@ -5,14 +5,17 @@
 //
 // Transport: POST ${MNESTRA_WEBHOOK_URL | http://localhost:37778/mnestra} with
 //   { op, ...args }. The webhook supports remember/recall/search/status/index/
-//   timeline/get/propose; this client emits the READ ops 'recall', 'search',
-//   'status' — plus, since Sprint 76, exactly ONE write op: 'propose', which
-//   appends to engram's QUARANTINED memory_inbox (status='pending', invisible
-//   to every recall path until Rumen promotes it). There is deliberately NO
-//   generic `post(op)` exported and NO canonical-write op (no 'remember' /
-//   no 'forget' — those names cannot even mount past policy.assertReadOnly),
-//   so the Bridge stays read-only-plus-one-quarantined-proposal-channel by
-//   construction.
+//   timeline/get/propose/session_record; this client emits the READ ops
+//   'recall', 'search', 'status' — plus exactly TWO write ops, both landing in
+//   a table no recall path reads:
+//     'propose'        (Sprint 76) → memory_inbox, status='pending', invisible
+//                                    until Rumen promotes it.
+//     'session_record' (Sprint 84) → memory_sessions, the Rumen tick's input
+//                                    queue; its synthesis pass is the gate.
+//   There is deliberately NO generic `post(op)` exported and NO canonical-write
+//   op (no 'remember' / no 'forget' — those names cannot even mount past
+//   policy.assertReadOnly), so the Bridge stays read-only-plus-quarantined-
+//   writes by construction.
 //
 // We mirror the proven `packages/server/src/mnestra-bridge/index.js` queryWebhook
 // path rather than importing that 318-line bridge — it additionally carries a
@@ -144,6 +147,66 @@ function createMnestraClient(opts = {}) {
       }
       // Bounded projection — id + status only, never the full row back.
       return { id: String(body.id), status: body.status ? String(body.status) : 'pending' };
+    },
+
+    // The SECOND (and, as of Sprint 84, last) write op: end-of-conversation
+    // capture for web surfaces, via the webhook 'session_record' op (mnestra
+    // contract: { op:'session_record', source_agent, conversation_key, summary,
+    // project?, messages_count?, started_at?, ended_at?, topics?, metadata? } →
+    // 200 { ok, id, session_id } | 400 { ok:false, error } | 501 when the
+    // Mnestra build predates the op).
+    //
+    // It writes memory_sessions, which no recall path reads — it is the Rumen
+    // tick's input queue, and that tick's synthesis pass is the gate. Like
+    // propose: `op` is hardcoded, sourceAgent arrives server-derived from the
+    // tool layer, and there is deliberately NO session_id argument — Mnestra
+    // mints it as web:<agent>:<key> so this surface cannot address a
+    // CLI-written session row.
+    async sessionRecord({
+      sourceAgent, conversationKey, summary,
+      project, messagesCount, startedAt, endedAt, topics, metadata,
+    } = {}) {
+      if (!sourceAgent || !String(sourceAgent).trim()) {
+        throw new Error('memory_session_record requires a resolved source agent');
+      }
+      if (!conversationKey || !String(conversationKey).trim()) {
+        throw new Error('memory_session_record requires a conversation key');
+      }
+      if (!summary || !String(summary).trim()) {
+        throw new Error('memory_session_record requires a non-empty summary');
+      }
+      const args = {
+        source_agent: String(sourceAgent),
+        conversation_key: String(conversationKey),
+        summary: String(summary),
+      };
+      if (project != null && String(project).trim()) args.project = String(project);
+      if (Number.isFinite(messagesCount)) args.messages_count = Math.trunc(messagesCount);
+      if (startedAt != null) args.started_at = String(startedAt);
+      if (endedAt != null) args.ended_at = String(endedAt);
+      if (Array.isArray(topics)) args.topics = topics;
+      if (metadata != null) args.metadata = metadata;
+      let body;
+      try {
+        body = await requestJson(webhookUrl, { method: 'POST', body: { op: 'session_record', ...args }, ...reqOpts });
+      } catch (err) {
+        if (err && err.status === 400) {
+          throw new Error(`session record refused: ${err.message}`);
+        }
+        if (err && err.status === 501) {
+          // Old Mnestra behind the webhook. Say so plainly — the alternative
+          // (a generic 5xx) reads as a transient failure worth retrying.
+          throw new Error(
+            'this Mnestra build has no session_record op (upgrade @jhizzard/mnestra to the release carrying migration 035)',
+          );
+        }
+        throw err;
+      }
+      if (!body || body.ok !== true || !body.id) {
+        throw new Error('memory store returned an unexpected session_record response');
+      }
+      // Bounded projection — the row id + the minted key only.
+      return { id: String(body.id), sessionId: body.session_id ? String(body.session_id) : null };
     },
   };
 }
