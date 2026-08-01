@@ -20,14 +20,18 @@
 //                 `{ exitCode, rows, schema? }` — `rows` retained for back-compat)
 //   --no-color    Strip ANSI codes
 //   --no-schema   Skip the Supabase schema section (used by tests + offline runs)
+//   --no-shims    Skip the standalone-shell capture section (it spawns each
+//                 shim in dry-probe mode; skip in CI / on hosts without them)
 //
 // Test seams (monkey-patchable):
 //   _detectInstalled / _fetchLatest — npm probes (Sprint 28)
 //   _runSchemaCheck — Supabase probe (Sprint 35) — tests stub to `{ skipped: true }`
 
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 const STACK_PACKAGES = [
   '@jhizzard/termdeck',
@@ -47,12 +51,16 @@ const STATUS = {
 };
 
 function makeColors(enabled) {
+  // `red` added Sprint 68-REDUX T2: the shim section has three severities
+  // (fail / warn / skip) and collapsing fail into the same yellow the warns
+  // use would hide the one line that actually needs acting on.
   if (!enabled) {
-    return { green: (s) => s, yellow: (s) => s, dim: (s) => s, bold: (s) => s };
+    return { green: (s) => s, yellow: (s) => s, red: (s) => s, dim: (s) => s, bold: (s) => s };
   }
   return {
     green: (s) => `\x1b[32m${s}\x1b[0m`,
     yellow: (s) => `\x1b[33m${s}\x1b[0m`,
+    red: (s) => `\x1b[31m${s}\x1b[0m`,
     dim: (s) => `\x1b[2m${s}\x1b[0m`,
     bold: (s) => `\x1b[1m${s}\x1b[0m`,
   };
@@ -257,6 +265,7 @@ function parseArgv(argv) {
     noColor: args.includes('--no-color'),
     noSchema: args.includes('--no-schema'),
     noAgents: args.includes('--no-agents'),
+    noShims: args.includes('--no-shims'),
   };
 }
 
@@ -636,6 +645,295 @@ function renderAgentAuthResult(result, c) {
   return out.join('\n');
 }
 
+// ── Sprint 68-REDUX T2: standalone-shell capture shim probes ───────────────
+//
+// The shims are PATH wrappers: install them wrong — or install them right and
+// let a later PATH entry shadow them — and they do nothing at all, silently,
+// forever. That is INSTALLER-PITFALLS Class I (silent no-op) with no
+// background job to notice it, which makes this section the only detector we
+// have. It answers four questions:
+//
+//   1. Is ~/.termdeck/shims actually ON $PATH? (an install the user never
+//      opened a new shell for looks identical to a working one)
+//   2. For each CLI, does `<name>` RESOLVE to our shim, or is an earlier PATH
+//      entry shadowing it? (homebrew, nvm, ~/.local/bin all prepend)
+//   3. Can each shim find the REAL binary behind it?
+//   4. Does the recursion sentinel still abort a re-entry?
+//
+// SKIP ≠ FAIL, and the distinction is load-bearing: a machine with no `grok`
+// installed is a correct machine. A missing real CLI is reported with its
+// reason and never contributes to the exit code. Only genuine misconfiguration
+// (not on PATH, shadowed, shim missing/not executable) is a gap.
+//
+// Fail-soft throughout: a shim that predates the `TERMDECK_SHIM_PROBE`
+// contract, an unreadable file, a probe that times out — all WARN, never RED.
+// This section never reports a problem it cannot substantiate.
+
+const SHIM_NAMES = ['codex', 'grok', 'agy'];
+const SHIM_PROBE_TIMEOUT_MS = 4000;
+
+// Ordered list of executables named `name` on PATH, first match first — the
+// same resolution order the shell itself uses. Pure + injectable so the tests
+// never depend on the host's real PATH.
+function _resolveOnPath(name, pathEnv, _fs = fs) {
+  const dirs = String(pathEnv || '').split(path.delimiter).filter(Boolean);
+  const seen = new Set();
+  const hits = [];
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      const st = _fs.statSync(candidate);
+      if (st.isFile() && (st.mode & 0o111)) hits.push(candidate);
+    } catch (_) { /* not here */ }
+  }
+  return hits;
+}
+
+// True when $PATH contains the shims dir at all (any position).
+function _pathContainsDir(pathEnv, dir) {
+  return String(pathEnv || '').split(path.delimiter).filter(Boolean)
+    .some((d) => path.resolve(d) === path.resolve(dir));
+}
+
+// Symlink-aware identity. A PATH entry that is a SYMLINK to our shim is the
+// same file, not a shadow — comparing `path.resolve` alone would call that a
+// hijack and send the user chasing a problem they don't have.
+function _realpath(p, _fs = fs) {
+  try { return _fs.realpathSync(p); } catch (_) { return path.resolve(p); }
+}
+
+// Does this file carry T1's shim marker? Used to answer "did the shim resolve
+// to ANOTHER shim?" — the exact condition T4-CODEX reproduced against the
+// resolver on 2026-08-01. Whatever the resolver ends up doing, the doctor
+// should be able to see that failure from the outside rather than trusting
+// the thing under test to self-report.
+const SHIM_MARKER_REGEX = /@termdeck\/shim\s+v\d+/;
+function _looksLikeShim(filePath, _fs = fs) {
+  try { return SHIM_MARKER_REGEX.test(_fs.readFileSync(filePath, 'utf8').slice(0, 4096)); }
+  catch (_) { return false; }
+}
+
+async function _runShimCheck(opts = {}) {
+  const _fs = opts._fs || fs;
+  const _spawnSync = opts._spawnSync || spawnSync;
+  const env = opts.env || process.env;
+  const home = opts.home || os.homedir();
+  const shimsDir = opts.shimsDir || path.join(home, '.termdeck', 'shims');
+  const names = opts.names || SHIM_NAMES;
+  const checks = [];
+
+  if (!_fs.existsSync(shimsDir)) {
+    return {
+      skipped: true,
+      reason: `standalone-shell capture not installed (${shimsDir} absent) — run \`npx @jhizzard/termdeck-stack\` to add it`,
+      checks: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+
+  // 0. The kill switch, FIRST because it outranks every other verdict.
+  // `TERMDECK_SHIM_DISABLE` (shim-template.sh:144) makes every shim a
+  // transparent `exec` — the CLI runs perfectly and nothing is ever captured.
+  // Without this probe an operator asking "why is nothing landing in Mnestra?"
+  // gets an all-green section, which is the worst possible answer. It is a
+  // deliberate user choice, so WARN rather than FAIL — but it is stated before
+  // anything else, because every check below it becomes moot.
+  if (env.TERMDECK_SHIM_DISABLE) {
+    checks.push({
+      label: 'capture DISABLED by TERMDECK_SHIM_DISABLE',
+      status: 'warn',
+      hint: `TERMDECK_SHIM_DISABLE=${env.TERMDECK_SHIM_DISABLE} is set in this environment — the shims run your CLI transparently and capture NOTHING. Everything below may look healthy and still write nothing. Unset it (check your shell rc) to re-enable capture.`,
+    });
+  }
+
+  // 1. PATH membership. Everything downstream is moot if this fails, but we
+  // still run the per-CLI checks — "shim present but PATH not reloaded" and
+  // "shim missing entirely" are different problems and the user deserves both.
+  const onPath = _pathContainsDir(env.PATH, shimsDir);
+  checks.push(onPath
+    ? { label: `${shimsDir} on $PATH`, status: 'pass' }
+    : {
+      label: `${shimsDir} on $PATH`,
+      status: 'fail',
+      hint: 'open a new terminal (or `exec $SHELL -l`) — the PATH block is written to your rc file but this shell has not re-read it. If a new shell still fails, the fenced block is missing from your rc: re-run `npx @jhizzard/termdeck-stack`.',
+    });
+
+  // 2. The drain sibling. The shim resolves it as `$SHIM_DIR/drain.js` and,
+  // when it is absent, still runs the CLI perfectly and writes nothing — the
+  // exact silent no-op shape this section exists to catch. Nothing else in
+  // the system would ever mention it.
+  const drainPath = path.join(shimsDir, 'drain.js');
+  checks.push(_fs.existsSync(drainPath)
+    ? { label: 'drain.js present', status: 'pass' }
+    : {
+      label: 'drain.js present',
+      status: 'fail',
+      hint: `${drainPath} is missing — the shims will run your CLI normally but capture NOTHING. Re-run \`npx @jhizzard/termdeck-stack\` or \`termdeck init --mnestra\` to re-stage it.`,
+    });
+
+  // The redactor sibling. `script(1)` captures the RAW TERMINAL, so this is
+  // what stands between a pasted credential and a cloud database. drain.js
+  // degrades to a smaller built-in pattern set when it is absent — capture
+  // still works, which is exactly why nothing else would ever tell you your
+  // redaction quietly got weaker. WARN, not FAIL: the session is still being
+  // captured and still being redacted, just less thoroughly.
+  const redactPath = path.join(shimsDir, 'redact.js');
+  checks.push(_fs.existsSync(redactPath)
+    ? { label: 'redact.js present', status: 'pass' }
+    : {
+      label: 'redact.js present',
+      status: 'warn',
+      hint: `${redactPath} is missing — capture still runs, but falls back to weaker built-in redaction that does NOT catch database connection strings. Re-stage with \`npx @jhizzard/termdeck-stack\` or \`termdeck init --mnestra\`.`,
+    });
+
+  for (const name of names) {
+    const shimPath = path.join(shimsDir, name);
+
+    // 3. Shim file present + executable.
+    let st = null;
+    try { st = _fs.statSync(shimPath); } catch (_) { st = null; }
+    if (!st) {
+      checks.push({ label: `shim ${name}`, status: 'fail', hint: `${shimPath} is missing — re-run \`npx @jhizzard/termdeck-stack\` or \`termdeck init --mnestra\` to re-stage it.` });
+      continue;
+    }
+    if (!(st.mode & 0o111)) {
+      checks.push({ label: `shim ${name}`, status: 'fail', hint: `${shimPath} is not executable — \`chmod 755 ${shimPath}\`.` });
+      continue;
+    }
+
+    // 4. PATH ORDER — does `name` resolve to OUR shim, or to something earlier?
+    // This is the failure the whole section exists for: everything looks
+    // installed, and a single earlier PATH entry means zero capture forever.
+    const resolved = _resolveOnPath(name, env.PATH, _fs);
+    if (onPath) {
+      if (resolved.length === 0) {
+        checks.push({ label: `${name} resolves to shim`, status: 'warn', hint: `no executable \`${name}\` found on $PATH at all, despite ${shimsDir} being on it — check for a stale PATH in this shell.` });
+      } else if (_realpath(resolved[0], _fs) !== _realpath(shimPath, _fs)) {
+        checks.push({
+          label: `${name} resolves to shim`,
+          status: 'fail',
+          hint: `\`${name}\` resolves to ${resolved[0]}, which SHADOWS ${shimPath}. Standalone ${name} sessions are NOT being captured. Move ${shimsDir} earlier in $PATH — the installer's rc block must run after whatever adds ${path.dirname(resolved[0])}.`,
+        });
+      } else {
+        checks.push({ label: `${name} resolves to shim`, status: 'pass' });
+      }
+    }
+
+    // 5. Real-binary resolution, via the shim's own dry-probe mode.
+    // Gated on the shim actually declaring TERMDECK_SHIM_PROBE: a shim from an
+    // older build has no probe mode, and running it would launch the real CLI
+    // interactively inside `termdeck doctor`. Read before you spawn.
+    let declaresProbe = false;
+    try { declaresProbe = _fs.readFileSync(shimPath, 'utf8').includes('TERMDECK_SHIM_PROBE'); }
+    catch (_) { declaresProbe = false; }
+    if (!declaresProbe) {
+      checks.push({ label: `${name} → real binary`, status: 'warn', hint: `${shimPath} predates the TERMDECK_SHIM_PROBE contract; skipping the live probe. Re-stage the shims to get it.` });
+      continue;
+    }
+
+    let probe;
+    try {
+      probe = _spawnSync(shimPath, [], {
+        env: { ...env, TERMDECK_SHIM_PROBE: '1' },
+        encoding: 'utf8',
+        timeout: SHIM_PROBE_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      probe = { error: err };
+    }
+    if (probe && probe.error) {
+      checks.push({ label: `${name} → real binary`, status: 'warn', hint: `probe could not run: ${probe.error.message}` });
+    } else if (probe.status === 0) {
+      const resolvedBin = String(probe.stdout || '').trim().split('\n').pop().trim();
+      if (resolvedBin && _looksLikeShim(resolvedBin, _fs)) {
+        // The shim believes it found the real CLI, but what it found is another
+        // TermDeck shim (a stale copy, a second install, a symlink chain).
+        // Live, that either trips the recursion sentinel or never reaches the
+        // real binary — and the probe alone would have called it healthy.
+        checks.push({
+          label: `${name} → real binary`,
+          status: 'fail',
+          hint: `the shim resolved \`${name}\` to ANOTHER TermDeck shim at ${resolvedBin}, not the real CLI. Standalone ${name} will abort instead of running. Remove the stale copy, or drop its directory from $PATH.`,
+        });
+      } else {
+        checks.push({ label: `${name} → real binary`, status: 'pass', detail: resolvedBin || '(probe printed nothing)' });
+      }
+    } else if (probe.status === 127) {
+      // The documented "no real CLI behind this shim" exit. Explicitly NOT a
+      // failure — a fresh machine without grok installed is a correct machine.
+      checks.push({ label: `${name} → real binary`, status: 'skip', hint: `no real \`${name}\` binary on $PATH behind the shim — nothing to capture, and nothing wrong. Install ${name} if you want its standalone sessions captured.` });
+    } else {
+      checks.push({ label: `${name} → real binary`, status: 'warn', hint: `probe exited ${probe.status === null ? 'on timeout' : probe.status}: ${String(probe.stderr || '').trim().slice(0, 200) || '(no stderr)'}` });
+    }
+
+    // 6. Recursion sentinel — a shim that re-enters itself is a fork bomb in
+    // the user's shell, so verify the guard still bites. Expected exit 70.
+    let sentinel;
+    try {
+      sentinel = _spawnSync(shimPath, [], {
+        env: { ...env, TERMDECK_SHIM_PROBE: '1', TERMDECK_SHIM_ACTIVE: name },
+        encoding: 'utf8',
+        timeout: SHIM_PROBE_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      sentinel = { error: err };
+    }
+    if (sentinel && !sentinel.error && sentinel.status === 70) {
+      checks.push({ label: `${name} recursion sentinel`, status: 'pass' });
+    } else {
+      const got = sentinel && sentinel.error ? sentinel.error.message
+        : `exit ${sentinel && sentinel.status === null ? 'timeout' : sentinel && sentinel.status}`;
+      checks.push({ label: `${name} recursion sentinel`, status: 'warn', hint: `expected exit 70 with TERMDECK_SHIM_ACTIVE set, got ${got}.` });
+    }
+  }
+
+  const scored = checks.filter((c) => c.status === 'pass' || c.status === 'fail');
+  const passed = scored.filter((c) => c.status === 'pass').length;
+  return {
+    skipped: false,
+    shimsDir,
+    checks,
+    passed,
+    total: scored.length,
+    // Only hard fails gate the exit code. Warns are informational; skips are
+    // "this machine legitimately doesn't have that CLI".
+    hasGaps: checks.some((c) => c.status === 'fail'),
+  };
+}
+
+function renderShimResult(result, c) {
+  const out = [];
+  out.push('');
+  out.push(c.bold('Standalone-shell capture'));
+  out.push('');
+  if (result.skipped) {
+    out.push(`  ${c.dim(`(skipped) ${result.reason}`)}`);
+    return out.join('\n');
+  }
+  for (const chk of result.checks) {
+    if (chk.status === 'pass') {
+      out.push(`  ${c.green('✓')} ${chk.label}${chk.detail ? c.dim(` — ${chk.detail}`) : ''}`);
+    } else if (chk.status === 'skip') {
+      out.push(`  ${c.dim('─')} ${c.dim(`${chk.label}: skipped`)}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    } else if (chk.status === 'warn') {
+      out.push(`  ${c.yellow('!')} ${chk.label}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    } else {
+      out.push(`  ${c.red('✗')} ${chk.label}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    }
+  }
+  out.push('');
+  out.push(`  ${result.passed}/${result.total} shim checks passed`);
+  return out.join('\n');
+}
+
 async function doctor(argv) {
   const opts = parseArgv(argv);
 
@@ -691,6 +989,21 @@ async function doctor(argv) {
     }
   }
 
+  // Sprint 68-REDUX T2: standalone-shell capture shims. Skippable via
+  // --no-shims for offline/CI runs (it spawns the shims in dry-probe mode).
+  let shims = null;
+  if (!opts.noShims) {
+    try {
+      shims = await module.exports._runShimCheck();
+    } catch (err) {
+      shims = {
+        skipped: false,
+        checks: [{ label: 'shim probes', status: 'warn', hint: `unexpected error: ${err && err.message || err}` }],
+        passed: 0, total: 0, hasGaps: false,
+      };
+    }
+  }
+
   // Exit-code priority: any network failure → 2; any update available OR
   // schema gap → 1; else 0. Computed after all rows resolve so a single
   // transient failure doesn't mask real updates in stdout. A schema connect
@@ -706,11 +1019,16 @@ async function doctor(argv) {
   if (schema && schema.connectError && exitCode < 2) exitCode = 2;
   if (schema && !schema.skipped && schema.hasGaps && exitCode < 1) exitCode = 1;
   if (agents && !agents.skipped && agents.hasGaps && exitCode < 1) exitCode = 1;
+  // A shim that is installed but shadowed / off-PATH captures nothing — a real
+  // gap, same exit weight as a schema gap. Skips (no such CLI on this machine)
+  // and warns never reach here: `hasGaps` counts hard fails only.
+  if (shims && !shims.skipped && shims.hasGaps && exitCode < 1) exitCode = 1;
 
   if (opts.json) {
     const payload = { exitCode, rows };
     if (schema) payload.schema = schema;
     if (agents) payload.agents = agents;
+    if (shims) payload.shims = shims;
     process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return exitCode;
   }
@@ -725,6 +1043,9 @@ async function doctor(argv) {
   if (agents) {
     process.stdout.write(renderAgentAuthResult(agents, c) + '\n');
   }
+  if (shims) {
+    process.stdout.write(renderShimResult(shims, c) + '\n');
+  }
   return exitCode;
 }
 
@@ -736,5 +1057,13 @@ module.exports._detectMnestraVersion = _detectMnestraVersion;
 module.exports._selectHybridSearchRpcNames = _selectHybridSearchRpcNames;
 module.exports._runSchemaCheck = _runSchemaCheck;
 module.exports._runAgentAuthCheck = _runAgentAuthCheck;
+// Sprint 68-REDUX T2 — standalone-shell shim probes.
+module.exports._runShimCheck = _runShimCheck;
+module.exports._resolveOnPath = _resolveOnPath;
+module.exports._pathContainsDir = _pathContainsDir;
+module.exports._looksLikeShim = _looksLikeShim;
+module.exports._realpath = _realpath;
+module.exports.renderShimResult = renderShimResult;
+module.exports.SHIM_NAMES = SHIM_NAMES;
 module.exports.STACK_PACKAGES = STACK_PACKAGES;
 module.exports.STATUS = STATUS;

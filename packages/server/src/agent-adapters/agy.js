@@ -115,11 +115,26 @@ function _stripAnsi(s) {
 }
 
 // Collapse carriage-return overdraws. agy emits CRLF line endings (verified)
-// AND lone-CR spinner redraws (`⣾…\r⣷…\r⣯…`). Normalize CRLF → LF first, then
-// for each line keep only the text after the LAST lone CR (the final overwrite).
+// AND lone-CR spinner redraws (`⣾…\r⣷…\r⣯…`). Normalize CR-runs-before-LF → LF
+// first, then for each line keep only the text after the LAST lone CR (the
+// final overwrite).
+//
+// The `\r+` (not `\r`) is load-bearing — Sprint 68-REDUX remediation item 3,
+// found by T3's vendor-parity fence and confirmed by T4 with the `\r\r\r\n`
+// neighbour case. A single-`\r` pattern left one CR stranded at end-of-line on
+// `text\r\r\n`; the overdraw pass below then read that trailing CR as "the
+// final overwrite starts here", took the empty string after it, and the line
+// was dropped as blank. Real content vanished — `hello\r\r\nworld\r\r\n`
+// parsed to ZERO messages, silently.
+//
+// The distinction the pattern encodes: CR immediately followed by LF is just
+// line-ending noise (nothing was overwritten — CR does not erase), so collapse
+// it. CR followed by TEXT is a genuine redraw, and only there should the
+// earlier text be discarded. `\r+\n` matches exactly the first case and leaves
+// the second to the overdraw pass.
 function _normalizeOverdraw(s) {
   return s
-    .replace(/\r\n/g, '\n')
+    .replace(/\r+\n/g, '\n')
     .split('\n')
     .map((line) => {
       const i = line.lastIndexOf('\r');

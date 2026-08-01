@@ -225,3 +225,53 @@ The gap closed via two orthogonal mechanisms shipping in `@jhizzard/termdeck-sta
 **Standalone Codex/Gemini/Grok shells (outside TermDeck) — still uncovered.** Sprint 65+ candidate (mentioned at the bottom of T3's brief out-of-scope section). Until then, manual `memory_remember` calls remain the only safety net for those panels. Crash-near scenarios (process killed before compaction completes) also remain out of scope — durable substrates (`STATUS.md` in active sprints, prior `memory_remember` rows, JSONL transcripts on disk) are the only recovery path.
 
 **Both Investigations 1 + 2 are now closed.** Investigation 1 closed Sprint 62 (code/test grounds) + Sprint 63 (acceptance grounds, 4/4 panels wrote `session_summary` on real `/exit`). Investigation 2 closed Sprint 64 (above). This file is preserved as the historical P0 record — do not delete; future sessions may want the backstory.
+
+---
+
+## Resolution addendum — standalone shells — 2026-08-01
+
+The paragraph above ("**Standalone Codex/Gemini/Grok shells (outside TermDeck) — still
+uncovered**") is **superseded**. That last dark cell closed in Sprint 68-REDUX
+(`docs/sprint-68-redux-standalone-shell-capture/`), and it closed by a different mechanism than
+anyone planned.
+
+**Why the planned approach died.** The staged 2026-05-19 plan
+(`docs/sprint-68-standalone-shell-capture/PLANNING.md`, kept as the historical record) bet
+entirely on **native CLI hook surfaces**: Gemini `SessionEnd`/`PreCompress`, grok-dev
+`user-settings.json` hooks, a throttled Codex `Stop`. Within weeks the CLI churn of 2026-06
+invalidated that inventory wholesale — Gemini CLI went legacy (OAuth serving ended 2026-06-18)
+and its daily-driver role passed to Antigravity `agy`, whose hook surface is absent; grok-dev
+was auto-updated out of existence into Grok Build; and Codex never had a `SessionEnd` at all.
+The general lesson, and the reason this addendum exists rather than a second hook plan:
+**third-party hook and session-file surfaces are churn we do not control; capture at the process
+boundary is churn-proof.**
+
+**What shipped instead.** PATH shims. `~/.termdeck/shims/{codex,grok,agy}` shadow the real
+binaries by PATH order, resolve the real binary as "next on PATH after myself", run it under
+`script(1)` so the CLI still sees a real TTY, and on exit hand the transcript to a drain that
+cleans it and feeds the **existing, unmodified** `memory-session-end.js`. Inside a TermDeck panel
+the shim `exec`s the real binary transparently and captures nothing, so `onPanelClose` remains
+the single writer for panel sessions. Gemini stays deliberately out of scope (legacy,
+API-key-only, panel-covered, standalone use ≈ nil) — for a standalone `gemini` shell, manual
+`memory_remember` is still the only safety net.
+
+**One correction to the mental model this file established.** Investigation 2's framing assumed
+the bundled hook could ingest whatever transcript it was pointed at. It cannot: every entry in
+its `TRANSCRIPT_PARSERS` table is a JSON/JSONL parser, so a raw PTY transcript parses to **zero
+messages** and the hook returns having written nothing. Panels only ever worked because the
+*adapter* cleaned first (`agy.js::resolveTranscriptPath` writes a Gemini-shaped envelope; grok
+does the same from `grok.db`). Anything feeding this hook from a new source must do that cleaning
+itself. That was verified empirically before a line of shim was written, and it is the single
+most load-bearing fact for whoever extends capture to a fourth surface.
+
+**Two-artifact transcript semantics, for whoever debugs a shim session later.** A standalone
+shim session leaves two durable files, and the split is deliberate:
+`memory_sessions.transcript_path` points at the **cleaned envelope** (what the hook actually
+parsed, and therefore what any re-parse must read), while `envelope.raw_transcript_path` points
+at the **raw `script(1)` PTY log** under `~/.termdeck/standalone-transcripts/` (the forensic
+original). Both are durable, 0600, and share the same 14-day rotation — neither is a temp file.
+An earlier iteration pointed `transcript_path` at a `os.tmpdir()` envelope the drain unlinked on
+hook-close, so every stored path dangled within milliseconds of being written; that is now
+fenced. Redaction runs before either file leaves the machine and fails closed.
+
+Crash-near scenarios remain out of scope, unchanged: durable substrates only.

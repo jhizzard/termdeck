@@ -2465,6 +2465,23 @@ function createServer(config) {
             // no-op spread.
             ...adapterSpawnEnv,
             TERMDECK_SESSION: session.id,
+            // Sprint 68-REDUX T1 (D1′ dedup marker). The standalone-shell PATH
+            // shims (`~/.termdeck/shims/{codex,grok,agy}`) capture a session by
+            // tee-ing it through `script` and draining to the bundled
+            // memory-session-end hook on exit. Inside a TermDeck panel that
+            // would DOUBLE-write, because `onPanelClose` already owns this
+            // session's capture. This marker is the shim's "I'm in a panel —
+            // exec the real binary transparently and capture nothing" signal.
+            //
+            // Deliberately a SECOND, single-purpose name rather than reusing
+            // `TERMDECK_SESSION` above: the dedup contract is the only consumer,
+            // so it can never be broken by a future change to what
+            // TERMDECK_SESSION means. The shims additionally accept a non-empty
+            // TERMDECK_SESSION as a fallback guard, which is what keeps dedup
+            // correct against a LONG-LIVED PRE-1.18.0 SERVER PROCESS that
+            // predates this line (upgrade without restart — otherwise a silent
+            // double-write on exactly the hosts that never restart).
+            TERMDECK_PANEL_SESSION: session.id,
             TERMDECK_PROJECT: project || '',
             // Sprint 81 T4 (R2) — TRUSTED recall-provenance producer. The mnestra
             // MCP server (spawned by the agent, inheriting this env) reads these

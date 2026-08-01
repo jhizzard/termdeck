@@ -111,13 +111,16 @@ function printHelp(out = process.stdout) {
     --help, -h         Print usage.
 
   What gets removed (default):
-    1. ~/.termdeck/                                   (entire directory)
-    2. ~/.claude.json mnestra MCP entry               (surgical splice)
-    3. ~/.claude/settings.json SessionEnd/Stop hook   (surgical splice)
-    4. ~/.claude/hooks/memory-session-end.js          (renamed to .bak.<timestamp>)
-    5. LaunchAgents (macOS) or systemd units (Linux)  (unload + remove)
+    1. termdeck shims PATH block in your shell rc     (fence-to-fence splice)
+    2. ~/.termdeck/ incl. shims/                      (except your transcripts)
+    3. ~/.claude.json mnestra MCP entry               (surgical splice)
+    4. ~/.claude/settings.json SessionEnd/Stop hook   (surgical splice)
+    5. ~/.claude/hooks/memory-session-end.js          (renamed to .bak.<timestamp>)
+    6. LaunchAgents (macOS) or systemd units (Linux)  (unload + remove)
 
   What is NEVER removed without an explicit flag:
+    - ~/.termdeck/standalone-transcripts/ (your own session transcripts —
+      always kept; delete by hand if you want them gone)
     - Your Supabase project (data preservation)
     - The Mnestra/Rumen schemas inside the Supabase project
     - Other MCP entries in ~/.claude.json
@@ -225,6 +228,21 @@ function _resolvePaths(home, platform) {
     platform,
     termdeckDir: path.join(home, '.termdeck'),
     secretsEnv: path.join(home, '.termdeck', 'secrets.env'),
+    // Sprint 68-REDUX T2 — standalone-shell capture shims.
+    shimsDir: path.join(home, '.termdeck', 'shims'),
+    shimBackupsDir: path.join(home, '.termdeck', 'shim-backups'),
+    // User data. Preserved on uninstall (see _stepRemoveTermdeckDir) — these
+    // are the user's own session transcripts, and an uninstall that silently
+    // shreds them is unrecoverable.
+    transcriptsDir: path.join(home, '.termdeck', 'standalone-transcripts'),
+    // Every rc file we might have fenced a PATH block into. Uninstall scans
+    // ALL of them regardless of the CURRENT $SHELL: the user may have changed
+    // shells since install, or hand-copied the block into a second file per
+    // the installer's darwin bash advisory. The splice is fence-delimited, so
+    // scanning wide costs nothing and missing a file leaves a dangling PATH
+    // entry pointing at a directory we just deleted.
+    rcCandidates: ['.zshrc', '.bashrc', '.bash_profile', '.profile', '.zprofile']
+      .map((n) => path.join(home, n)),
     claudeJson: path.join(home, '.claude.json'),
     settingsJson: path.join(home, '.claude', 'settings.json'),
     hookFile: path.join(home, '.claude', 'hooks', 'memory-session-end.js'),
@@ -291,13 +309,113 @@ function _findHookBakFiles(_fs, hookFile) {
   } catch (_) { return []; }
 }
 
+// ── Sprint 68-REDUX T2: shim + rc-block primitives ────────────────────
+//
+// The fence literals are re-declared here rather than required from
+// ./index.js on purpose — the same reason `_isSessionEndHookEntry` is
+// duplicated above: a partial or broken install must still be uninstallable,
+// so the uninstall path carries zero cross-module require risk. The literals
+// are a CONTRACT with `index.js::_shimPathBlock`; change one, change both
+// (INSTALLER-PITFALLS Class N).
+const SHIM_FENCE_START = '# >>> termdeck shims >>>';
+const SHIM_FENCE_END = '# <<< termdeck shims <<<';
+const SHIM_NAMES = ['codex', 'grok', 'agy'];
+
+function _scanRcFences(text) {
+  const lines = String(text == null ? '' : text).split('\n');
+  const starts = [];
+  const ends = [];
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (t === SHIM_FENCE_START) starts.push(i);
+    else if (t === SHIM_FENCE_END) ends.push(i);
+  });
+  return { lines, starts, ends };
+}
+
+// Remove our fenced block plus the single blank separator line the installer
+// wrote before it, so an install→uninstall round-trip returns a
+// newline-terminated rc file byte-identical to its pre-install content.
+// Refuses to touch anything it cannot unambiguously identify: duplicate or
+// orphaned markers mean we do not know which block is ours, and guessing
+// wrong mangles a file the user has to log in through.
+function _removeRcShimBlock(text) {
+  const existing = String(text == null ? '' : text);
+  const { lines, starts, ends } = _scanRcFences(existing);
+  if (starts.length === 0 && ends.length === 0) return { status: 'absent', text: existing };
+  if (starts.length !== 1 || ends.length !== 1 || ends[0] < starts[0]) {
+    return {
+      status: 'malformed',
+      text: existing,
+      detail: `${starts.length} start / ${ends.length} end marker(s)`
+        + (starts.length === 1 && ends.length === 1 ? ' (end precedes start)' : ''),
+    };
+  }
+  let from = starts[0];
+  if (from > 0 && lines[from - 1].trim() === '') from -= 1;
+  const kept = lines.slice(0, from).concat(lines.slice(ends[0] + 1));
+  let next = kept.join('\n');
+  // Restore the file's ORIGINAL newline convention, don't impose one. The
+  // installer writes a block that ends with a newline only when the file did,
+  // so this reverses it exactly — including for an rc whose last line has no
+  // trailing newline (T4-CODEX 15:59 ET).
+  const endsWithNewline = /\n$/.test(existing);
+  if (next.trim() === '') next = '';
+  else if (endsWithNewline) { if (!next.endsWith('\n')) next += '\n'; }
+  else next = next.replace(/\n+$/, '');
+  return { status: 'removed', text: next };
+}
+
+function _findRcFilesWithShimBlock(_fs, paths) {
+  const hits = [];
+  for (const rc of paths.rcCandidates || []) {
+    try {
+      if (!_fs.existsSync(rc)) continue;
+      const raw = _fs.readFileSync(rc, 'utf8');
+      if (typeof raw === 'string' && raw.includes(SHIM_FENCE_START)) hits.push(rc);
+    } catch (_) { /* unreadable rc is not our problem here */ }
+  }
+  return hits;
+}
+
+function _listShimFiles(_fs, shimsDir) {
+  try {
+    return _fs.readdirSync(shimsDir)
+      .filter((n) => SHIM_NAMES.includes(n))
+      .map((n) => path.join(shimsDir, n));
+  } catch (_) { return []; }
+}
+
+function _countTranscripts(_fs, transcriptsDir) {
+  try { return _fs.readdirSync(transcriptsDir).length; } catch (_) { return 0; }
+}
+
+// Entries under ~/.termdeck that uninstall is allowed to remove. Anything in
+// `preserveNames` is user data and stays. Also used by detection so a
+// post-uninstall home containing ONLY preserved transcripts still reports
+// "already uninstalled" rather than looping forever on a dir it will never
+// fully delete.
+function _termdeckDirRemovableEntries(_fs, termdeckDir, preserveNames) {
+  try {
+    return _fs.readdirSync(termdeckDir).filter((n) => !preserveNames.includes(n));
+  } catch (_) { return []; }
+}
+
 function _detectInstallState(_fs, paths) {
   const launchAgents = paths.platform === 'darwin'
     ? _findLaunchAgents(_fs, paths.launchAgentsDir, paths.launchAgentGlob)
     : [];
   const systemdActive = paths.platform === 'linux' && _fs.existsSync(paths.systemdUnit);
   return {
-    hasTermdeckDir: _fs.existsSync(paths.termdeckDir),
+    // Sprint 68-REDUX T2 — "has a termdeck dir" now means "has a termdeck dir
+    // with something in it we would actually remove". A directory holding
+    // nothing but preserved standalone transcripts is NOT live install state.
+    hasTermdeckDir: _fs.existsSync(paths.termdeckDir)
+      && _termdeckDirRemovableEntries(_fs, paths.termdeckDir, ['standalone-transcripts']).length > 0,
+    hasShimsDir: _fs.existsSync(paths.shimsDir),
+    shimFiles: _listShimFiles(_fs, paths.shimsDir),
+    rcFilesWithShimBlock: _findRcFilesWithShimBlock(_fs, paths),
+    transcriptCount: _countTranscripts(_fs, paths.transcriptsDir),
     hasMnestraMcpEntry: _claudeJsonHasMnestraEntry(_fs, paths.claudeJson),
     hasOurHookInSettings: _settingsJsonHasOurHook(_fs, paths.settingsJson),
     hasHookFile: _fs.existsSync(paths.hookFile),
@@ -350,6 +468,12 @@ function _preflightValidate(_fs, paths) {
 
 function _isFullyClean(state) {
   return !state.hasTermdeckDir
+    // Sprint 68-REDUX T2 — a machine whose ONLY remaining TermDeck state is a
+    // PATH fence in .zshrc is not clean. Without this the uninstaller would
+    // report "nothing to uninstall" and leave a PATH entry pointing at a
+    // directory that no longer exists.
+    && !state.hasShimsDir
+    && (state.rcFilesWithShimBlock || []).length === 0
     && !state.hasMnestraMcpEntry
     && !state.hasOurHookInSettings
     && !state.hasHookFile
@@ -362,41 +486,126 @@ function _isFullyClean(state) {
 // ── Steps ───────────────────────────────────────────────────────────
 
 // Step 2: ~/.termdeck/. Honors --keep-secrets. Idempotent — missing dir is OK.
+//
+// Sprint 68-REDUX T2 — removal is now entry-by-entry against a preserve list
+// rather than a wholesale `rmSync` of the directory. Two reasons:
+//
+//   1. `standalone-transcripts/` is USER DATA — the raw PTY transcripts of the
+//      user's own standalone CLI sessions. An uninstall that shreds them is
+//      unrecoverable, and nothing about "remove the tool" implies "destroy the
+//      records it kept for me". Always preserved; always reported.
+//   2. The old --keep-secrets path round-tripped secrets through a Node buffer
+//      (read → rm -rf → mkdir → write). Never touching the file at all is
+//      strictly safer: no window where the only copy of the user's
+//      service_role key lives in a process's heap and nowhere on disk.
+//
+// The shims directory sits inside this blast radius and is removed here — the
+// summary detail names the count so "shims gone" is visible, not inferred.
 function _stepRemoveTermdeckDir(_fs, paths, opts) {
   const out = { name: 'termdeck-dir', status: 'pending', detail: '' };
   if (!_fs.existsSync(paths.termdeckDir)) {
     out.status = 'skipped'; out.detail = 'not present';
     return out;
   }
+
+  // Always-preserved user data + conditionally-preserved secrets.
+  const preserveNames = ['standalone-transcripts'];
+  const transcriptCount = _countTranscripts(_fs, paths.transcriptsDir);
+  const shimCount = _listShimFiles(_fs, paths.shimsDir).length;
+
+  let entries;
+  try { entries = _fs.readdirSync(paths.termdeckDir); }
+  catch (e) {
+    out.status = 'error'; out.detail = `${e && e.message ? e.message : e}`;
+    return out;
+  }
+  const isSecret = (n) => n === 'secrets.env' || n.startsWith('secrets.env.bak.');
+  const doomed = entries.filter((n) => !preserveNames.includes(n) && !(opts.keepSecrets && isSecret(n)));
+  const secretsKept = opts.keepSecrets ? entries.filter(isSecret).length : 0;
+
+  const notes = [];
+  if (shimCount > 0) notes.push(`${shimCount} shim(s) removed`);
+  if (transcriptCount > 0) notes.push(`${transcriptCount} standalone transcript(s) KEPT at ${paths.transcriptsDir}`);
+  else if (_fs.existsSync(paths.transcriptsDir)) notes.push(`transcripts dir kept at ${paths.transcriptsDir}`);
+  if (opts.keepSecrets) notes.push(`preserved ${secretsKept} secrets file(s)`);
+  const suffix = notes.length ? ` — ${notes.join('; ')}` : '';
+
   if (opts.dryRun) {
     out.status = 'would-remove';
-    out.detail = `would remove ${paths.termdeckDir} (${_formatBytes(_approxSize(_fs, paths.termdeckDir))})`;
+    out.detail = `would remove ${doomed.length} entr${doomed.length === 1 ? 'y' : 'ies'} under ${paths.termdeckDir} (${_formatBytes(_approxSize(_fs, paths.termdeckDir))})${suffix}`;
     return out;
   }
   try {
-    if (opts.keepSecrets) {
-      // Snapshot any `secrets.env*` files into memory, nuke the dir, restore.
-      const preserved = [];
-      for (const entry of _fs.readdirSync(paths.termdeckDir)) {
-        if (entry === 'secrets.env' || entry.startsWith('secrets.env.bak.')) {
-          preserved.push({ name: entry, body: _fs.readFileSync(path.join(paths.termdeckDir, entry)) });
-        }
-      }
-      _fs.rmSync(paths.termdeckDir, { recursive: true, force: true });
-      _fs.mkdirSync(paths.termdeckDir, { recursive: true });
-      for (const f of preserved) {
-        _fs.writeFileSync(path.join(paths.termdeckDir, f.name), f.body, { mode: 0o600 });
-      }
-      out.status = 'preserved-secrets';
-      out.detail = `removed ${paths.termdeckDir}, preserved ${preserved.length} secrets file(s)`;
-    } else {
-      _fs.rmSync(paths.termdeckDir, { recursive: true, force: true });
-      out.status = 'removed';
-      out.detail = `removed ${paths.termdeckDir}`;
+    for (const name of doomed) {
+      _fs.rmSync(path.join(paths.termdeckDir, name), { recursive: true, force: true });
     }
+    // Only take the directory itself when nothing is left in it.
+    let remaining = [];
+    try { remaining = _fs.readdirSync(paths.termdeckDir); } catch (_) { remaining = []; }
+    if (remaining.length === 0) {
+      try { _fs.rmSync(paths.termdeckDir, { recursive: true, force: true }); } catch (_) { /* best-effort */ }
+    }
+    out.status = opts.keepSecrets ? 'preserved-secrets' : 'removed';
+    out.detail = `removed ${paths.termdeckDir}${suffix}`;
   } catch (e) {
     out.status = 'error'; out.detail = `${e && e.message ? e.message : e}`;
   }
+  return out;
+}
+
+// Sprint 68-REDUX T2 — splice the fenced PATH block out of every rc file that
+// carries it. Fence-to-fence and nothing else: the rest of the user's rc is
+// theirs. Backs up before writing, writes atomically via tmp+rename, and
+// preserves the file's existing mode.
+//
+// A malformed fence set (duplicate/orphaned markers) is reported and SKIPPED,
+// never guessed at — same rule the installer follows. Non-fatal: refusing to
+// edit one rc file must not abort an uninstall that has real work elsewhere.
+function _stepSpliceRcShimBlock(_fs, paths, opts) {
+  const out = { name: 'rc-shim-path-block', status: 'pending', detail: '', files: [] };
+  const hits = _findRcFilesWithShimBlock(_fs, paths);
+  if (hits.length === 0) {
+    out.status = 'skipped'; out.detail = 'no termdeck shims PATH block found in any rc file';
+    return out;
+  }
+  if (opts.dryRun) {
+    out.status = 'would-splice';
+    out.detail = `would remove the fenced PATH block from ${hits.map((p) => path.basename(p)).join(', ')}`;
+    out.files = hits.slice();
+    return out;
+  }
+  const stamp = _isoStamp(opts._now);
+  const spliced = [];
+  const malformed = [];
+  const failed = [];
+  for (const rc of hits) {
+    let raw;
+    try { raw = _fs.readFileSync(rc, 'utf8'); }
+    catch (e) { failed.push(`${path.basename(rc)} (unreadable: ${e.message})`); continue; }
+    const r = _removeRcShimBlock(raw);
+    if (r.status === 'malformed') { malformed.push(`${path.basename(rc)} (${r.detail})`); continue; }
+    if (r.status === 'absent') continue;
+    try {
+      let mode = 0o644;
+      try { mode = _fs.statSync(rc).mode & 0o777; } catch (_) { /* default */ }
+      try { _fs.copyFileSync(rc, `${rc}.bak.${stamp}`); } catch (_) { /* best-effort */ }
+      const tmp = `${rc}.tmp`;
+      _fs.writeFileSync(tmp, r.text, { mode });
+      _fs.renameSync(tmp, rc);
+      spliced.push(path.basename(rc));
+      out.files.push(rc);
+    } catch (e) {
+      failed.push(`${path.basename(rc)} (${e.message})`);
+    }
+  }
+  const parts = [];
+  if (spliced.length) parts.push(`spliced from ${spliced.join(', ')} (backup: .bak.${stamp})`);
+  if (malformed.length) parts.push(`SKIPPED ${malformed.join(', ')} — remove the block by hand`);
+  if (failed.length) parts.push(`FAILED ${failed.join(', ')}`);
+  out.detail = parts.join('; ');
+  out.status = spliced.length
+    ? (malformed.length || failed.length ? 'partial' : 'spliced')
+    : (malformed.length ? 'malformed' : 'error');
   return out;
 }
 
@@ -805,6 +1014,16 @@ function _printPreflight(out, state, paths, opts) {
     const sz = _formatBytes(_approxSize(opts._fs || fs, paths.termdeckDir));
     lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${paths.termdeckDir} ${ANSI.dim}(${sz})${ANSI.reset}${opts.keepSecrets ? ' [secrets preserved]' : ''}`);
   }
+  // Sprint 68-REDUX T2 — shims + PATH fence + the transcripts we are KEEPING.
+  // The kept-transcripts line is deliberately in the pre-flight: the user
+  // deserves to know what survives an uninstall, not just what dies.
+  if (state.hasShimsDir) lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${paths.shimsDir} ${ANSI.dim}(${state.shimFiles.length} capture shim(s))${ANSI.reset}`);
+  for (const rc of state.rcFilesWithShimBlock || []) {
+    lines.push(`  ${ANSI.cyan}•${ANSI.reset} termdeck shims PATH block in ${rc} ${ANSI.dim}(fence-to-fence splice — rest of the file preserved)${ANSI.reset}`);
+  }
+  if (state.transcriptCount > 0) {
+    lines.push(`  ${ANSI.dim}•${ANSI.reset} ${ANSI.dim}${paths.transcriptsDir} — ${state.transcriptCount} standalone transcript(s) KEPT (your data; delete by hand if you want them gone)${ANSI.reset}`);
+  }
   if (state.hasMnestraMcpEntry) lines.push(`  ${ANSI.cyan}•${ANSI.reset} mcpServers.mnestra in ${paths.claudeJson} ${ANSI.dim}(surgical splice — other entries preserved)${ANSI.reset}`);
   if (state.hasOurHookInSettings) lines.push(`  ${ANSI.cyan}•${ANSI.reset} hooks.{Stop,SessionEnd} entries in ${paths.settingsJson} ${ANSI.dim}(surgical splice — other entries preserved)${ANSI.reset}`);
   if (state.hasHookFile) lines.push(`  ${ANSI.cyan}•${ANSI.reset} ${paths.hookFile} ${ANSI.dim}(renamed to .bak.<timestamp>, not deleted)${ANSI.reset}`);
@@ -915,6 +1134,11 @@ async function uninstall(opts = {}) {
     steps.push(r); _printSummaryLine(out, r);
   }
   for (const fn of [
+    // Sprint 68-REDUX T2 — the rc PATH block is spliced BEFORE ~/.termdeck is
+    // removed. Ordering matters on failure: if the dir removal dies partway,
+    // the user is left with a shims dir and no PATH entry (inert) rather than
+    // a PATH entry pointing into a half-deleted directory.
+    (o) => _stepSpliceRcShimBlock(_fs, paths, o),
     (o) => _stepRemoveTermdeckDir(_fs, paths, o),
     (o) => _stepSpliceClaudeJson(_fs, paths, o),
     (o) => _stepSpliceSettingsJson(_fs, paths, o),
@@ -987,6 +1211,17 @@ module.exports = {
   _stepSpliceClaudeJson,
   _stepSpliceSettingsJson,
   _stepBackupHookFile,
+  // Sprint 68-REDUX T2 — standalone-shell shim uninstall surface.
+  _stepSpliceRcShimBlock,
+  _removeRcShimBlock,
+  _scanRcFences,
+  _findRcFilesWithShimBlock,
+  _listShimFiles,
+  _countTranscripts,
+  _termdeckDirRemovableEntries,
+  SHIM_FENCE_START,
+  SHIM_FENCE_END,
+  SHIM_NAMES,
   _stepRemoveLaunchAgents,
   _stepRemoveSystemdUnit,
   _stepPurgeSupabase,

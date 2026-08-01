@@ -1,0 +1,12 @@
+[?1049h[38;2;120;200;255m╭──────────────────────────────╮[0m
+[38;2;120;200;255m│  codex  v0.2.33              │[0m
+[38;2;120;200;255m╰──────────────────────────────╯[0m
+[?2004h> 
+s68r-canary-fixture-2026-08-01 explain the shim
+⣾ thinking⣷ thinking⣯ thinking[2K[1mThe shim resolves the real binary next on PATH after itself.[0m
+It then runs that binary under script(1) so the CLI still sees a TTY.
+────────────────────────────────
+> 
+and how does dedup work
+Inside a TermDeck panel the shim execs through without capturing.
+[?2004l[?1049l

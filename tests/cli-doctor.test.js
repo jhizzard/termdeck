@@ -22,12 +22,14 @@ const origDetect = doctor._detectInstalled;
 const origFetch = doctor._fetchLatest;
 const origRunSchemaCheck = doctor._runSchemaCheck;
 const origRunAgentAuthCheck = doctor._runAgentAuthCheck;
+const origRunShimCheck = doctor._runShimCheck;
 
 function restore() {
   doctor._detectInstalled = origDetect;
   doctor._fetchLatest = origFetch;
   doctor._runSchemaCheck = origRunSchemaCheck;
   doctor._runAgentAuthCheck = origRunAgentAuthCheck;
+  doctor._runShimCheck = origRunShimCheck;
 }
 
 // Sprint 70 T2: default the agent-auth section to an empty no-op so the
@@ -37,11 +39,20 @@ function restore() {
 // call doctor._runAgentAuthCheck directly.
 const EMPTY_AGENTS = async () => ({ skipped: false, agents: [], passed: 0, total: 0, hasGaps: false });
 
-async function runWithStubs({ detect, fetch, schema, agents, argv = [] }) {
+// Sprint 68-REDUX T2: same treatment for the standalone-shell shim section.
+// Unstubbed it reads the HOST's ~/.termdeck/shims and SPAWNS each shim in
+// dry-probe mode — so on a developer machine that has the shims installed, the
+// version-check cases would inherit a real PATH-order verdict and flip their
+// exit codes. Harness plumbing only; the shim section's own coverage is a
+// separate file.
+const EMPTY_SHIMS = async () => ({ skipped: false, checks: [], passed: 0, total: 0, hasGaps: false });
+
+async function runWithStubs({ detect, fetch, schema, agents, shims, argv = [] }) {
   doctor._detectInstalled = detect;
   doctor._fetchLatest = fetch;
   if (schema) doctor._runSchemaCheck = schema;
   doctor._runAgentAuthCheck = agents || EMPTY_AGENTS;
+  doctor._runShimCheck = shims || EMPTY_SHIMS;
   const captured = [];
   const origWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = (chunk) => {

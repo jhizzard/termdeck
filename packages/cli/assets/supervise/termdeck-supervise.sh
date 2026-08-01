@@ -119,12 +119,17 @@ start_bridge() {
   # no header ⇒ unchanged against a pre-0.7.0 ungated webhook.
   local wh_secret
   wh_secret="$(sed -n 's/^MNESTRA_WEBHOOK_SECRET=//p' "$SECRETS_ENV" 2>/dev/null | head -1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
+  # TERMDECK_API_BASE is deliberately NOT set here (removed 2026-07-31): the
+  # bridge auto-resolves the live deck — env override → ~/.termdeck/ports.json
+  # (written by the server at listen-time) → port probe 3000/3001/3002/3099.
+  # Pinning it here broke the panel tools whenever the deck ran off :3000.
+  # To pin explicitly (e.g. multiple decks), export TERMDECK_API_BASE via
+  # ~/.termdeck/supervisor.env — it is sourced with `set -a` and inherited.
   ( cd "${REPO_DIR}/packages/mcp-bridge" || exit 1
     TERMDECK_BRIDGE_PUBLIC_URL="$pub" \
     TERMDECK_BRIDGE_OPERATOR_SECRET="$(cat "$SECRET_FILE")" \
     MNESTRA_WEBHOOK_URL="http://localhost:37778/mnestra" \
     MNESTRA_WEBHOOK_SECRET="$wh_secret" \
-    TERMDECK_API_BASE="http://127.0.0.1:3000" \
     TERMDECK_BRIDGE_ALLOWLIST_PROJECTS="$ALLOWLIST_PROJECTS" \
     nohup node src/server.js >>"${LOG_DIR}/bridge.log" 2>&1 & )
 }

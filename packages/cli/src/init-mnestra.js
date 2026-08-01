@@ -671,6 +671,292 @@ function refreshBundledHookIfNewer(opts = {}) {
   return { status: 'refreshed', from: installed, to: bundled, backup };
 }
 
+// ── Standalone-shell capture shims (Sprint 68-REDUX T2) ───────────────
+//
+// LOCKSTEP TWIN of `_stageShimFiles` / `_detectRcTarget` / `_upsertRcBlock` in
+// `packages/stack-installer/src/index.js`. Hoisted for the same reason
+// `_mergeSessionEndHookEntry` was (Sprint 51.8 / ledger #16): the published
+// `@jhizzard/termdeck` tarball ships `packages/stack-installer/assets/**` but
+// NOT `.../src/**`, so this wizard cannot `require()` across the package
+// boundary at runtime. INSTALLER-PITFALLS Class N — change both or neither;
+// T3's parity test pins them to identical behaviour on identical inputs.
+//
+// SEMANTIC DIFFERENCE from the installer copy, deliberate and load-bearing:
+// this path REFRESHES, it never first-installs. If the user has no
+// ~/.termdeck/shims/ directory they either never ran the stack installer or
+// they DECLINED the shim prompt there — and `termdeck init --mnestra` must not
+// quietly overturn a decline by adding wrappers to their PATH. Shims present ⇒
+// they opted in ⇒ upgrade them (and reconcile the PATH fence, because
+// {shims, fence} is one lockstep unit and a refreshed shim with no fence is
+// installed-but-never-fires).
+
+const SHIM_NAMES = ['codex', 'grok', 'agy'];
+// One template, three basenames (the shim derives its agent from `$0`), plus
+// the required `drain.js` sibling the shim resolves as `$SHIM_DIR/drain.js`.
+// Missing drain.js ⇒ capture silently degrades to nothing, so it is part of
+// the manifest, not an optional extra.
+// `redact.js` (byte-identical vendored copy of packages/mcp-bridge/src/
+// redact.js) is REQUIRED, not optional: `script(1)` captures the raw terminal,
+// and drain.js's built-in fallback misses connection strings — T4-CODEX leaked
+// a full postgres URI through it on 2026-08-01. Class N vendored-copy lockstep.
+const SHIM_TEMPLATE_FILE = 'shim-template.sh';
+const SHIM_SUPPORT_FILES = [
+  { src: 'drain.js', dest: 'drain.js', mode: 0o644 },
+  { src: 'redact.js', dest: 'redact.js', mode: 0o644 },
+];
+const SHIM_FENCE_START = '# >>> termdeck shims >>>';
+const SHIM_FENCE_END = '# <<< termdeck shims <<<';
+const SHIM_PATH_EXPORT = 'export PATH="$HOME/.termdeck/shims:$PATH"';
+
+function _shimPathBlock() {
+  return [
+    SHIM_FENCE_START,
+    '# Added by @jhizzard/termdeck-stack — standalone-shell memory capture.',
+    '# Remove with `termdeck-stack uninstall`, or delete this fenced block.',
+    SHIM_PATH_EXPORT,
+    SHIM_FENCE_END,
+  ].join('\n');
+}
+
+// macOS bash reads the FIRST existing of .bash_profile / .bash_login /
+// .profile in a LOGIN shell (Terminal.app) and never .bashrc directly. Warn
+// both when that file doesn't source .bashrc AND when no such file exists at
+// all — the second case is the one T4-CODEX caught at 15:38 ET, where the
+// install looks perfect and the PATH block is never read.
+function _darwinBashAdvisory(home) {
+  const candidates = ['.bash_profile', '.bash_login', '.profile'].map((n) => path.join(home, n));
+  const loginFile = candidates.find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } });
+  if (!loginFile) {
+    return `macOS Terminal starts a LOGIN shell, and none of ~/.bash_profile, ~/.bash_login or ~/.profile exists — so ~/.bashrc (where the PATH block goes) is never read. Create ~/.bash_profile containing \`source ~/.bashrc\`, or the shims will not be on PATH in new terminals.`;
+  }
+  let sourcesBashrc = false;
+  try { sourcesBashrc = /(^|\n)\s*(\.|source)\s+[^\n]*\.bashrc/.test(fs.readFileSync(loginFile, 'utf8')); }
+  catch (_) { sourcesBashrc = false; }
+  if (sourcesBashrc) return null;
+  return `${loginFile} is what macOS's LOGIN bash reads, and it does not source ~/.bashrc — add \`source ~/.bashrc\` to it, or the shims will not be on PATH in new terminals.`;
+}
+
+function _detectRcTarget(opts = {}) {
+  const env = opts.env || process.env;
+  const home = opts.home || require('os').homedir();
+  const platform = opts.platform || process.platform;
+  const raw = typeof env.SHELL === 'string' ? env.SHELL.trim() : '';
+  const shell = raw ? path.basename(raw) : '';
+
+  if (shell === 'zsh') {
+    return { shell, supported: true, rcPath: path.join(home, '.zshrc'), advisory: null };
+  }
+  if (shell === 'bash') {
+    return {
+      shell, supported: true, rcPath: path.join(home, '.bashrc'),
+      advisory: platform === 'darwin' ? _darwinBashAdvisory(home) : null,
+    };
+  }
+  if (shell === 'fish') {
+    return {
+      shell, supported: false, rcPath: null, advisory: null,
+      reason: 'fish does not use `export PATH=...`; writing a POSIX line into config.fish would break your shell',
+      manual: `fish_add_path ${path.join('$HOME', '.termdeck', 'shims')}`,
+    };
+  }
+  return {
+    shell: shell || '(unset)', supported: false, rcPath: null, advisory: null,
+    reason: shell ? `unrecognized login shell "${shell}"` : '$SHELL is not set',
+    manual: `${SHIM_PATH_EXPORT}   # add to your shell's startup file`,
+  };
+}
+
+function _scanRcFences(text) {
+  const lines = String(text == null ? '' : text).split('\n');
+  const starts = [];
+  const ends = [];
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (t === SHIM_FENCE_START) starts.push(i);
+    else if (t === SHIM_FENCE_END) ends.push(i);
+  });
+  return { lines, starts, ends };
+}
+
+function _rcBlockState(text) {
+  const { lines, starts, ends } = _scanRcFences(text);
+  if (starts.length === 0 && ends.length === 0) return { status: 'absent' };
+  if (starts.length !== 1 || ends.length !== 1 || ends[0] < starts[0]) {
+    return {
+      status: 'malformed',
+      detail: `${starts.length} "${SHIM_FENCE_START}" marker(s) and ${ends.length} "${SHIM_FENCE_END}" marker(s)`
+        + (starts.length === 1 && ends.length === 1 ? ' (end marker precedes start marker)' : ''),
+      // 1-based line numbers so the user can jump straight to the offending
+      // fences in their editor. Lockstep twin of the same fields in
+      // stack-installer/src/index.js::_rcBlockState — a user whose rc has
+      // duplicate fences must get the SAME diagnostic from the wizard as from
+      // the installer. (Sprint 68-REDUX: this pair drifted; caught by the
+      // hoist-parity pin, mirrored under ORCH ruling 2026-08-01 16:25 ET.)
+      startLines: starts.map((i) => i + 1),
+      endLines: ends.map((i) => i + 1),
+    };
+  }
+  const body = lines.slice(starts[0], ends[0] + 1).join('\n');
+  // Position is part of correctness — a byte-perfect block above someone's own
+  // PATH prepend loses the race and captures nothing. "current" therefore
+  // requires right-bytes AND nothing-but-blank-lines after it.
+  const trailing = lines.slice(ends[0] + 1).every((l) => l.trim() === '');
+  const bodyMatches = body === _shimPathBlock();
+  return {
+    status: bodyMatches && trailing ? 'current' : 'drift',
+    driftKind: bodyMatches ? 'position' : (trailing ? 'content' : 'content+position'),
+    start: starts[0], end: ends[0], body,
+  };
+}
+
+function _upsertRcBlock(text) {
+  const state = _rcBlockState(text);
+  const block = _shimPathBlock();
+  if (state.status === 'malformed') return { status: 'malformed', detail: state.detail, text: String(text == null ? '' : text) };
+  if (state.status === 'current') return { status: 'current', text: String(text == null ? '' : text) };
+  // Excise-then-append, never edit-in-place: a refreshed block left in a losing
+  // position is reported as fixed while still being shadowed.
+  const existing = String(text == null ? '' : text);
+  let base = existing;
+  if (state.status === 'drift') {
+    const { lines } = _scanRcFences(existing);
+    let from = state.start;
+    if (from > 0 && lines[from - 1].trim() === '') from -= 1;
+    base = lines.slice(0, from).concat(lines.slice(state.end + 1)).join('\n');
+  }
+  // Our block inherits the file's newline convention — that one bit is what
+  // makes uninstall byte-exact for an rc whose last line has no trailing
+  // newline. Normalizing would erase the information uninstall needs.
+  const endsWithNewline = existing === '' ? true : /\n$/.test(existing);
+  const tail = endsWithNewline ? '\n' : '';
+  const trimmed = base.replace(/\n+$/, '');
+  const text2 = trimmed.trim() === '' ? `${block}${tail}` : `${trimmed}\n\n${block}${tail}`;
+  return { status: state.status === 'drift' ? 'updated' : 'installed', text: text2 };
+}
+
+function _writeRcFile(rcPath, text, opts = {}) {
+  const stamp = (opts.stamp || new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14));
+  let backup = null;
+  let mode = 0o644;
+  if (fs.existsSync(rcPath)) {
+    try { mode = fs.statSync(rcPath).mode & 0o777; } catch (_) { /* default */ }
+    backup = `${rcPath}.bak.${stamp}`;
+    try { fs.copyFileSync(rcPath, backup); } catch (_) { backup = null; }
+  }
+  fs.mkdirSync(path.dirname(rcPath), { recursive: true });
+  const tmp = `${rcPath}.tmp`;
+  fs.writeFileSync(tmp, text, { mode });
+  fs.renameSync(tmp, rcPath);
+  return { backup };
+}
+
+function _shimManifest(names) {
+  return [
+    ...(names || SHIM_NAMES).map((n) => ({ src: SHIM_TEMPLATE_FILE, dest: n, mode: 0o755, kind: 'shim' })),
+    ...SHIM_SUPPORT_FILES.map((f) => ({ src: f.src, dest: f.dest, mode: f.mode, kind: 'support' })),
+  ];
+}
+
+function _stageShimFiles(opts = {}) {
+  const HOME = opts.home || require('os').homedir();
+  const sourceDir = opts.sourceDir
+    || path.join(__dirname, '..', '..', 'stack-installer', 'assets', 'shims');
+  const destDir = opts.destDir || path.join(HOME, '.termdeck', 'shims');
+  const backupDir = opts.backupDir || path.join(HOME, '.termdeck', 'shim-backups');
+  const dryRun = !!opts.dryRun;
+  const stamp = opts.stamp || new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+  const manifest = _shimManifest(opts.names);
+  const results = [];
+
+  // Heal the directory mode before any per-file short-circuit — an
+  // all-byte-current re-run would otherwise leave a 0755 shims dir wide open
+  // forever while reporting "already current".
+  if (!dryRun && manifest.some((e) => fs.existsSync(path.join(sourceDir, e.src)))) {
+    try {
+      fs.mkdirSync(destDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(destDir, 0o700);
+    } catch (_) { /* best-effort */ }
+  }
+
+  for (const entry of manifest) {
+    const name = entry.dest;
+    const src = path.join(sourceDir, entry.src);
+    const dest = path.join(destDir, entry.dest);
+    if (!fs.existsSync(src)) { results.push({ name, kind: entry.kind, status: 'no-bundled-asset' }); continue; }
+    try {
+      const srcBuf = fs.readFileSync(src);
+      if (!fs.existsSync(dest)) {
+        if (dryRun) { results.push({ name, kind: entry.kind, status: 'would-install' }); continue; }
+        fs.mkdirSync(destDir, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(dest, srcBuf, { mode: entry.mode });
+        fs.chmodSync(dest, entry.mode);
+        results.push({ name, kind: entry.kind, status: 'installed', dest });
+        continue;
+      }
+      if (fs.readFileSync(dest).equals(srcBuf)) {
+        if (!dryRun) { try { fs.chmodSync(dest, entry.mode); } catch (_) { /* best-effort */ } }
+        results.push({ name, kind: entry.kind, status: 'already-current', dest });
+        continue;
+      }
+      if (dryRun) { results.push({ name, kind: entry.kind, status: 'would-refresh' }); continue; }
+      let backup = null;
+      try {
+        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+        backup = path.join(backupDir, `${name}.bak.${stamp}`);
+        fs.copyFileSync(dest, backup);
+        fs.chmodSync(backup, 0o644);
+      } catch (_) { backup = null; }
+      fs.writeFileSync(dest, srcBuf, { mode: entry.mode });
+      fs.chmodSync(dest, entry.mode);
+      results.push({ name, kind: entry.kind, status: 'refreshed', dest, backup });
+    } catch (err) {
+      results.push({ name, kind: entry.kind, status: 'error', error: err && err.message });
+    }
+  }
+  return results;
+}
+
+function _ensureRcPathBlock(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const target = opts.target || _detectRcTarget(opts);
+  if (!target.supported) return { status: 'unsupported-shell', target };
+  let existing = '';
+  try { existing = fs.existsSync(target.rcPath) ? fs.readFileSync(target.rcPath, 'utf8') : ''; }
+  catch (err) { return { status: 'unreadable', target, error: err && err.message }; }
+  const up = _upsertRcBlock(existing);
+  if (up.status === 'malformed') return { status: 'malformed', target, detail: up.detail };
+  if (up.status === 'current') return { status: 'already-current', target };
+  if (dryRun) return { status: up.status === 'updated' ? 'would-update' : 'would-install', target };
+  try {
+    const { backup } = _writeRcFile(target.rcPath, up.text, { stamp: opts.stamp });
+    return { status: up.status, target, backup };
+  } catch (err) {
+    return { status: 'error', target, error: err && err.message };
+  }
+}
+
+// Refresh-only entry point called from `runHookRefresh`. Returns a structured
+// status; never throws (the caller's wizard goal is DB setup, and a shim
+// refresh failure must not strand it — same fail-soft posture as the hook
+// refresh above).
+function refreshShellShims(opts = {}) {
+  const dryRun = !!opts.dryRun;
+  const HOME = opts.home || require('os').homedir();
+  const destDir = opts.destDir || path.join(HOME, '.termdeck', 'shims');
+  const names = opts.names || SHIM_NAMES;
+
+  // Opt-in gate: no shims on disk ⇒ the user never installed them (or
+  // declined). Refresh does not become a back-door installer.
+  const anyInstalled = names.some((n) => {
+    try { return fs.existsSync(path.join(destDir, n)); } catch (_) { return false; }
+  });
+  if (!anyInstalled) return { status: 'not-installed' };
+
+  const fileStatuses = _stageShimFiles({ ...opts, home: HOME, destDir, names, dryRun });
+  const pathResult = _ensureRcPathBlock({ ...opts, home: HOME, dryRun });
+  return { status: 'refreshed', fileStatuses, path: pathResult };
+}
+
 // Sprint 51.7 T1 — wizard wire-up bug fix.
 //
 // Moved upstream of `pgRunner.connect` and the migration-replay loop so
@@ -1306,6 +1592,48 @@ function runHookRefresh({ dryRun = false } = {}) {
       }
     }
   }
+
+  // Sprint 68-REDUX T2 — re-stage the standalone-shell capture shims and
+  // reconcile the PATH fence. Refresh-only (see `refreshShellShims`): a user
+  // with no ~/.termdeck/shims/ is reported as not-installed and pointed at the
+  // stack installer rather than having wrappers added to their PATH by a
+  // Mnestra wizard they ran for a different reason.
+  //
+  // Same local-FS-before-DB placement rationale as the hook refresh above —
+  // this whole function runs upstream of `pgRunner.connect`, so a Class A
+  // migration failure can never strand a shim upgrade.
+  step('Refreshing ~/.termdeck/shims (standalone-shell capture)...');
+  try {
+    const r = refreshShellShims({ dryRun });
+    if (debug) process.stderr.write(`[wire-up-debug] refreshShellShims return: ${JSON.stringify(r)}\n`);
+    if (r.status === 'not-installed') {
+      ok('not installed (run `npx @jhizzard/termdeck-stack` to add standalone-shell capture)');
+    } else {
+      const counts = r.fileStatuses.reduce((acc, x) => { acc[x.status] = (acc[x.status] || 0) + 1; return acc; }, {});
+      const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ');
+      ok(summary || 'no shims in manifest');
+      const p = r.path || {};
+      if (p.status === 'installed') {
+        process.stdout.write(`    + PATH block added to ${p.target.rcPath}${p.backup ? ` (backup: ${path.basename(p.backup)})` : ''} — open a new terminal for it to take effect\n`);
+      } else if (p.status === 'updated') {
+        process.stdout.write(`    ↻ PATH block refreshed in ${p.target.rcPath}${p.backup ? ` (backup: ${path.basename(p.backup)})` : ''} — open a new terminal for it to take effect\n`);
+      } else if (p.status === 'malformed') {
+        // Class N: shims upgraded but the fence is unrepairable. Say so LOUDLY
+        // — a silent skip here is exactly the installed-but-never-fires shape.
+        process.stdout.write(`    ! ${p.target.rcPath} has ${p.detail}; NOT modified. Delete every "${SHIM_FENCE_START}" … "${SHIM_FENCE_END}" block by hand, then re-run.\n`);
+      } else if (p.status === 'unsupported-shell') {
+        process.stdout.write(`    ! PATH block not written — ${p.target.reason}. Add this yourself: ${p.target.manual}\n`);
+      } else if (p.status === 'unreadable' || p.status === 'error') {
+        process.stdout.write(`    ! PATH block skipped: ${p.error}\n`);
+      }
+      if (p.target && p.target.advisory) {
+        process.stdout.write(`    ! ${p.target.advisory}\n`);
+      }
+    }
+  } catch (err) {
+    process.stdout.write(`    ! shim refresh failed: ${err.message} (continuing)\n`);
+    if (debug) process.stderr.write(`[wire-up-debug] refreshShellShims threw: ${err && err.stack || err}\n`);
+  }
 }
 
 function printNextSteps() {
@@ -1502,3 +1830,20 @@ module.exports._isPreToolUseHookEntry = _isPreToolUseHookEntry;
 module.exports._mergePreToolUseHookEntry = _mergePreToolUseHookEntry;
 module.exports.migrateSettingsJsonPreToolUseEntry = migrateSettingsJsonPreToolUseEntry;
 module.exports.PRETOOLUSE_GATE_FILES = PRETOOLUSE_GATE_FILES;
+// Sprint 68-REDUX T2 — standalone-shell shim refresh surface. These are the
+// lockstep twins of the same-named exports in
+// packages/stack-installer/src/index.js; T3's parity test drives both.
+module.exports.refreshShellShims = refreshShellShims;
+module.exports._stageShimFiles = _stageShimFiles;
+module.exports._shimManifest = _shimManifest;
+module.exports._ensureRcPathBlock = _ensureRcPathBlock;
+module.exports._detectRcTarget = _detectRcTarget;
+module.exports._shimPathBlock = _shimPathBlock;
+module.exports._scanRcFences = _scanRcFences;
+module.exports._rcBlockState = _rcBlockState;
+module.exports._upsertRcBlock = _upsertRcBlock;
+module.exports._writeRcFile = _writeRcFile;
+module.exports.SHIM_NAMES = SHIM_NAMES;
+module.exports.SHIM_FENCE_START = SHIM_FENCE_START;
+module.exports.SHIM_FENCE_END = SHIM_FENCE_END;
+module.exports.SHIM_PATH_EXPORT = SHIM_PATH_EXPORT;
