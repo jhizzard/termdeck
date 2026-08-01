@@ -442,8 +442,9 @@ function bootstrap(options = {}) {
       ? options.clients
       : loadClients({
           // Pass env through if set, else `undefined` so the T3 client applies its
-          // OWN documented default (single source of truth — do NOT hardcode the
-          // localhost default here, or it overrides T3's env fallback). Accept both
+          // OWN documented default (single source of truth — do NOT hardcode a
+          // localhost default here, or it overrides T3's env fallback AND the
+          // live-deck auto-resolution in clients/termdeck-base.js). Accept both
           // TERMDECK_API_BASE and TERMDECK_BASE_URL (the latter is what the
           // connect-*.md docs reference).
           mnestraWebhookUrl: process.env.MNESTRA_WEBHOOK_URL,

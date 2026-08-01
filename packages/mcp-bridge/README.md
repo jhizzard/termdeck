@@ -29,7 +29,7 @@ The Bridge is the **INBOUND** half of the chat integration: a self-hosted **remo
 | `src/auth.js` | T1 | OAuth 2.1 + PKCE + Dynamic Client Registration + operator-secret consent (✅) |
 | `src/server.js` | T1 | Streamable-HTTP MCP server + auth wiring + tunnel (✅) |
 | `src/policy.js` | T2 | Read-only enforcement, approval gate, default-deny project allowlist (✅) |
-| `src/clients/` | T3 | Mnestra webhook client + read-only TermDeck HTTP-API client (✅) |
+| `src/clients/` | T3 | Mnestra webhook client + read-only TermDeck HTTP-API client (✅). The TermDeck API base auto-resolves (2026-07-31): `TERMDECK_API_BASE`/`TERMDECK_BASE_URL` env → `~/.termdeck/ports.json` → port probe 3000/3001/3002/3099 — see `src/clients/termdeck-base.js` |
 | `src/tools/` | T3 | The six read-only MCP tools, each wrapping output in `redactDeep` (✅) |
 | `test/` | T2 | Redaction · leak-gate · auth · policy · tools · server · integration suites (✅ 86 tests) |
 | `docs/connect-*.md` | T3 | Per-provider connect instructions — claude / chatgpt / grok + `tunnel.md` (✅) |

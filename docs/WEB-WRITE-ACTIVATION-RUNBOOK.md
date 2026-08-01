@@ -363,6 +363,17 @@ TERMDECK_BRIDGE_PROPOSE_BURST=3
 
 Channel 2 has its **own** flag; see Part C. Enabling one never enables the other.
 
+**TermDeck API base (panel tools).** Since 2026-07-31 the bridge finds the live
+deck automatically; `TERMDECK_API_BASE` no longer needs to be set (and the
+supervisor no longer hardcodes it). Resolution order: `TERMDECK_API_BASE` /
+`TERMDECK_BASE_URL` env if set (explicit pin, wins outright) →
+`~/.termdeck/ports.json` (written by the TermDeck server at listen-time;
+dead-pid entries skipped, freshest deck wins, candidate verified live) → port
+probe `3000 → 3001 → 3002 → 3099` (~500ms each; first port whose
+`GET /api/sessions` returns a JSON array wins). The result is cached ~60s and
+re-resolved after failures, so a deck restart on another port heals itself.
+Set `TERMDECK_API_BASE` in `supervisor.env` only to pin one specific deck.
+
 ### B3. Restart the bridge and confirm the tool appeared
 
 ```bash

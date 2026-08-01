@@ -8,12 +8,15 @@
 //     mnestraWebhookUrl,            // → Mnestra webhook (default env MNESTRA_WEBHOOK_URL
 //                                   //   → http://localhost:37778/mnestra)
 //     termdeckApiBase,             // (alias: termdeckBaseUrl) → TermDeck HTTP API
-//                                   //   (default env TERMDECK_BASE_URL → http://127.0.0.1:3000)
+//                                   //   (default: env TERMDECK_API_BASE / TERMDECK_BASE_URL,
+//                                   //    else AUTO-RESOLVED — ~/.termdeck/ports.json state
+//                                   //    file, then port probe; see clients/termdeck-base.js)
 //     env, fetchImpl,              // shared (testing / custom transport)
 //     mnestra: {...}, termdeck: {...}, // optional per-client opt overrides
 //   })
-// Called with no args, both clients fall back to env then hardcoded localhost
-// defaults — so `createClients()` is a valid zero-config call.
+// Called with no args, both clients fall back to env, then (termdeck) live
+// auto-resolution / (mnestra) the hardcoded localhost default — so
+// `createClients()` is a valid zero-config call.
 
 const { createTermdeckClient, DEFAULT_TERMDECK_BASE } = require('./termdeck');
 const { createMnestraClient, DEFAULT_MNESTRA_WEBHOOK } = require('./mnestra');

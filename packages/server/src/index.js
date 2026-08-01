@@ -11,6 +11,7 @@ const fs = require('fs');
 const dns = require('dns');
 const { spawn: spawnChild } = require('child_process');
 const { createCachedLookup, createFailureLogger } = require('./rumen-pool-resilience');
+const { recordLivePort } = require('./ports-file');
 
 // Conditional imports (graceful fallback if not installed yet)
 let pty, Database, pg;
@@ -4762,6 +4763,10 @@ if (require.main === module) {
     console.log(`\n  WARNING: TermDeck binds to ${host} only.`);
     console.log(`  Do NOT expose this to the network without authentication.`);
     console.log(`  Terminal sessions have full shell access.\n`);
+    // Record the live port in ~/.termdeck/ports.json so out-of-process
+    // consumers (the MCP bridge's panel tools) can find this deck when it is
+    // NOT on :3000. Fail-soft by construction — never blocks boot.
+    recordLivePort(port);
   });
 }
 

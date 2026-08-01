@@ -9,6 +9,14 @@
 // every call below is an HTTP GET). The tools layer further allowlists which
 // fields of these responses ever reach a consumer chat.
 //
+// BASE URL: an explicit base (injected baseUrl, or TERMDECK_API_BASE /
+// TERMDECK_BASE_URL env) pins the client, exactly as before. With NO explicit
+// base the client no longer assumes :3000 — it resolves the live deck via
+// ./termdeck-base (~/.termdeck/ports.json state file, then a fixed port
+// probe), caches the answer ~60s, and re-resolves after transport failures so
+// a deck restart on a different port heals itself. See termdeck-base.js for
+// the full resolution-order contract.
+//
 // Endpoint shapes (verified against packages/server/src/index.js):
 //   GET /api/sessions               → [ { id, pid, meta } ]  (exited excluded
 //                                       unless ?includeExited=true)
@@ -18,35 +26,60 @@
 //                                       statusDetail, replyCount }
 //                                       (INPUT box + status — NOT terminal output)
 //   GET /api/transcripts/:id        → { content, lines, chunks }  (terminal OUTPUT)
-//   GET /api/transcripts/recent     → { sessions: [ { session_id, chunks } ] }
+//   GET /api/transcripts/recent    → { sessions: [ { session_id, chunks } ] }
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { requestJson } = require('./http');
-
-const DEFAULT_BASE = 'http://127.0.0.1:3000';
+const { createBaseResolver, DEFAULT_BASE } = require('./termdeck-base');
 
 function createTermdeckClient(opts = {}) {
   const env = opts.env || process.env;
-  const baseUrl = String(opts.baseUrl || env.TERMDECK_BASE_URL || DEFAULT_BASE).replace(/\/+$/, '');
+  // Explicit base (injected or env) → legacy static behavior, never probed.
+  const explicit = opts.baseUrl || env.TERMDECK_API_BASE || env.TERMDECK_BASE_URL;
+  const staticBase = explicit ? String(explicit).replace(/\/+$/, '') : null;
+  // No explicit base → resolve the live deck dynamically (state file → probe).
+  const resolver = staticBase
+    ? null
+    : opts.baseResolver
+      || createBaseResolver({ env, fetchImpl: opts.fetchImpl, ...(opts.resolverOptions || {}) });
   const reqOpts = { fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs || 5000 };
 
   const enc = (id) => encodeURIComponent(String(id));
 
+  // GET wrapper. Dynamic mode resolves the base per call (cached inside the
+  // resolver); on a TRANSPORT failure (no .status — refused / timed out, i.e.
+  // the deck moved or died) it drops the resolver cache, re-resolves, and
+  // retries ONCE iff the base actually moved. HTTP-level errors (.status set)
+  // pass through untouched — the deck answered; that is not a routing problem.
+  async function tdGet(pathAndQuery) {
+    if (staticBase) return requestJson(`${staticBase}${pathAndQuery}`, reqOpts);
+    const base = await resolver.resolve();
+    try {
+      return await requestJson(`${base}${pathAndQuery}`, reqOpts);
+    } catch (err) {
+      if (err && err.status != null) throw err;
+      resolver.reportFailure();
+      const fresh = await resolver.resolve();
+      if (fresh && fresh !== base) return requestJson(`${fresh}${pathAndQuery}`, reqOpts);
+      throw err;
+    }
+  }
+
   return {
-    baseUrl,
+    // Static pin, or null in dynamic mode (the live base can vary per call).
+    baseUrl: staticBase,
 
     async listSessions({ includeExited = false } = {}) {
-      const url = `${baseUrl}/api/sessions${includeExited ? '?includeExited=true' : ''}`;
-      const data = await requestJson(url, reqOpts);
+      const data = await tdGet(`/api/sessions${includeExited ? '?includeExited=true' : ''}`);
       return Array.isArray(data) ? data : [];
     },
 
     async getSession(id) {
-      return requestJson(`${baseUrl}/api/sessions/${enc(id)}`, reqOpts);
+      return tdGet(`/api/sessions/${enc(id)}`);
     },
 
     async getBuffer(id) {
-      return requestJson(`${baseUrl}/api/sessions/${enc(id)}/buffer`, reqOpts);
+      return tdGet(`/api/sessions/${enc(id)}/buffer`);
     },
 
     async getTranscript(id, { limit, since } = {}) {
@@ -54,7 +87,7 @@ function createTermdeckClient(opts = {}) {
       if (limit != null) qs.set('limit', String(limit));
       if (since != null) qs.set('since', String(since));
       const q = qs.toString();
-      return requestJson(`${baseUrl}/api/transcripts/${enc(id)}${q ? `?${q}` : ''}`, reqOpts);
+      return tdGet(`/api/transcripts/${enc(id)}${q ? `?${q}` : ''}`);
     },
 
     async getRecentTranscripts({ minutes, limit } = {}) {
@@ -62,7 +95,7 @@ function createTermdeckClient(opts = {}) {
       if (minutes != null) qs.set('minutes', String(minutes));
       if (limit != null) qs.set('limit', String(limit));
       const q = qs.toString();
-      const data = await requestJson(`${baseUrl}/api/transcripts/recent${q ? `?${q}` : ''}`, reqOpts);
+      const data = await tdGet(`/api/transcripts/recent${q ? `?${q}` : ''}`);
       return data && Array.isArray(data.sessions) ? data.sessions : [];
     },
   };
