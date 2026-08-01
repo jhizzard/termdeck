@@ -1,8 +1,9 @@
 # RESTART PROMPT — 2026-07-31 (post-Sprint-84) — publish wave + live applies + activation tail
 
-**Audience: a fresh orchestrator session.** Sprint 84 is fully built, audited GREEN, and committed
-locally in all three repos; NOTHING is published, pushed, tagged, applied live, or activated yet.
-This doc carries the exact operator tail plus the arc position. Read fully before acting.
+**Audience: a fresh orchestrator session.** Sprint 84 is fully built, audited GREEN — and as of
+the 2026-08-01 update pass, §2 items 1–5 are **DONE** (published, pushed, tagged, applied live,
+crons running). What remains is the §2.6–2.7 activation tail, the §6 post-wrap addendum items,
+and the ~08-13 gate. Read fully before acting; §6 carries the freshest state.
 
 ## 0. Arc position
 
@@ -48,7 +49,24 @@ decision at the ~08-13 gate, with runbook Part B4's pre-built operator block.
    `cd /Users/joshuaizzard/Documents/Graciella/ChopinNashville/SideHustles/TermDeck && claude --resume cdd8d386-cc61-453f-9322-92db1f5d84a9`
 5. Substrate preflight only if dispatching panels: `GET /api/sessions` on the port Josh names.
 
-## 2. Immediate tail (in order — publishes gate everything downstream)
+## 2. Immediate tail (STATUS PASS 2026-08-01 ~13:10 ET: items 1–5 DONE, 6–7 open, 8 RESOLVED)
+
+> **✅ 1–2 DONE 07-31 evening:** all four published + registry-verified (mnestra 0.12.0 / rumen
+> 0.11.0 / termdeck 1.17.0 / stack 1.15.0); pushed + tagged (engram `ea7811d`/v0.12.0, rumen
+> `9357658`/v0.11.0, termdeck `8be898b`/v1.17.0), gitleaks clean throughout.
+> **✅ 3 DONE:** apply-s84-live.sh ran green — 035/036 applied (receipts pass), rumen 006/007
+> applied, `rumen-extract-sweep` deployed, 008 applied; first sweep DRY-RUN: 150 candidates,
+> would-write 461 entities + 248 triples (SR-7 density evidence). **⚠ BUT: `RUMEN_SWEEP_DRY_RUN`
+> was NEVER unset — still set as of 08-01 13:07 ET — so the overnight 04:40 sweep wrote NOTHING.
+> Unsetting it is now the top §6 action.**
+> **✅ 4 DONE:** graph-consolidation cron live (jobid 29, 04:00 UTC), DRY_RUN cleared 07-31.
+> **⚠ Verify its overnight output:** a 08-01 13:08 ET probe found 0 rows with
+> `source_type='consolidation'` despite 94 overnight cron firings across the new jobs — either
+> the summaries land under a different source_type (check S83's I4-b option (a) ruling + the
+> edge-function logs) or the 04:00 run silently no-opped. First boot task.
+> **✅ 5 DONE:** `~/.claude.json` mnestra env block applied 07-31 (backup
+> `~/.claude.json.bak-2026-07-31-s84`) — panels spawned AFTER then get write-time extraction.
+> **✅ 8 RESOLVED 07-31/08-01:** the Claude AI feedback arrived and was fully handled — see §6.
 
 1. **Josh Passkey publish wave — strict RELEASE.md order, npm BEFORE push:**
    `@jhizzard/mnestra@0.12.0` → `@jhizzard/rumen@0.11.0` → `@jhizzard/termdeck@1.17.0` →
@@ -111,3 +129,47 @@ around the Sprint-70 stdout-wrapper pattern). Staged briefs in `docs/sprint-68-s
 - Label accumulation continues: `fit-platt` reruns unchanged once ≥100 real positives.
 - Sheets no-CAS window + `ts`-edit re-propose semantics are ACCEPTED residuals (BACKLOG §A) —
   do not re-triage them as bugs.
+
+## 6. Post-wrap addendum (2026-07-31 late → 2026-08-01) — freshest state, read before §2
+
+Everything below happened AFTER the original wrap draft; it supersedes any §2/§5 line it touches.
+
+**Open actions, in priority order:**
+1. **Unset `RUMEN_SWEEP_DRY_RUN`** (still set 08-01 13:07 ET; every nightly sweep is a no-op
+   until then): `cd ~/Documents/Graciella/rumen && supabase secrets unset RUMEN_SWEEP_DRY_RUN
+   --project-ref <daily-driver-ref>`.
+2. **Verify graph-consolidation's overnight output** (0 rows at `source_type='consolidation'`
+   despite the cron firing — mapping or silent no-op; check edge-function logs + the S83 I4-b
+   source_type ruling).
+3. **Load the vault-regen launchd** (staged, NOT loaded; no nightly regen has run):
+   `cp sprint-toolkit/com.jhizzard.mnestravault.plist ~/Library/LaunchAgents/ && launchctl load
+   -w ~/Library/LaunchAgents/com.jhizzard.mnestravault.plist`. Regen now targets
+   `/Volumes/Crucial X6/mnestra-vault` with a mount guard.
+4. **Sheets activation** (§2.6, unchanged) and **doctrine ratify** (S83 leftover) remain open.
+5. **Delete the old SSD vault** at `SideHustles/TermDeck/mnestra-vault/` once Josh confirms the
+   external one opens (Obsidian is installed + registered on the Crucial X6 copy).
+6. **Confirm the rig artifact is public** before Brad needs it (it started private):
+   `https://claude.ai/code/artifact/93e57c23-e77e-44f0-a4ed-ba3af608af1c`.
+
+**What landed post-wrap:**
+- **Obsidian is fully live:** installed 1.13.4 (brew; free, no subscription), vault fresh-exported
+  to `/Volumes/Crucial X6/mnestra-vault` (8,981 notes / 5,811 wikilinks, APFS), `.obsidian/`
+  proven regen-safe, graph.json pre-tuned (orphans hidden, source_type color groups), first-time
+  guide at `SideHustles/TermDeck/obsidian-first-time-guide.html`. Queued work item: MOC hub notes
+  per project/community in vault-export for graph navigability.
+- **Brad thread (WhatsApp, 3 sends, all `sent`-verified):** his setup-guide artifact was refreshed
+  to the 0.12.0/036 stack and republished at the same URL; LESSON: share artifact links WITHOUT
+  the `?org=` param — it blocks non-org viewers ("bad link"). His "store external chats?" question
+  answered: guide = reads + quarantined proposals; full conversation-storage = the default-OFF
+  session-record channel. **OWED to Brad: the two-line Channel-2 activation once he's up and
+  running.** The session-index→Sheets rig now has its own replication artifact (local canonical:
+  `SideHustles/TermDeck/session-index-sheets-rig.html`).
+- **Operator board** (`execution-arc-operator.html`) synced to Phase-4-BUILD-COMPLETE state;
+  Phase 5 marked NEXT ACTIONABLE (re-scope Sprint 68-redux per §4).
+- **Send-routing doctrine (Mnestra'd):** the permission classifier blocks SUBAGENT sends to real
+  external contacts — subagents diagnose/draft and return READY-TO-FIRE text; the MAIN session
+  fires every external send.
+- **Retrieval BACKLOG batch** from the claude.ai feedback audit pushed as termdeck `c7bf330`
+  (recency-vs-keyword ranking, prose-supersession→structural conversion, scoreBandPercentile
+  surfacing, web-surface `source_agent` NULL stamp); bridge port-resolver fix `1c52d3b` live
+  (bounced 07-31 20:23 ET).
