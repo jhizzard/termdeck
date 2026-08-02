@@ -63,15 +63,15 @@ complete doctrine capsule. Trust §4's live-state table over any memory row that
     atomic fail, zero damage, but the runner (`init-mnestra.js:415-430`) has no
     dry-run/skip/reconcile and ADD CONSTRAINT takes ACCESS EXCLUSIVE + full scan on live
     data. Two BACKLOG items appended (win32-vs-WSL-only decision; dry-run/check +
-    pg_constraint-introspecting UNION rebuild). Threaded reply staged as draft
-    `r5397285701396022756` (asks for his exact SQL error + extra source_type list; signed
-    per the signature rule) — **Josh sends it**.
+    pg_constraint-introspecting UNION rebuild). Threaded reply **SENT 08-02 10:26 ET**
+    (thread `19fc2cd5c711ed8a`; asks for his exact SQL error + extra source_type list —
+    fold his answer into the migration-safety design when it arrives).
 
-**Wrap-email state (Josh asked this be explicit):** the wrap in the inbox (thread
-`19fbf461bf4fd597`, sent 17:46 ET Aug-1) is the **17:40 edition** — accurate through the
-release push only. The 19:56 "FINAL" draft `r7080544920327485848` is still in Drafts,
-unsent, and also now stale. **THIS DOC supersedes both.** Sending the old draft is optional
-housekeeping, not required.
+**Wrap-email lineage (reconciled 08-02 10:30):** the 17:40 edition was sent Aug-1 (thread
+`19fbf461bf4fd597`, stale); the 19:56 draft was discarded; the **definitive wrap is draft
+`r6809648686114337811`** (2026-08-02 10:30, pointer-layer twin of THIS doc — Josh sends it
+to himself). Brad emails: upgrade SENT 08-01 20:33 (thread `19fbfe07c64bbd52`), bug-reply
+SENT 08-02 10:26. This doc remains the canonical detail layer.
 
 ---
 
@@ -202,14 +202,14 @@ research doc; inject via the standard two-stage protocol (§3 capsule below).
 | launchd (user) | termdeck-supervise · termdeck-watchdog · **mnestravault (PATH-fixed script)** · **termdeck-sheets-harvest** · gitmirror 03:15 |
 | Flags OFF (gate ~08-13) | auto-promote · `TERMDECK_BRIDGE_PROPOSE_STRICT_MAP` · `TERMDECK_BRIDGE_ENABLE_SESSION_RECORD` |
 | Web writes | Claude/ChatGPT/Grok → bridge propose (live) · Gemini → in-sheet side panel ONLY (web Gemini cannot edit files; validated read = future mirror ramp) |
-| Brad | Upgrade instructions delivered (WhatsApp ×3 + email draft `r-3237204466250592958` pending Josh's send); laptop-first ruled; new email `19fc2cd5c711ed8a` under assessment |
+| Brad | Fully current: upgrade email SENT (08-01 20:33) + 3 WhatsApps; laptop-first ruled; his 3 verified 1.16.0 bugs BACKLOG'd; bug-reply SENT (08-02 10:26) — awaiting his SQL error + extra source_type list |
 
 ## §5 Operator items (Josh's, unchanged + new)
 
 ~08-13 gate (promotion review → auto-promote flip; strict-map Part B4 paste; session-record
 flag; SR-7 with sweep density) · doctrine ratify · delete old SSD vault
-(`SideHustles/TermDeck/mnestra-vault/`) once X6 confirmed · send Brad's upgrade-email draft ·
-optionally send the stale 19:56 wrap draft or discard it (this doc supersedes).
+(`SideHustles/TermDeck/mnestra-vault/`) once X6 confirmed · send the definitive wrap draft
+`r6809648686114337811` to yourself (all Brad sends are done).
 
 ## §6 Documentation map
 
