@@ -507,6 +507,65 @@ Prove each connection with a `memory_recall` prompt in that chat. Because the ho
 
 ---
 
+## Reading your vault in Obsidian (optional, 5 minutes)
+
+Once you have memories (Tier 2+), you can project them into an Obsidian vault
+and browse the graph:
+
+```bash
+termdeck vault export ~/mnestra-vault
+```
+
+Then in Obsidian: **Open folder as vault** → pick that directory.
+
+**The vault is READ-ONLY.** It is regenerated from the memory store, and the
+next export overwrites your edits without warning. There is no import path and
+there is not going to be one — if you want to change what a memory says,
+change it in Mnestra. (The exporter refuses to write into a directory it did
+not create, so it cannot eat your real vault by accident.)
+
+**Start at `Home.md`.** It is the generated entry point: store stats, the
+community hubs, and links into one `MOC - <project>.md` per project. Don't
+start at the graph view or the file list — at several thousand notes neither
+one is navigable, which is exactly the problem Home and the MOCs exist to
+solve.
+
+**Enable the Bases core plugin** — Settings → Core plugins → **Bases**. The
+export writes a `Memories.base` whose views (recent activity, decisions by
+project, bugs, session timeline, community hubs) are embedded directly in Home
+and the MOCs. Without the plugin enabled those embeds render as plain links
+instead of tables. Bases is core, so there is nothing to install.
+
+**How the vault is laid out.** `notes/<project>/` holds real per-project
+content; `snapshots/` quarantines the high-volume machine chatter (context
+snapshots and document chunks); `communities/` holds the generated cluster
+summaries; `moc/` holds the per-project maps. Folders exist so you can prune a
+whole class at once — in the graph view's filter, `-path:snapshots` removes the
+noisiest class in one clause. Links, not folders, carry meaning: wikilinks
+resolve by name, so re-foldering never breaks a link.
+
+Session notes and snapshots are named `YYYY-MM-DD-<slug>`, so sorting a folder
+by filename sorts it by date — which is usually what you want when the question
+is "what was I doing around then?". Everything else is named by content alone.
+
+**Graph settings** are written to `.obsidian/graph.json` on a fresh export
+(orphans hidden, snapshots filtered, colors grouped by `type/*` tag). If that
+file already exists it is left alone — once you tune your graph, it is yours.
+
+**Optional community plugins** that read the frontmatter the exporter already
+emits, if you want more than core gives you: **Breadcrumbs** (turns the `up:`
+property into a navigable hierarchy) and **Juggl** (a richer graph view).
+Neither is required, and nothing in the vault depends on them — they consume
+our schema rather than defining it.
+
+**Keeping it fresh.** The export is a snapshot, not a live view. Re-run the
+command whenever you want current data, or add a cron entry (the exporter does
+*not* install one for you):
+
+```
+15 4 * * *  termdeck vault export ~/mnestra-vault >/dev/null 2>&1
+```
+
 ## Running TermDeck under systemd (Linux always-on launch)
 
 Skip this section if you launch TermDeck interactively from a shell — `termdeck` (Tier 1+) or `termdeck-stack start` (Tier 2+) covers that case and is the recommended path on a workstation.

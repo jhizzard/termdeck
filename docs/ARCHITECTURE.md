@@ -59,6 +59,7 @@ Think: tmux in the browser, but with a control-room UI showing what every termin
 - **init-mnestra.js** — `termdeck init --mnestra` wizard. Persists `~/.termdeck/secrets.env` first, applies Mnestra migrations, writes `config.yaml` with `rag.enabled: false` (MCP-only default since v0.7.3), verifies connection. Supports `--yes`, `--reset`, `--from-env`.
 - **init-rumen.js** — `termdeck init --rumen` wizard. Deploys the Rumen Supabase Edge Function, applies migration, sets secrets, installs the `pg_cron` schedule. Gates on `pg_cron` and `pg_net` extensions via `auditRumenPreconditions`.
 - **doctor.js** — `termdeck doctor` diagnostic. Two sections: (1) version-check across the four stack packages (Sprint 28), (2) Supabase schema-check (Sprint 35 — Mnestra modern, Mnestra legacy, transcript, Rumen, extensions). Use `--no-schema` to skip the DB probe.
+- **vault-export.js** — `termdeck vault export <dir>`. Generates a READ-ONLY Obsidian vault from the memory graph: one note per memory, hub-and-spoke topology from consolidation communities, frontmatter schema, generated `Home.md` + per-project MOCs, Bases dashboards, graph defaults. Destructive by nature (it deletes the previous run's files) and guarded by a marker file. See § Vault export below before changing anything here — the regeneration model is manifest-swept in place, not atomic, and that constrains every new generated file.
 
 ### Config (`config/`)
 
@@ -236,6 +237,150 @@ rotation). Runs on the same JSONL-write event as FR-5 — no extra polling loop.
 Tests: `context-meter.test.js` (compute + bands + state machine),
 `context-telemetry-wiring.test.js` (index.js integration, stubbed PTY),
 `context-badge-client.test.js` (client render + PATCH-only band).
+
+## Vault export — the read-only Obsidian projection
+
+`termdeck vault export <dir>` generates an Obsidian vault from the Mnestra
+memory graph. Implementation: `packages/cli/src/vault-export.js`, dispatched
+from `packages/cli/src/index.js`. Shipped Sprint 83; the navigation layer
+described below landed in Sprint 69.
+
+### The projection is read-only, and that is the whole design
+
+The vault is a **view** of the memory store, never a second copy of it. There
+is no import path, no sync, no write-back, and none is planned. The moment a
+projection becomes writable it becomes a second source of truth, and then
+every question about a memory has two possible answers that can silently
+disagree. Regenerating is cheap; reconciling two divergent stores is not. The
+generated vault's own `README.md` says this too, so that someone browsing it
+six months from now learns their edits are disposable *before* they make any.
+
+A consequence worth internalizing: the exporter must never rewrite a note
+body. Raw memory content occasionally contains wikilink-shaped strings a human
+typed years before any vault existed; those render verbatim and resolve to
+nothing. That is faithful reproduction of the input, not a defect — the
+dangling-link gate deliberately scopes itself to exporter-*generated* link
+surfaces and leaves user data alone.
+
+### Regeneration is manifest-swept in place — NOT atomic
+
+This is the single most load-bearing fact about the exporter, and it is easy
+to get wrong because "regenerate on demand" *sounds* atomic. It is not:
+
+1. The previous run's manifest (`.termdeck-vault.json`, key `files`) is read.
+2. Every path it lists is unlinked, one at a time.
+3. The new tree is written in place.
+
+There is no temp-tree-and-rename and no rollback. Two consequences follow, and
+both are enforced by fences:
+
+- **Every generated file must be recorded in the manifest.** A generated file
+  that is not tracked is never swept, so the first time it is renamed — a
+  layout change, a project disappearing, a naming-scheme change — the old copy
+  becomes a permanent orphan that Obsidian still indexes and that stale
+  wikilinks still resolve to.
+- **`.obsidian/` must be excluded from the manifest.** The exporter writes
+  `.obsidian/graph.json` only if it is absent. If it were tracked, the run
+  *after* it was first written would unlink the user's hand-tuning.
+
+Crash-mid-export atomicity (temp tree + rename) is a known gap, deliberately
+out of scope, and recorded in `docs/BACKLOG.md`.
+
+### The destructive-write guard
+
+Because the exporter deletes the previous run's files, pointing it at
+someone's real Obsidian vault would destroy work. It therefore refuses to
+write into a directory that is non-empty and does not carry its marker file
+(`.termdeck-vault.json`). `--force` exists and is never the default; the
+refusal names the directory.
+
+### Determinism is a correctness property, not a nicety
+
+Note filenames **are** wikilink targets. If a filename changed between runs,
+every inbound link in every other note would break and the vault would look
+progressively more corrupted with each regeneration. So:
+
+- Names derive only from `(content, id)` — never from ordering, clock, or
+  anything about the run. When two memories would claim the same base name,
+  *all* claimants widen their id suffix, so the outcome cannot depend on query
+  order.
+- **All dates are UTC-ISO** (`created_at.toISOString().slice(0, 10)`). Never
+  local-time accessors: dates appear in filenames, so a local-time date would
+  make the vault's link namespace depend on the exporting machine's timezone,
+  and a laptop export and a cron export would disagree about the same store.
+- Two exports of an identical store are byte-identical **except** at exactly
+  two deliberate provenance sites: the `generated_at` field in the marker, and
+  the `Generated …` footer line in `README.md`. That stamp is kept rather than
+  deleted because "how stale is this vault?" is a real question; it is fenced
+  rather than removed so that any *new* nondeterminism fails a test. Generated
+  index files deliberately do **not** carry their own stamps — duplicating the
+  value would dirty every index on every nightly run, which for a vault synced
+  through git or iCloud means spurious diffs forever.
+
+### The navigation layer (Sprint 69)
+
+Before Sprint 69 the projection was correct and unreadable: a flat `notes/`
+directory of 9,000+ files with no hubs, no schema, and no entry point — an
+orphan cloud. Correctness was never the problem; the missing piece was
+topology and schema, and only the exporter can emit those.
+
+- **Topology.** Consolidation summaries render their `member_ids` as a
+  `## Members` section of piped wikilinks and carry `hub: true`; each member
+  note gets `up:` frontmatter plus a `Part of:` body line, built from a reverse
+  map assembled during the export pass. `up:` is **always a YAML list**, even
+  at length one — a memory can belong to more than one community, and a scalar
+  would silently drop the second membership the first time that happened.
+- **Schema.** Frontmatter carries `tags: [project/<slug>, type/<slug>]`
+  (nested tags drive both the tag pane and graph color groups), `date`,
+  `aliases`, and `edge_count`, alongside the pre-existing identity, provenance,
+  and full `edges:` block. `type/*` slugs preserve underscores so they map 1:1
+  onto the `source_type` column.
+- **Entry points.** A generated `Home.md` at the vault root and one
+  `moc/MOC - <project>.md` per project, each pointing back at Home through
+  `up:`. Projects are identified by **lowercased slug**, so case variants of
+  the same project name merge into one index instead of splitting into two
+  (and, on a case-insensitive filesystem, colliding).
+- **Folder routing.** `notes/<project>/` for real per-project content
+  (including session summaries), `snapshots/` for `pre_compact_snapshot` and
+  `document_chunk`, `communities/` for the consolidation hubs, `moc/` for the
+  per-project maps, and `doctrine/` — which does not appear in an export until
+  something actually routes there, since directories are created on write.
+  Folders exist to make whole classes prunable with a single `-path:snapshots`
+  clause; **links carry meaning, folders carry purpose.** Wikilinks resolve by
+  name, so re-foldering breaks nothing.
+- **Date-prefixed filenames** (`YYYY-MM-DD-<slug>-<id>`) for the three
+  time-series classes — `session_summary`, `pre_compact_snapshot`,
+  `document_chunk` — so Obsidian's lexical filename sort doubles as a
+  chronological index. The other classes keep a bare slug: a decision or a
+  preference has no useful position on a timeline. The date prefix is applied
+  **before** collision widening, so the disambiguation pass always sees the
+  final name.
+- **Dashboards and graph defaults.** A `Memories.base` file (core Bases plugin,
+  no installs required) whose views are embedded in `Home.md` and the MOCs, and
+  an `.obsidian/graph.json` written only when absent.
+
+### Testing
+
+Two files, split by what they touch:
+
+- `packages/cli/tests/vault-export.test.js` — the **render layer**. Pure
+  functions, no filesystem, no database.
+- `packages/cli/tests/vault-export-fences.test.js` — the **whole pipeline**
+  (query → render → manifest sweep → write), driven against a fake Postgres
+  client into a temp directory. It follows the same fake-pg-client
+  substring-routing pattern as the Sprint 35 doctor tests.
+
+The seam that makes end-to-end testing possible without a database: the
+exporter reaches Postgres through `docSync.requirePg()`, a live property
+lookup resolved at call time, so a test can swap that property for a fake.
+**Do not refactor it into a direct `require('pg')`** — every pipeline fence
+would keep passing while testing nothing. A harness self-check asserts the
+seam is still live, precisely because that failure mode is silent.
+
+The fences cover byte-stability (with an exhaustive, self-validating allowlist
+of permitted differences), timezone invariance, orphan sweep after a layout
+churn, manifest completeness, dangling generated wikilinks, and
+`graph.json` never being clobbered.
 
 ## Known issues and gotchas
 
