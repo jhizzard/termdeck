@@ -91,5 +91,8 @@ manifest exclusion). P2-7 + P2-9 deferred with recorded designs (BACKLOG). Accep
 executed at close: real daily-driver regen (9,171 notes + Home + 31 MOCs + 40 linked hubs +
 Memories.base; pre-existing tuned graph.json left byte-untouched — write-if-missing proven
 live). Wave shipped as termdeck **1.19.0** + stack **1.17.0**. Six follow-on BACKLOG items
-recorded. Josh's Obsidian eyeball (including the `this.<noteProperty>` #ProjectFeed
-uncertainty) is the one open operator item.
+recorded. **Acceptance FULLY CLOSED 2026-08-03: Josh's Obsidian eyeball verified hubs +
+members opening normally (after an Obsidian metadata-cache rebuild — the vault itself was
+correct throughout) and `#ProjectFeed` RENDERING ROWS — the one undocumented Bases
+construct (`this.<noteProperty>`) is CERTIFIED working. All 31 MOCs carry live
+self-filtering feeds.**
