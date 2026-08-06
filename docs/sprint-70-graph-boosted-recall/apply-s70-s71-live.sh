@@ -4,7 +4,10 @@
 # Run:  bash docs/sprint-70-graph-boosted-recall/apply-s70-s71-live.sh
 set -euo pipefail
 
-DB=$(grep '^DATABASE_URL=' ~/.termdeck/secrets.env | cut -d= -f2- | tr -d '"' | sed 's/?pgbouncer=true//')
+# Strip the ENTIRE query string — the URL carries Prisma-only params
+# (?pgbouncer=true&connection_limit=1) that libpq/psql chokes on: stripping only
+# the first param leaves "&connection_limit=1" glued to the database name.
+DB=$(grep '^DATABASE_URL=' ~/.termdeck/secrets.env | cut -d= -f2- | tr -d '"' | sed 's/[?].*$//')
 [ -n "$DB" ] || { echo "DATABASE_URL not found in ~/.termdeck/secrets.env"; exit 1; }
 
 ENGRAM=~/Documents/Graciella/engram
