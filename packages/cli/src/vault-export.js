@@ -36,6 +36,13 @@ const path = require('path');
 const os = require('os');
 
 const docSync = require(path.join(__dirname, '..', '..', 'server', 'src', 'doctrine-sync.js'));
+// Sprint 71 B-T2 — the SAME tier-0 normalizer and renderer the server and the
+// PreCompact hook use. Requiring across into packages/server is safe here (and
+// already the established pattern one line up): both directories ship in the
+// same `@jhizzard/termdeck` tarball. The bundled hook cannot do this — it
+// installs to ~/.claude/hooks/ and would be reaching into a package the user
+// may not have — which is why that one copy is vendored and parity-fenced.
+const tier0lib = require(path.join(__dirname, '..', '..', 'server', 'src', 'tier0.js'));
 
 const MARKER_FILE = '.termdeck-vault.json';
 const MARKER_VERSION = 1;
@@ -98,6 +105,52 @@ function resolveSecrets() {
   const secretsPath = path.join(os.homedir(), '.termdeck', 'secrets.env');
   const fromFile = (dotenv && fs.existsSync(secretsPath)) ? dotenv.readSecrets(secretsPath) : {};
   return { DATABASE_URL: process.env.DATABASE_URL || fromFile.DATABASE_URL };
+}
+
+// Sprint 71 B-T2 — read the tier-0 objectives straight from Postgres for the
+// vault render.
+//
+// GUARDED BY to_regclass, NOT BY try/catch-on-query. The table does not exist
+// until engram migration 038 applies, and this exporter ships first. A failed
+// query inside a transaction would poison the rest of the export; asking the
+// catalog first is the only way to be sure we never issue it. The catch is
+// still there as a floor, but it is not the mechanism.
+//
+// Table name is env-overridable for the same reason as everywhere else in this
+// feature: B-T1 owns the schema and had not frozen the name when this shipped.
+async function fetchTier0FromPg(client, project) {
+  const table = process.env.TERMDECK_TIER0_TABLE || 'memory_objectives';
+  // Anything that is not a plain identifier is refused rather than escaped —
+  // this value reaches a query as an identifier, and an allow-list is the only
+  // honest way to handle that.
+  if (!/^[a-z_][a-z0-9_]*$/i.test(table)) return [];
+  try {
+    const reg = await client.query('select to_regclass($1) as t', [`public.${table}`]);
+    if (!reg.rows[0] || !reg.rows[0].t) return [];
+    const params = [];
+    let where = 'true';
+    if (project) { params.push(project); where += ` and project = $${params.length}`; }
+    // Active-only at the query, matching `objective_list`'s contract — but only
+    // when the column is actually there. Emitting `status = 'active'`
+    // unconditionally would throw on a table shaped differently, and the catch
+    // below turns a throw into an empty list: the vault would silently lose its
+    // objectives section rather than say anything. `normalizeObjectives` is the
+    // guarantee that a superseded objective is never rendered; this is the
+    // optimisation, and an optimisation must not be able to blank the feature.
+    const col = await client.query(
+      `select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = $1 and column_name = 'status'`,
+      [table],
+    );
+    if (col.rows.length > 0) where += " and status = 'active'";
+    const res = await client.query(`select * from public."${table}" where ${where}`, params);
+    return tier0lib.normalizeObjectives(res.rows);
+  } catch (_e) {
+    // A pre-038 store, a permissions gap, or a shape we do not recognise all
+    // mean the same thing to a reader: no objectives section. The export is
+    // not the place to surface a schema problem.
+    return [];
+  }
 }
 
 async function connectPg(databaseUrl) {
@@ -514,6 +567,30 @@ function link(name, title) {
   return title && title !== name ? `[[${name}|${title}]]` : `[[${name}]]`;
 }
 
+// Sprint 71 B-T2 — the tier-0 block as it appears at the top of Home and every
+// MOC. The point of rendering it here is symmetry: the human opening the vault
+// reads the same standing objectives, in the same order, that the agents get
+// injected at boot and at compaction. If those two ever differ, the operator is
+// reasoning about a system that is being told something else.
+//
+// It goes ABOVE the store statistics deliberately. The first thing on the page
+// should be what the project is FOR, not how many notes are in it.
+function tier0Section(objectives) {
+  const block = tier0lib.renderTier0Block(objectives || []);
+  if (!block) return [];
+  return [
+    '> [!abstract] Tier 0 — injected into every agent session',
+    '> Pinned above recall for agents at session boot and re-injected at context',
+    '> compaction. This is a read-only projection; objectives change only by',
+    '> explicit ratification in the store.',
+    '',
+    block,
+    '',
+    '---',
+    '',
+  ];
+}
+
 function renderHome(view) {
   const { stats, hubs, projects, recent, doctrine } = view;
   const lines = [];
@@ -532,6 +609,8 @@ function renderHome(view) {
   lines.push('> [!info] Generated index — start here');
   lines.push('> This whole vault is a READ-ONLY projection of the Mnestra memory store, rewritten from scratch on every export. Edits are not written back. This note is regenerated too, so do not edit it either.');
   lines.push('');
+
+  for (const l of tier0Section(view.tier0)) lines.push(l);
 
   lines.push('## The store right now');
   lines.push('');
@@ -620,6 +699,12 @@ function renderMoc(view) {
   lines.push('> [!info] Generated map of content');
   lines.push('> Regenerated on every export. Do not edit — start from [[Home]].');
   lines.push('');
+
+  // Per-project objectives. A MOC is the door to a project, so the project's
+  // standing constraints belong on it — and an agent scoped to this project is
+  // injected with exactly this subset.
+  for (const l of tier0Section(view.tier0)) lines.push(l);
+
   lines.push(`**${count}** note${count === 1 ? '' : 's'} in this project.`);
   lines.push('');
 
@@ -1399,8 +1484,19 @@ async function vaultExport(argv) {
 
     // The index layer. Regenerated wholesale every run — these are maps of
     // what the store currently contains, and a stale map is worse than none.
+    // Sprint 71 B-T2 — tier-0 for the index layer. One query for the export's
+    // scope (Home) plus one per project (the MOCs). Objectives number in the
+    // handful per project by design, so this is cheap; if a store ever makes it
+    // expensive, that is itself the signal that tier 0 has stopped being tier 0.
+    const homeTier0 = await fetchTier0FromPg(client, project || null);
+    const mocTier0 = new Map();
+    for (const p of index.projects) {
+      mocTier0.set(p.slug, await fetchTier0FromPg(client, p.project));
+    }
+
     emit(HOME_FILE, renderHome({
       stats,
+      tier0: homeTier0,
       hubs: index.hubs,
       projects: index.projects,
       recent: index.recent,
@@ -1410,6 +1506,7 @@ async function vaultExport(argv) {
       emit(path.join(MOC_DIR, `${p.moc_name}.md`), renderMoc({
         project: p.project,
         slug: p.slug,
+        tier0: mocTier0.get(p.slug) || [],
         hubs: p.hubs,
         recent: p.recent,
         count: p.count,
@@ -1500,6 +1597,9 @@ module.exports.renderNote = renderNote;
 module.exports.renderHome = renderHome;
 module.exports.renderMoc = renderMoc;
 module.exports.renderVaultReadme = renderVaultReadme;
+// Sprint 71 B-T2 — tier-0 vault render surface.
+module.exports.tier0Section = tier0Section;
+module.exports.fetchTier0FromPg = fetchTier0FromPg;
 module.exports.parseFlags = parseFlags;
 module.exports.MARKER_FILE = MARKER_FILE;
 module.exports.MOC_DIR = MOC_DIR;

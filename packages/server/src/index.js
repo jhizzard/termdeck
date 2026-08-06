@@ -88,6 +88,13 @@ const { createBridge, stripServerOnlyFields } = require('./mnestra-bridge');
 const flashbackDiag = require('./flashback-diag');
 // Sprint 83 T3 — additive, read-only typed graph expansion on the error path.
 const { createExpander } = require('./graph-expansion');
+// Sprint 71 B-T2 — tier-0 objectives. Injected above recall at every surface,
+// never retrieved alongside it. See tier0.js for why that distinction is the
+// whole feature.
+const tier0lib = require('./tier0');
+// Sprint 71 B-T2 — Gemini read-mirror (dark by default; see the module header
+// for the three fail-closed egress gates).
+const geminiMirrorLib = require('./gemini-mirror');
 const advisor = require('./advisor');
 const { groupRecallEvents } = require('./recall-events'); // Sprint 81 T4 — memory-proof surface
 const { submitToPty } = require('./pty-submit');
@@ -165,7 +172,61 @@ const SECRETS_EXCLUDED_FROM_PTY = new Set([
   'GITHUB_PAT',
   'OPENAI_ADMIN_KEY',
   'NPM_TOKEN',
+  // 2026-08-05 billing-safety (ORCH pre-sprint patch; Sprint 70/71 lanes
+  // formalize with tests + CHANGELOG): a Claude Code panel that inherits
+  // ANTHROPIC_API_KEY either bills to API credits or blocks boot on the
+  // "use detected API key?" prompt — both wrong; panels must bill the
+  // operator's subscription login. Server-side consumers (session-logger)
+  // read their own process env, not this merge, and in-panel Mnestra
+  // write-time extraction degrades gracefully (rumen extract-sweep
+  // backfills nightly). The `...process.env` spread at the spawn site is
+  // the second inheritance path — deck servers must be launched from a
+  // shell that does not export the key.
+  'ANTHROPIC_API_KEY',
 ]);
+
+// Sprint 71 B-T2 — the SECOND inheritance path, and the reason the exclusion
+// set above is necessary but not sufficient.
+//
+// `SECRETS_EXCLUDED_FROM_PTY` governs exactly one thing: which keys are copied
+// out of ~/.termdeck/secrets.env into a spawned panel. It cannot govern keys
+// the SERVER PROCESS ITSELF already carries, because the PTY spawn site starts
+// from `...process.env` (search: "...process.env" at the pty.spawn call). The
+// server can acquire ANTHROPIC_API_KEY two ways that never touch that merge:
+//   • launched from a shell that exports it (the common case), or
+//   • `/api/setup/configure` setting `process.env.ANTHROPIC_API_KEY` in-process
+//     after the wizard writes secrets.env.
+// Either way every panel spawned afterwards inherits it and the billing fence
+// is decorative. The ORCH patch's own note names this ("deck servers must be
+// launched from a shell that does not export the key") — that is operator
+// discipline, and discipline is what this repo keeps writing incident ledger
+// entries about. So it is enforced here instead.
+//
+// DELIBERATELY NARROWER than SECRETS_EXCLUDED_FROM_PTY. This set scrubs the
+// INHERITED env, which panels legitimately depend on. GITHUB_TOKEN and friends
+// stay inheritable because a panel running `gh` may genuinely need them and
+// their exclusion contract has only ever been scoped to the secrets.env merge.
+// ANTHROPIC_API_KEY is here alone because it is the only one whose presence is
+// actively harmful rather than merely over-broad: it silently reroutes billing
+// off the operator's subscription, or strands panel boot on the interactive
+// "use the detected API key?" dialog — which, in an unattended overnight
+// sprint, is indistinguishable from a wedged panel.
+//
+// Escape hatch: TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY=1 restores inheritance for
+// anyone who actually wants API-credit billing inside panels.
+const SECRETS_EXCLUDED_FROM_SPAWN_ENV = new Set([
+  'ANTHROPIC_API_KEY',
+]);
+
+// Applies SECRETS_EXCLUDED_FROM_SPAWN_ENV to an already-assembled env object.
+// Pure + total: returns a new object, never mutates its input, and is a no-op
+// under the escape hatch. Exported for the fence test.
+function scrubSpawnEnv(env, processEnv = process.env) {
+  if (processEnv && processEnv.TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY === '1') return { ...env };
+  const out = { ...env };
+  for (const key of SECRETS_EXCLUDED_FROM_SPAWN_ENV) delete out[key];
+  return out;
+}
 
 // Sprint 65 T2 (2.1) — explicit operator-role whitelist for the optional
 // `role` field on POST /api/sessions (Brad's 2026-05-13 v2 dashboard spec,
@@ -1295,6 +1356,22 @@ function createServer(config) {
   const rag = new RAGIntegration(config, db);
   const mnestraBridge = createBridge(config);
   console.log(`[mnestra-bridge] mode=${mnestraBridge.mode}`);
+
+  // Sprint 71 B-T2 — tier-0 provider, shared by every injection surface (the
+  // recall envelope, the WS flashback frame, GET /api/tier0, panel boot). One
+  // instance so the RPC-vs-table capability probe is paid once per process
+  // rather than once per surface, and so the four surfaces cannot disagree
+  // about whether this store has objectives at all — the same "two surfaces
+  // drifted on a capability latch" class Sprint 82/83 hit with graph expansion.
+  const tier0 = tier0lib.createTier0Provider({ config });
+
+  // Sprint 71 B-T2 — Gemini read-mirror. DARK BY DEFAULT: `create` returns a
+  // disabled handle whose `start()` is a no-op unless TERMDECK_GEMINI_MIRROR=1
+  // AND a sheet id are both set. This job pushes memory content into Google's
+  // cloud, so enabling it is deliberately a two-key decision rather than a
+  // single flag someone can flip without noticing what it does.
+  const geminiMirror = geminiMirrorLib.createGeminiMirror({ config, tier0Provider: tier0 });
+  if (geminiMirror.enabled) geminiMirror.start();
 
   // Sprint 83 T3 — typed graph expansion for the error/flashback path. Shared
   // by BOTH emit surfaces (the WS `proactive_memory` frame and the HTTP
@@ -2455,7 +2532,14 @@ function createServer(config) {
           cols: 120,
           rows: 30,
           cwd: resolvedCwd,
-          env: {
+          // Sprint 71 B-T2 — `scrubSpawnEnv` wraps the whole literal rather
+          // than sitting inside it, because the thing being removed arrives
+          // via the inherited-env spread on the FIRST line: any filter
+          // expressed as another spread would have to be maintained in
+          // lockstep with every future spread added below it. Wrapping is
+          // order-independent and therefore survives the next person who
+          // appends a key here.
+          env: scrubSpawnEnv({
             ...process.env,
             ...secretFallback,
             // Sprint 64 T2 (carve-out 2.4) — adapter-declared env overlays
@@ -2503,7 +2587,7 @@ function createServer(config) {
             // files get corrupted externally and produce a one-line startup
             // warning, that is cosmetic and safe to ignore.
             SHELL_SESSION_HISTORY: '0'
-          }
+          })
         });
 
         session.pty = term;
@@ -2923,8 +3007,27 @@ function createServer(config) {
               // destructure at each site is how one of them ends up leaking
               // the next field somebody adds to the mapper.
               const hitForFrame = stripServerOnlyFields(hit);
+              // Sprint 71 B-T2 (seam §1) — the same pinned tier-0 block the
+              // HTTP recall envelope carries. Wiring only one of these two
+              // surfaces is the drift class that has already bitten this exact
+              // pair twice (Sprint 82 T2 on flashback_events, Sprint 83 T3 on
+              // graph expansion); both surfaces, same provider, same shape.
+              const tier0Frame = await tier0.fetch({ project: sess.meta.project || null });
               const frame = JSON.stringify({
                 type: 'proactive_memory',
+                // First key, own field, and ALWAYS PRESENT — `tier0` is an
+                // array, never absent and never null, on every surface.
+                //
+                // The first cut omitted it when empty, to keep the pre-71 frame
+                // byte-identical for `frame_size_bytes` telemetry. B-T4 was
+                // right to reject that: it gave one contract two shapes, so a
+                // client written against the HTTP envelope (where the field is
+                // unconditional) would need a second code path here for no
+                // reason a reader could infer. A constant-size telemetry shift
+                // is a much cheaper thing to explain than a field whose
+                // presence is conditional.
+                tier0: tier0Frame.tier0,
+                tier0_source: tier0Frame.tier0_source,
                 hit: hitForFrame,
                 flashback_event_id,
                 agent_injected,
@@ -3836,6 +3939,49 @@ function createServer(config) {
     });
   });
 
+  // GET /api/tier0 - Sprint 71 B-T2. The panel-boot injection surface.
+  //
+  // WHY A ROUTE AND NOT A PTY WRITE. The obvious reading of "inject at panel
+  // boot" is to type the objectives into the terminal. That is wrong twice
+  // over: it races the agent's own startup (the CLI may not have drawn its
+  // input box yet — the stranded-paste failure the orchestration runbook is
+  // largely about), and it burns the operator's first turn on text they did
+  // not write. A pull surface lets the boot prompt, the dashboard, and any
+  // agent fetch the same pinned block on their own schedule, and it is the
+  // one shape a non-Claude CLI can consume without a hook contract.
+  //
+  //   ?project=<name>   scope to one project (defaults to all)
+  //   ?format=text      the rendered markdown block instead of the rows
+  //
+  // Always 200. An unconfigured or pre-038 store returns an empty list, which
+  // is the specified degradation — a 404 here would make "no objectives yet"
+  // indistinguishable from "the objectives feature is broken."
+  app.get('/api/tier0', async (req, res) => {
+    const project = typeof (req.query || {}).project === 'string' && req.query.project.length
+      ? req.query.project
+      : null;
+    let payload;
+    try {
+      payload = await tier0.fetch({ project });
+    } catch (err) {
+      // The provider is written not to throw; this is belt-and-suspenders so a
+      // future refactor of it cannot take a route down.
+      console.error('[tier0] route fetch failed:', err && err.message ? err.message : err);
+      payload = tier0lib.emptyTier0Payload('unavailable');
+    }
+    if ((req.query || {}).format === 'text') {
+      res.type('text/plain; charset=utf-8');
+      return res.send(tier0lib.renderTier0Block(payload.tier0));
+    }
+    return res.json({
+      tier0: payload.tier0,
+      tier0_source: payload.tier0_source,
+      tier0_version: payload.tier0_version,
+      project,
+      rendered: tier0lib.renderTier0Block(payload.tier0),
+    });
+  });
+
   // GET /api/flashback/diag - Sprint 39 T1 diagnostic ring buffer.
   // Returns the last N Flashback decision-point events so Joshua can trigger
   // a real-shell error and read the timeline of which gate dropped the toast.
@@ -4320,7 +4466,23 @@ function createServer(config) {
         }
       }
 
+      // Sprint 71 B-T2 (seam §1) — the pinned tier-0 block. Fetched AFTER the
+      // recall so a slow/absent objectives store can never delay or fail a
+      // query that would otherwise have succeeded; `fetch` resolves to an
+      // empty payload rather than rejecting, so there is nothing to catch.
+      const tier0Payload = await tier0.fetch({
+        project: (session && session.meta.project) || project || null,
+      });
+
       res.json({
+        // `tier0` is emitted FIRST and as its own field. Both properties are
+        // the contract, not formatting: a consumer that concatenates it into
+        // `memories` has re-created the exact burial problem the tier exists
+        // to prevent, and one that reads it from the tail of the response has
+        // no ordering guarantee to rely on.
+        tier0: tier0Payload.tier0,
+        tier0_source: tier0Payload.tier0_source,
+        tier0_version: tier0Payload.tier0_version,
         question,
         flashback,
         memories: memories.slice(0, 5).map((m) => ({
@@ -4811,6 +4973,10 @@ module.exports = {
   // Sprint 64 T1 (ORCH SCOPE 16:29 item 4) — management-token exclusion list.
   // Exported for `packages/cli/tests/spawn-env-exclusion.test.js` fence.
   SECRETS_EXCLUDED_FROM_PTY,
+  // Sprint 71 B-T2 — inherited-env (`...process.env`) half of the billing
+  // fence. Exported for the same fence test.
+  SECRETS_EXCLUDED_FROM_SPAWN_ENV,
+  scrubSpawnEnv,
   // Sprint 65 T2 (2.1) — operator-role whitelist, exported for the route fence.
   ALLOWED_SESSION_ROLES,
   // Sprint 80 T3 (FR-3) — panel-cap normalizer, exported for the unit test.

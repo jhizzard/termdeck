@@ -1,6 +1,6 @@
 {
   "name": "@jhizzard/termdeck",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "description": "Browser-based terminal multiplexer with metadata overlays, panel flashback memory recall, and AI-aware session management",
   "bin": {
     "termdeck": "./packages/cli/src/index.js"
@@ -16,6 +16,10 @@
     "packages/stack-installer/assets/hooks/**",
     "packages/stack-installer/assets/doctrine/**",
     "packages/stack-installer/assets/shims/**",
+    "packages/mcp-bridge/src/harvest/google-auth.js",
+    "packages/mcp-bridge/src/harvest/sheets-api.js",
+    "packages/mcp-bridge/src/clients/http.js",
+    "packages/mcp-bridge/src/redact.js",
     "config/config.example.yaml",
     "config/secrets.env.example",
     "config/transcript-migration.sql",

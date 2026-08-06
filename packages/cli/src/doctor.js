@@ -266,6 +266,7 @@ function parseArgv(argv) {
     noSchema: args.includes('--no-schema'),
     noAgents: args.includes('--no-agents'),
     noShims: args.includes('--no-shims'),
+    noBilling: args.includes('--no-billing'),
   };
 }
 
@@ -934,6 +935,132 @@ function renderShimResult(result, c) {
   return out.join('\n');
 }
 
+// ── Sprint 71 B-T2: panel-billing probe ────────────────────────────────────
+//
+// WHAT GOES WRONG. A Claude Code panel that inherits `ANTHROPIC_API_KEY` stops
+// billing the operator's subscription login and starts consuming API credits —
+// or, on some versions, halts at the interactive "use the detected API key?"
+// prompt, which during an unattended overnight sprint is indistinguishable
+// from a wedged panel. Neither failure announces itself: the panel looks
+// normal, and the bill arrives later.
+//
+// TermDeck fences both inheritance routes in the server (the secrets.env merge
+// via SECRETS_EXCLUDED_FROM_PTY, and the inherited process env via
+// scrubSpawnEnv). This probe exists because those fences live in the RUNNING
+// server, and the operator's shell can carry the key regardless — the probe
+// answers "would a panel spawned right now inherit it?", which is the question
+// the fences cannot answer about a server they are not inside of.
+//
+// Read-only: reads two files and this process's env. Never prints a key value.
+const BILLING_KEY = 'ANTHROPIC_API_KEY';
+
+function _readSecretsEnvKeys(_fs = fs, _os = os) {
+  const p = path.join(_os.homedir(), '.termdeck', 'secrets.env');
+  const out = new Set();
+  try {
+    for (const raw of _fs.readFileSync(p, 'utf8').split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (!m) continue;
+      const v = m[2].trim();
+      if (!v || (v.startsWith('${') && v.endsWith('}'))) continue;
+      out.add(m[1]);
+    }
+  } catch (_e) { /* absent file is the normal pre-wizard state */ }
+  return out;
+}
+
+async function _runBillingCheck(opts = {}) {
+  const _fs = opts.fs || fs;
+  const _os = opts.os || os;
+  const env = opts.env || process.env;
+  const checks = [];
+
+  const inSecrets = _readSecretsEnvKeys(_fs, _os).has(BILLING_KEY);
+  const inProcessEnv = typeof env[BILLING_KEY] === 'string' && env[BILLING_KEY].length > 0;
+  const hatchOpen = env.TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY === '1';
+
+  // secrets.env is the FENCED path — the key being present there is fine, and
+  // saying so explicitly matters: an operator who sees a warning about a file
+  // they were told to put the key in will "fix" it by deleting a key the
+  // server-side consumers legitimately read.
+  checks.push(inSecrets
+    ? {
+      label: `${BILLING_KEY} in ~/.termdeck/secrets.env`,
+      status: 'pass',
+      detail: 'present, and excluded from the panel env merge — this is fine',
+    }
+    : {
+      label: `${BILLING_KEY} in ~/.termdeck/secrets.env`,
+      status: 'skip',
+      hint: 'not set. Nothing to leak from this path.',
+    });
+
+  // The process env is the path the server cannot fence for a shell it did not
+  // launch from. This is the one worth warning about.
+  if (!inProcessEnv) {
+    checks.push({
+      label: `${BILLING_KEY} in this shell's environment`,
+      status: 'pass',
+      detail: 'unset — a panel spawned from a server started here inherits nothing',
+    });
+  } else if (hatchOpen) {
+    checks.push({
+      label: `${BILLING_KEY} in this shell's environment`,
+      status: 'warn',
+      hint: 'set, AND TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY=1 is open, so panels WILL '
+        + 'inherit it and bill API credits instead of your subscription. That is a '
+        + 'deliberate configuration — unset the escape hatch if it was not.',
+    });
+  } else {
+    checks.push({
+      label: `${BILLING_KEY} in this shell's environment`,
+      status: 'warn',
+      hint: 'set. A TermDeck server launched from THIS shell passes it to every '
+        + 'panel it spawns unless it is new enough to carry the spawn-env scrub '
+        + '(Sprint 71+). Panels that inherit it bill API credits rather than your '
+        + 'subscription login, or stall at the "use the detected API key?" prompt. '
+        + `Fix: start the server from a shell without it — \`env -u ${BILLING_KEY} termdeck\` `
+        + '— or upgrade. See INSTALLER-PITFALLS ledger #23.',
+    });
+  }
+
+  const passed = checks.filter((c) => c.status === 'pass').length;
+  return {
+    skipped: false,
+    checks,
+    passed,
+    total: checks.filter((c) => c.status !== 'skip').length,
+    // Advisory only. A warn here is a configuration the operator may have
+    // chosen; failing `doctor` over it would train people to ignore the exit
+    // code, which costs more than this warning is worth.
+    hasGaps: false,
+  };
+}
+
+function renderBillingResult(result, c) {
+  const out = [];
+  out.push('');
+  out.push(c.bold('Panel billing safety'));
+  out.push('');
+  if (result.skipped) {
+    out.push(`  ${c.dim(`(skipped) ${result.reason}`)}`);
+    return out.join('\n');
+  }
+  for (const chk of result.checks) {
+    if (chk.status === 'pass') {
+      out.push(`  ${c.green('✓')} ${chk.label}${chk.detail ? c.dim(` — ${chk.detail}`) : ''}`);
+    } else if (chk.status === 'skip') {
+      out.push(`  ${c.dim('─')} ${c.dim(`${chk.label}: not set`)}`);
+    } else {
+      out.push(`  ${c.yellow('!')} ${chk.label}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    }
+  }
+  return out.join('\n');
+}
+
 async function doctor(argv) {
   const opts = parseArgv(argv);
 
@@ -1004,6 +1131,21 @@ async function doctor(argv) {
     }
   }
 
+  // Sprint 71 B-T2: panel-billing probe. Local + read-only, so it has no
+  // offline/CI cost, but it is skippable for symmetry with the other sections.
+  let billing = null;
+  if (!opts.noBilling) {
+    try {
+      billing = await module.exports._runBillingCheck();
+    } catch (err) {
+      billing = {
+        skipped: false,
+        checks: [{ label: 'panel billing', status: 'warn', hint: `unexpected error: ${err && err.message || err}` }],
+        passed: 0, total: 0, hasGaps: false,
+      };
+    }
+  }
+
   // Exit-code priority: any network failure → 2; any update available OR
   // schema gap → 1; else 0. Computed after all rows resolve so a single
   // transient failure doesn't mask real updates in stdout. A schema connect
@@ -1029,6 +1171,7 @@ async function doctor(argv) {
     if (schema) payload.schema = schema;
     if (agents) payload.agents = agents;
     if (shims) payload.shims = shims;
+    if (billing) payload.billing = billing;
     process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return exitCode;
   }
@@ -1045,6 +1188,9 @@ async function doctor(argv) {
   }
   if (shims) {
     process.stdout.write(renderShimResult(shims, c) + '\n');
+  }
+  if (billing) {
+    process.stdout.write(renderBillingResult(billing, c) + '\n');
   }
   return exitCode;
 }
@@ -1065,5 +1211,10 @@ module.exports._looksLikeShim = _looksLikeShim;
 module.exports._realpath = _realpath;
 module.exports.renderShimResult = renderShimResult;
 module.exports.SHIM_NAMES = SHIM_NAMES;
+// Sprint 71 B-T2 — panel-billing probe.
+module.exports._runBillingCheck = _runBillingCheck;
+module.exports._readSecretsEnvKeys = _readSecretsEnvKeys;
+module.exports.renderBillingResult = renderBillingResult;
+module.exports.BILLING_KEY = BILLING_KEY;
 module.exports.STACK_PACKAGES = STACK_PACKAGES;
 module.exports.STATUS = STATUS;

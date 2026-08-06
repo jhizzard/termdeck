@@ -1,3 +1,20 @@
+## [1.20.0] - 2026-08-05
+
+### Added — tier-0 objective injection surfaces + Gemini read-mirror (Sprint 71 Deck B, dual-deck with Sprint 70)
+- Tier-0 objectives (engram migration 038's `objective_list`) injected at three server surfaces (panel boot/flashback pinned ABOVE recall context) + PreCompact hook v4 re-injection (`packages/stack-installer/assets/hooks/memory-pre-compact.js`, fail-soft — hook errors never block compaction); graceful no-op when the store lacks 038.
+- Vault render: tier-0 block atop `Home.md` + each MOC (`packages/cli/src/vault-export.js`) — humans see the same tier-0 the agents get.
+- Gemini-web read-mirror: periodic server job (default OFF, `TERMDECK_GEMINI_MIRROR`) exporting tier-0 + recent memories to a Google Sheet via the Sprint-84 SA-JWT util; redaction-gated (privacy-tagged rows excluded, redact layer per cell, forbidden-string fence). Closes the last read-surface gap: gemini.google.com reliably reads sheets in its authed account.
+- `termdeck doctor` billing probe: warns when `ANTHROPIC_API_KEY` would reach a panel env.
+
+### Fixed — panels no longer inherit `ANTHROPIC_API_KEY` (billing safety)
+- `ANTHROPIC_API_KEY` added to `SECRETS_EXCLUDED_FROM_PTY` AND a new inherited-env scrub (`SECRETS_EXCLUDED_FROM_SPAWN_ENV` + non-mutating `scrubSpawnEnv`) covers the `...process.env` spread — both inheritance vectors closed at the spawn site. A Claude Code panel that inherits the key stops billing the operator's subscription and routes token traffic to Console API billing (2026-08-01 near-miss; see `docs/ANTHROPIC-KEY-PANEL-ENV-FIX-2026-08-04.md`). Lock-in tests flipped: `packages/cli/tests/spawn-env-exclusion.test.js` now fences the exclusion in both declaration and behavior halves. Server-side consumers (session-logger Haiku summaries) are unaffected — they read the server's own env.
+
+### Notes
+- Dual-deck sprint record: inject 19:34 ET → Deck A (Sprint 70, engram graph-boosted recall) FINAL-VERDICT GREEN 20:33 → Deck B (Sprint 71) GREEN/RATIFY 20:53. Full record: `docs/sprint-70-graph-boosted-recall/` + `docs/sprint-71-objective-tier/`.
+- Live-apply of engram 037/038 + rumen 009/010 is an operator gate: `bash docs/sprint-70-graph-boosted-recall/apply-s70-s71-live.sh`. All four ship dark (flags OFF, crons deactivated).
+- Follow-ons filed in BACKLOG: `ANTHROPIC_AUTH_TOKEN` in the billing exclusion, per-panel `apiBilling: true` opt-in (Aug-4 spec §3a), `src/objectives.ts` stale comment wording (engram), bundling the new `rumen-objective-guard` Edge Function into `init --rumen`.
+- Companion releases: `@jhizzard/mnestra@0.13.0`, `@jhizzard/rumen@0.12.0`, `@jhizzard/termdeck-stack@1.18.0` (audit-trail bump + hook v4 vendored).
+
 ## [1.19.0] - 2026-08-02
 
 ### Added — vault navigation layer: hub-and-spoke topology, schema, dashboards (Sprint 69)

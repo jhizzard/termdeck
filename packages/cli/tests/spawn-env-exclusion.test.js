@@ -27,6 +27,8 @@ const {
   readTermdeckSecretsForPty,
   _resetTermdeckSecretsCache,
   SECRETS_EXCLUDED_FROM_PTY,
+  SECRETS_EXCLUDED_FROM_SPAWN_ENV,
+  scrubSpawnEnv,
 } = require('../../server/src/index');
 
 const fakeSupabasePat = () => 'sbp_' + 'a'.repeat(41);
@@ -79,7 +81,142 @@ test('SECRETS_EXCLUDED_FROM_PTY — does NOT contain per-project keys (SUPABASE_
   assert.ok(!SECRETS_EXCLUDED_FROM_PTY.has('SUPABASE_URL'));
   assert.ok(!SECRETS_EXCLUDED_FROM_PTY.has('SUPABASE_SERVICE_ROLE_KEY'));
   assert.ok(!SECRETS_EXCLUDED_FROM_PTY.has('DATABASE_URL'));
-  assert.ok(!SECRETS_EXCLUDED_FROM_PTY.has('ANTHROPIC_API_KEY'));
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sprint 71 B-T2 — THE BILLING FENCE.
+//
+// `ANTHROPIC_API_KEY` moved INTO the exclusion set on 2026-08-05. It used to
+// be asserted OUT of it, two tests down — the assertion this block replaces.
+// The reversal is not a preference; it is a billing-correctness invariant:
+//
+//   A Claude Code panel that inherits ANTHROPIC_API_KEY stops billing the
+//   operator's subscription login and starts burning API credits — or, worse
+//   for an unattended sprint, strands boot on the interactive "use the
+//   detected API key?" dialog, which reads externally as a wedged panel.
+//
+// This is the fence the acceptance criterion names: it MUST go red the moment
+// someone deletes 'ANTHROPIC_API_KEY' from SECRETS_EXCLUDED_FROM_PTY. Both
+// halves are load-bearing and neither implies the other — the constant is the
+// declaration, the merge is the behavior, and a filter bug could satisfy one
+// while breaking the other.
+//
+// NOTE for anyone tempted to "fix" this back: the server-side consumers that
+// legitimately need the key (session-logger and friends) read their own
+// process env, NOT this merge. In-panel Mnestra write-time extraction degrades
+// gracefully and rumen's extract-sweep backfills it nightly. Excluding the key
+// here is loss-free for the running stack.
+
+test('BILLING FENCE — ANTHROPIC_API_KEY is in SECRETS_EXCLUDED_FROM_PTY (declaration half)', () => {
+  assert.ok(
+    SECRETS_EXCLUDED_FROM_PTY.has('ANTHROPIC_API_KEY'),
+    'ANTHROPIC_API_KEY must be excluded from the PTY env merge: a panel that '
+    + 'inherits it bills API credits instead of the operator subscription, or '
+    + 'strands boot on the detect-key dialog. See INSTALLER-PITFALLS ledger #23.',
+  );
+});
+
+test('BILLING FENCE — ANTHROPIC_API_KEY in secrets.env never reaches the PTY env (behavior half)', () => {
+  withTempHome(
+    [
+      'SUPABASE_URL=https://billing.supabase.co',
+      'ANTHROPIC_API_KEY=sk-ant-api03-should_NOT_be_in_pty_env',
+      'OPENAI_API_KEY=sk-proj-legit',
+    ].join('\n') + '\n',
+    () => {
+      const out = readTermdeckSecretsForPty();
+      assert.ok(!('ANTHROPIC_API_KEY' in out),
+        'ANTHROPIC_API_KEY must be filtered out of the PTY env merge');
+      // The sibling per-project keys are untouched — the fence is surgical,
+      // not a blanket drop of everything provider-shaped.
+      assert.equal(out.SUPABASE_URL, 'https://billing.supabase.co');
+      assert.equal(out.OPENAI_API_KEY, 'sk-proj-legit');
+      assert.ok(!JSON.stringify(out).includes('should_NOT_be_in_pty_env'),
+        'the key value must not survive anywhere in the merged env');
+    }
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sprint 71 B-T2 — the INHERITED-ENV half of the billing fence.
+//
+// The secrets.env filter above cannot see a key the server process already
+// carries, and the PTY spawn site builds its env from `...process.env`. These
+// pin `scrubSpawnEnv`, which closes that path.
+
+test('BILLING FENCE (inherited) — SECRETS_EXCLUDED_FROM_SPAWN_ENV contains ANTHROPIC_API_KEY', () => {
+  assert.ok(SECRETS_EXCLUDED_FROM_SPAWN_ENV instanceof Set);
+  assert.ok(SECRETS_EXCLUDED_FROM_SPAWN_ENV.has('ANTHROPIC_API_KEY'),
+    'the inherited-env scrub is the only thing standing between a server '
+    + 'launched from a key-exporting shell and every panel it spawns');
+});
+
+test('BILLING FENCE (inherited) — scrubSpawnEnv drops an inherited ANTHROPIC_API_KEY', () => {
+  const out = scrubSpawnEnv(
+    { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant-inherited', TERM: 'xterm-256color' },
+    {},
+  );
+  assert.ok(!('ANTHROPIC_API_KEY' in out));
+  assert.equal(out.PATH, '/usr/bin');
+  assert.equal(out.TERM, 'xterm-256color');
+});
+
+test('BILLING FENCE (inherited) — scrubSpawnEnv is pure (input object untouched)', () => {
+  const input = { ANTHROPIC_API_KEY: 'sk-ant-x', FOO: 'bar' };
+  const out = scrubSpawnEnv(input, {});
+  assert.equal(input.ANTHROPIC_API_KEY, 'sk-ant-x', 'must not mutate the caller\'s object');
+  assert.ok(!('ANTHROPIC_API_KEY' in out));
+  assert.notEqual(out, input, 'must return a fresh object');
+});
+
+test('BILLING FENCE (inherited) — TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY=1 restores inheritance', () => {
+  const out = scrubSpawnEnv(
+    { ANTHROPIC_API_KEY: 'sk-ant-deliberate' },
+    { TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY: '1' },
+  );
+  assert.equal(out.ANTHROPIC_API_KEY, 'sk-ant-deliberate',
+    'the escape hatch exists so an operator who genuinely wants API-credit '
+    + 'billing in panels is not forced to patch the source');
+});
+
+test('BILLING FENCE (inherited) — the escape hatch is exact-match, not truthy', () => {
+  for (const v of ['0', '', 'true', 'yes', 'TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY']) {
+    const out = scrubSpawnEnv({ ANTHROPIC_API_KEY: 'sk-ant-x' }, { TERMDECK_ALLOW_PANEL_ANTHROPIC_KEY: v });
+    assert.ok(!('ANTHROPIC_API_KEY' in out), `value ${JSON.stringify(v)} must NOT open the hatch`);
+  }
+});
+
+test('BILLING FENCE (inherited) — scrub does NOT over-reach into keys panels legitimately use', () => {
+  // Deliberately narrower than SECRETS_EXCLUDED_FROM_PTY: a panel running
+  // `gh` may need GITHUB_TOKEN, and the secrets.env-merge exclusion is the
+  // only contract those keys were ever given.
+  const out = scrubSpawnEnv({
+    GITHUB_TOKEN: 'ghp_x',
+    SUPABASE_ACCESS_TOKEN: 'sbp_x',
+    OPENAI_API_KEY: 'sk-proj-x',
+    NPM_TOKEN: 'npm_x',
+    ANTHROPIC_API_KEY: 'sk-ant-x',
+  }, {});
+  assert.equal(out.GITHUB_TOKEN, 'ghp_x');
+  assert.equal(out.SUPABASE_ACCESS_TOKEN, 'sbp_x');
+  assert.equal(out.OPENAI_API_KEY, 'sk-proj-x');
+  assert.equal(out.NPM_TOKEN, 'npm_x');
+  assert.ok(!('ANTHROPIC_API_KEY' in out), 'only the billing key is scrubbed here');
+});
+
+test('BILLING FENCE (inherited) — the PTY spawn site actually calls scrubSpawnEnv', () => {
+  // Source-level fence. The unit tests above prove the function is correct;
+  // this proves it is WIRED. A correct scrubber that nobody calls is exactly
+  // the shape of INSTALLER-PITFALLS Class M (architectural omission), and it
+  // would pass every other assertion in this file.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'server', 'src', 'index.js'), 'utf8',
+  );
+  const spawnCall = src.slice(src.indexOf('const term = pty.spawn(spawnShell, args, {'));
+  assert.ok(spawnCall.length > 0, 'pty.spawn call site not found — did it get renamed?');
+  const envLine = spawnCall.slice(0, spawnCall.indexOf('...process.env'));
+  assert.match(envLine, /env:\s*scrubSpawnEnv\(\{/,
+    'the pty.spawn env literal must be wrapped in scrubSpawnEnv(...)');
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -174,7 +311,7 @@ test('readTermdeckSecretsForPty — multi-exclusion + multi-passthrough in one f
       'OPENAI_ADMIN_KEY=sk-admin_should_NOT_be_in_pty_env',
       'DATABASE_URL=postgres://x:y@host:5432/db',
       'NPM_TOKEN=npm_should_NOT_be_in_pty_env',
-      'ANTHROPIC_API_KEY=sk-ant-real',
+      'ANTHROPIC_API_KEY=sk-ant-should_NOT_be_in_pty_env',
     ].join('\n') + '\n',
     () => {
       const out = readTermdeckSecretsForPty();
@@ -183,12 +320,14 @@ test('readTermdeckSecretsForPty — multi-exclusion + multi-passthrough in one f
       assert.ok(!('GITHUB_TOKEN' in out));
       assert.ok(!('OPENAI_ADMIN_KEY' in out));
       assert.ok(!('NPM_TOKEN' in out));
+      // Sprint 71 B-T2 — joined the excluded set for BILLING reasons rather
+      // than blast-radius ones; see the billing-fence block above.
+      assert.ok(!('ANTHROPIC_API_KEY' in out));
       // Passthrough:
       assert.equal(out.SUPABASE_URL, 'https://reality.supabase.co');
       assert.equal(out.SUPABASE_SERVICE_ROLE_KEY, 'sb_secret_real_service_key');
       assert.equal(out.OPENAI_API_KEY, 'sk-proj-real');
       assert.equal(out.DATABASE_URL, 'postgres://x:y@host:5432/db');
-      assert.equal(out.ANTHROPIC_API_KEY, 'sk-ant-real');
       // Verify NO excluded substring leaks anywhere.
       const serialized = JSON.stringify(out);
       assert.ok(!serialized.includes('should_NOT_be_in_pty_env'),

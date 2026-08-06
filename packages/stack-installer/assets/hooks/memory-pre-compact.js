@@ -1,7 +1,7 @@
 /**
  * TermDeck pre-compact memory hook (Mnestra-direct, no rag-system dependency).
  *
- * @termdeck/stack-installer-hook v3
+ * @termdeck/stack-installer-hook v4
  *
  * ^ Stamp lives at the TOP of the docblock — both readers scan only the first
  *   4096 bytes (Sprint 73 T1 hit this on the session-end hook when its
@@ -95,6 +95,40 @@
  *             until the migration-bundle-sync lands.
  *       The fallback fires ONLY on non-clear-success, so a successful RPC write
  *       is never double-written by a second append.
+ *
+ *   v4 (Sprint 71 B-T2 — tier-0 objective RE-INJECTION at compaction):
+ *     - Compaction is where drift happens. The hook already fires at exactly
+ *       that boundary to SAVE state; v4 makes it also RESTORE the one thing
+ *       that must survive it. Before returning, the hook fetches the project's
+ *       tier-0 objectives and emits them as `hookSpecificOutput.additionalContext`
+ *       so the post-compaction context opens with the standing constraints
+ *       rather than with whatever the summariser happened to keep.
+ *     - CAPTURE AND INJECTION ARE INDEPENDENT. Either can fail without
+ *       touching the other: a store with no objectives still checkpoints, and
+ *       a transcript too small to checkpoint still re-injects. They are
+ *       sequenced, not coupled — the older behavior is a strict subset of this
+ *       one, so v4 can never capture less than v3 did.
+ *     - The objectives are NOT folded into the captured row's content. Tier 0
+ *       is injected, never retrieved (the sprint's seam §3); writing objective
+ *       text into a `pre_compact_snapshot` row would push it back into the
+ *       tier-2 evidence pool the tier exists to sit above, where recall would
+ *       then rank and decay it like any other memory.
+ *     - PostCompact is accepted as a second firing mode. It is the STRONGER
+ *       injection point — context emitted at PreCompact is a candidate for the
+ *       very compaction it precedes — but it is NOT wired by the installer,
+ *       because adding an event to ~/.claude/settings.json is an
+ *       INSTALLER-PITFALLS Class N lockstep change and this sprint has no
+ *       upgrade-path test for it. An operator can wire it by hand today; see
+ *       § PostCompact below. On PostCompact the hook injects and captures
+ *       NOTHING — the snapshot was already written microseconds earlier at
+ *       PreCompact, and a second write would be the duplicate-row pattern
+ *       ledger #16 documents.
+ *     - Fail-soft is unchanged and absolute: every tier-0 path is wrapped, a
+ *       failure emits no stdout at all, and the hook still exits 0.
+ *
+ * § PostCompact (opt-in, not installed):
+ *   {"hooks":{"PostCompact":[{"matcher":"*","hooks":[{"type":"command",
+ *     "command":"node ~/.claude/hooks/memory-pre-compact.js"}]}]}}
  *
  * Required env vars (validated at entry, after the secrets.env fallback):
  *   - SUPABASE_URL              e.g. https://<project-ref>.supabase.co
@@ -257,11 +291,214 @@ async function postPreCompactSnapshot({
   }
 }
 
-// Distinguishes the two firing modes from the STDIN payload shape:
+// ─────────────────────────────────────────────────────────────────────────────
+// TIER-0 RE-INJECTION (v4). Everything below through `emitTier0Context` is a
+// VENDORED COPY of packages/server/src/tier0.js.
+//
+// Why vendored rather than required: this file is installed to
+// ~/.claude/hooks/ and runs from there. A `require()` reaching back into the
+// server package would be INSTALLER-PITFALLS Class E — the precise failure
+// that left Brad's memory store at zero rows for five days while every other
+// signal looked healthy (ledger #10). The shims took the same trade for
+// drain.js/redact.js and it is the right one here too: a duplicated function
+// pinned by a parity test beats a hidden dependency on a path the user may
+// not have.
+//
+// ⚠ The parity test compares OUTPUT over a shared fixture set, not source
+// text — so the two copies may be formatted differently but must render
+// byte-identically. Change one, change both.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TIER0_RPC = process.env.TERMDECK_TIER0_RPC || 'objective_list';
+const TIER0_TABLE = process.env.TERMDECK_TIER0_TABLE || 'memory_objectives';
+const TIER0_MAX_ROWS = 25;
+const TIER0_MAX_TEXT_CHARS = 600;
+const TIER0_HEADING = 'Objectives (tier 0)';
+const TIER0_TEXT_KEYS = ['text', 'objective', 'content', 'body', 'statement'];
+const TIER0_RANK_KEYS = ['rank', 'ordinal', 'position', 'sort_order', 'priority'];
+const TIER0_STATUS_KEYS = ['status', 'state'];
+// Deny-list, not allow-list — see the server copy. Injecting an objective the
+// operator has explicitly retired is worse than injecting none, and guessing
+// an allow-list wrong would blank the whole tier silently.
+const TIER0_INACTIVE_STATUSES = new Set([
+  'superseded', 'retired', 'archived', 'inactive', 'revoked', 'draft', 'deleted',
+]);
+const TIER0_FETCH_TIMEOUT_MS =
+  parseInt(process.env.TERMDECK_TIER0_TIMEOUT_MS || '4000', 10);
+
+function tier0FirstKey(row, keys) {
+  for (const k of keys) {
+    if (row[k] !== undefined && row[k] !== null && row[k] !== '') return row[k];
+  }
+  return null;
+}
+
+function tier0IsRetired(row) {
+  if (!row || typeof row !== 'object') return false;
+  if (row.superseded_by != null && row.superseded_by !== '') return true;
+  if (row.is_active === false || row.archived === true) return true;
+  const status = tier0FirstKey(row, TIER0_STATUS_KEYS);
+  return status != null && TIER0_INACTIVE_STATUSES.has(String(status).trim().toLowerCase());
+}
+
+function tier0Normalize(rows) {
+  const list = (Array.isArray(rows) ? rows : []).map((row) => {
+    if (!row || typeof row !== 'object') return null;
+    if (tier0IsRetired(row)) return null;
+    const raw = tier0FirstKey(row, TIER0_TEXT_KEYS);
+    let text = String(raw == null ? '' : raw).trim();
+    if (!text) return null;
+    if (text.length > TIER0_MAX_TEXT_CHARS) text = `${text.slice(0, TIER0_MAX_TEXT_CHARS - 1)}…`;
+    // Null-check BEFORE coercing: Number(null) === 0 would promote every
+    // unranked objective to the top of the block. See the server copy.
+    const rawRank = tier0FirstKey(row, TIER0_RANK_KEYS);
+    const rank = (rawRank != null && rawRank !== '' && Number.isFinite(Number(rawRank)))
+      ? Number(rawRank)
+      : null;
+    const status = tier0FirstKey(row, TIER0_STATUS_KEYS);
+    return {
+      id: row.id != null ? String(row.id) : null,
+      project: row.project != null ? String(row.project) : null,
+      rank,
+      text,
+      status: status == null ? null : String(status),
+      ratified_by: row.ratified_by != null ? String(row.ratified_by) : null,
+      ratified_at: row.ratified_at != null ? String(row.ratified_at) : null,
+      supersedes: row.supersedes != null ? String(row.supersedes) : null,
+    };
+  }).filter(Boolean);
+
+  list.sort((a, b) => {
+    const ar = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
+    const br = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
+    if (ar !== br) return ar - br;
+    const at = a.ratified_at || '';
+    const bt = b.ratified_at || '';
+    if (at !== bt) return at < bt ? -1 : 1;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+  return list.slice(0, TIER0_MAX_ROWS);
+}
+
+// ⚠ BYTE-PARITY with packages/server/src/tier0.js::renderTier0Block.
+function renderTier0Block(objectives, opts = {}) {
+  const rows = Array.isArray(objectives) ? objectives : [];
+  if (rows.length === 0) return '';
+  const heading = opts.heading || TIER0_HEADING;
+  const lines = [];
+  lines.push(`## ${heading}`);
+  lines.push('');
+  lines.push('These are ratified, standing objectives for this project. They are pinned above');
+  lines.push('recall results and are not retrieved, ranked, or decayed. Treat them as binding');
+  lines.push('constraints on this session; they change only by explicit operator ratification.');
+  lines.push('');
+  rows.forEach((o, i) => {
+    lines.push(`${i + 1}. ${o.text}`);
+  });
+  const ratified = rows.filter((o) => o.ratified_at).length;
+  lines.push('');
+  lines.push(
+    `_${rows.length} objective${rows.length === 1 ? '' : 's'}`
+    + `${ratified > 0 ? `, ${ratified} carrying a ratification stamp` : ''}._`,
+  );
+  return lines.join('\n');
+}
+
+// Bounded fetch. Objectives are a nicety at compaction time; a hung request is
+// not — the hook sits on the critical path of a compaction the user is waiting
+// through, so every call is time-capped and every failure is silent.
+async function tier0Fetch({ supabaseUrl, supabaseKey, project }) {
+  if (!supabaseUrl || !supabaseKey) return [];
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: supabaseKey,
+    Authorization: `Bearer ${supabaseKey}`,
+  };
+  const withTimeout = async (fn) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), TIER0_FETCH_TIMEOUT_MS);
+    try { return await fn(ac.signal); }
+    finally { clearTimeout(timer); }
+  };
+
+  // RPC first, both known arg shapes (B-T1's marker was not frozen when this
+  // shipped), then the table, then nothing.
+  for (const argName of ['p_project', 'project']) {
+    try {
+      const res = await withTimeout((signal) => fetch(
+        `${supabaseUrl}/rest/v1/rpc/${encodeURIComponent(TIER0_RPC)}`,
+        { method: 'POST', headers, body: JSON.stringify({ [argName]: project || null }), signal },
+      ));
+      if (res.ok) {
+        const body = await res.json();
+        if (Array.isArray(body)) return tier0Normalize(body);
+        if (body && Array.isArray(body.objectives)) return tier0Normalize(body.objectives);
+        return [];
+      }
+      const text = await res.text().catch(() => '');
+      if (res.status === 404 && /could not find the function/i.test(text)) continue;
+      break;
+    } catch (_e) {
+      break;
+    }
+  }
+
+  try {
+    const params = new URLSearchParams();
+    params.set('select', '*');
+    if (project) params.set('project', `eq.${project}`);
+    params.set('order', 'rank.asc');
+    const res = await withTimeout((signal) => fetch(
+      `${supabaseUrl}/rest/v1/${encodeURIComponent(TIER0_TABLE)}?${params.toString()}`,
+      { method: 'GET', headers, signal },
+    ));
+    if (!res.ok) return [];
+    const body = await res.json();
+    return Array.isArray(body) ? tier0Normalize(body) : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+// Emit the pinned block as hook stdout in Claude Code's documented JSON shape.
+// `additionalContext` under `hookSpecificOutput` (which must carry its
+// `hookEventName`) is the contract for putting text in front of the model;
+// `suppressOutput` keeps it out of the transcript pane, since the model is the
+// audience here, not the operator's scrollback.
+//
+// Emitting nothing when there are no objectives is deliberate — it keeps the
+// pre-v4 behavior (this hook was silent on stdout) byte-for-byte intact on
+// every store that has no tier-0 rows, which today is all of them.
+function emitTier0Context(hookEventName, block) {
+  if (!block) return false;
+  try {
+    process.stdout.write(`${JSON.stringify({
+      suppressOutput: true,
+      hookSpecificOutput: { hookEventName, additionalContext: block },
+    })}\n`);
+    return true;
+  } catch (e) {
+    log(`tier0-emit-failed: ${e && e.message ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+// Distinguishes the firing modes from the STDIN payload shape:
 //   - { hook_event_name: "PreCompact", trigger }      → Claude Code harness
+//   - { hook_event_name: "PostCompact", trigger }     → Claude Code, opt-in
 //   - { mode: "periodic_checkpoint", sessionType }    → TermDeck server timer
 // Returns { mode, trigger, sessionType, sourceAgent } resolved per mode.
 function resolveFiringContext(data, helpers) {
+  // v4 — PostCompact injects only; it never captures. Resolved before the
+  // PreCompact branch so the two can never be confused by a shared field.
+  if (data && data.hook_event_name === 'PostCompact') {
+    return {
+      mode: 'post_compact',
+      trigger: data.trigger === 'manual' ? 'manual' : 'auto',
+      sessionType: 'claude-code',
+      sourceAgent: helpers.normalizeSourceAgent(data.source_agent || 'claude'),
+    };
+  }
   const isClaudePreCompact = data && data.hook_event_name === 'PreCompact';
   if (isClaudePreCompact) {
     return {
@@ -283,18 +520,65 @@ function resolveFiringContext(data, helpers) {
   };
 }
 
+// v4 — the RE-INJECTION half. Deliberately independent of the capture half:
+// it takes no input from it, and neither can suppress the other. That is what
+// makes v4 a strict superset of v3 rather than a behavior swap — a store with
+// no objectives, an unreachable objectives table, or a transcript too small to
+// checkpoint all leave the v3 outcome exactly as it was.
+async function runTier0Injection(data, helpers, firing) {
+  try {
+    const env = helpers.readEnv();
+    if (!env) return { status: 'env-missing', count: 0 };
+    const project = helpers.detectProject(data.cwd || '');
+    const objectives = await tier0Fetch({
+      supabaseUrl: env.supabaseUrl,
+      supabaseKey: env.supabaseKey,
+      project,
+    });
+    if (!objectives.length) return { status: 'none', count: 0 };
+    const block = renderTier0Block(objectives);
+    // The event name must echo the event that fired us, or the harness will
+    // not associate the context with anything.
+    const eventName = firing.mode === 'post_compact' ? 'PostCompact' : 'PreCompact';
+    const emitted = emitTier0Context(eventName, block);
+    if (emitted) {
+      log(`tier0-injected: ${objectives.length} objective(s) for project="${project}" at ${eventName}`);
+    }
+    return { status: emitted ? 'injected' : 'emit-failed', count: objectives.length };
+  } catch (e) {
+    // Never let objectives break a compaction. Silence here costs a
+    // re-injection; a throw here costs the user their compaction.
+    log(`tier0-injection-error: ${e && e.message ? e.message : String(e)}`);
+    return { status: 'error', count: 0 };
+  }
+}
+
 async function processPreCompactPayload(input, helpers) {
   let data;
   try { data = JSON.parse(input); }
   catch (e) { log(`parse-stdin-failed: ${e.message}`); return { status: 'parse-failed' }; }
 
+  const firing = resolveFiringContext(data, helpers);
+
+  // PostCompact injects and captures NOTHING — the PreCompact fire moments
+  // earlier already wrote the snapshot, and a second write here is the
+  // duplicate-row pattern of INSTALLER-PITFALLS ledger #16.
+  const captured = firing.mode === 'post_compact'
+    ? { status: 'post-compact-inject-only' }
+    : await runCapture(data, helpers, firing);
+
+  const tier0 = await runTier0Injection(data, helpers, firing);
+  return { ...captured, tier0_status: tier0.status, tier0_count: tier0.count };
+}
+
+async function runCapture(data, helpers, firing) {
   const transcriptPath = data.transcript_path;
   const cwd = data.cwd || '';
   const sessionId = data.session_id || null;
   if (!transcriptPath) { log('no-transcript-path: skipping'); return { status: 'no-transcript-path' }; }
   if (!sessionId) { log('no-session-id: skipping'); return { status: 'no-session-id' }; }
 
-  const { mode, trigger, sessionType, sourceAgent } = resolveFiringContext(data, helpers);
+  const { mode, trigger, sessionType, sourceAgent } = firing;
 
   let stat;
   try { stat = statSync(transcriptPath); }
@@ -387,8 +671,19 @@ if (require.main === module) {
     postViaIngestCapture,
     postPreCompactSnapshot,
     processPreCompactPayload,
+    runCapture,
     resolveFiringContext,
     LOG_FILE,
     MIN_TRANSCRIPT_BYTES_PRE_COMPACT,
+    // v4 — tier-0 re-injection surface. `renderTier0Block` is exported
+    // specifically so the parity fence can compare it against the server's
+    // copy over a shared fixture set.
+    renderTier0Block,
+    tier0Normalize,
+    tier0Fetch,
+    runTier0Injection,
+    emitTier0Context,
+    TIER0_MAX_ROWS,
+    TIER0_HEADING,
   };
 }
