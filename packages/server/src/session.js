@@ -374,7 +374,7 @@ class Session {
         // Enter — flush the buffer as a command
         const cmd = this._inputBuffer.trim();
         if (cmd.length > 0 && cmd.length < 500) {
-          const clean = cmd.replace(/\x1b\[[A-Za-z0-9;]*[A-Za-z]/g, '').trim();
+          const clean = cmd.replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '').trim();
           if (clean.length > 0) {
             this.meta.lastCommands.push({
               command: clean,
@@ -395,8 +395,11 @@ class Session {
         // Skip escape sequences
         if (i + 1 < data.length && data[i + 1] === '[') {
           i += 2; // skip \x1b[
-          while (i < data.length && !/[A-Za-z]/.test(data[i])) i++;
-          // i now points at the final letter, loop increment will skip it
+          // CSI final bytes are 0x40–0x7E — includes '~' (bracketed-paste
+          // markers \x1b[200~/\x1b[201~, Del/PgUp/Home/End), not just letters.
+          // A letters-only test overshot the '~' and ate the next real char.
+          while (i < data.length && !/[\x40-\x7e]/.test(data[i])) i++;
+          // i now points at the final byte, loop increment will skip it
         }
       } else if (code >= 32) {
         this._inputBuffer += ch;

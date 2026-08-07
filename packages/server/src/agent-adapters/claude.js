@@ -119,6 +119,17 @@ function statusFor(data) {
 // future tooling that may want to look up Claude transcripts directly.
 // ──────────────────────────────────────────────────────────────────────────
 
+// BR-9 (Brad 2026-08-06) — port of the Sprint 64 carve-out 2.1 codex gate.
+// The old mtime-only filter (`mtimeMs >= createdAtMs`) admitted a predecessor
+// panel's still-warm transcript, which then out-mtimed the successor's fresh
+// file — freezing the successor's contextK at the predecessor's value (and
+// feeding enforceContext/FR-6 a wrong number). `min(birthtime, mtime)` gated
+// against spawn time rejects any file that existed before this panel spawned.
+// Full rationale (cross-panel contamination, backdated mtime, birthtime-less
+// platforms, epsilon choice) in codex.js above its resolveTranscriptPath.
+const _CLAUDE_GATE_EPSILON_MS_BIRTHTIME = 0;
+const _CLAUDE_GATE_EPSILON_MS_MTIME_FALLBACK = 5000;
+
 async function resolveTranscriptPath(session) {
   const fs = require('fs');
   const path = require('path');
@@ -132,6 +143,9 @@ async function resolveTranscriptPath(session) {
   const createdAtMs = session.meta.createdAt
     ? Date.parse(session.meta.createdAt)
     : 0;
+  const spawnAtMs = (typeof session.meta.spawnTimestampMs === 'number' && session.meta.spawnTimestampMs > 0)
+    ? session.meta.spawnTimestampMs
+    : createdAtMs;
   let bestPath = null;
   let bestMtime = -Infinity;
   for (const name of entries) {
@@ -139,7 +153,14 @@ async function resolveTranscriptPath(session) {
     const full = path.join(projectsDir, name);
     let st;
     try { st = fs.statSync(full); } catch (_) { continue; }
-    if (createdAtMs && st.mtimeMs < createdAtMs) continue;
+    const hasBirthtime = (typeof st.birthtimeMs === 'number' && st.birthtimeMs > 0);
+    const epsilonForFile = hasBirthtime
+      ? _CLAUDE_GATE_EPSILON_MS_BIRTHTIME
+      : _CLAUDE_GATE_EPSILON_MS_MTIME_FALLBACK;
+    const gateMsForFile = spawnAtMs > 0 ? spawnAtMs - epsilonForFile : 0;
+    const fileBirthMs = hasBirthtime ? st.birthtimeMs : st.mtimeMs;
+    const fileMinMs = Math.min(fileBirthMs, st.mtimeMs);
+    if (gateMsForFile && fileMinMs < gateMsForFile) continue;
     if (st.mtimeMs > bestMtime) {
       bestMtime = st.mtimeMs;
       bestPath = full;

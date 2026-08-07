@@ -157,7 +157,10 @@ function resolveSecretsPath() {
 // catch-all.
 const PROJECT_MAP = [
   // ── Active code projects (most-specific FIRST) ──
-  { pattern: /\/SideHustles\/TermDeck\/termdeck/i,           project: 'termdeck' },
+  // Whole TermDeck folder, not just the inner repo — sessions launch from the
+  // parent (…/SideHustles/TermDeck) too and must not fall through to the
+  // chopin-nashville catch-all.
+  { pattern: /\/SideHustles\/TermDeck(\/|$)/i,               project: 'termdeck' },
   { pattern: /\/Graciella\/engram(\/|$)/i,                    project: 'mnestra' },
   { pattern: /\/Graciella\/rumen(\/|$)/i,                     project: 'rumen' },
   { pattern: /\/Graciella\/rag-system(\/|$)/i,                project: 'rag-system' },

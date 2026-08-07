@@ -1,3 +1,15 @@
+## [1.20.1] - 2026-08-07
+
+### Fixed
+- **BR-9 (Brad, 2026-08-06) — claude adapter `resolveTranscriptPath` cross-panel/rotation contamination.** Port of the Sprint 64 carve-out 2.1 codex gate: `min(birthtime, mtime)` gated against `spawnTimestampMs` (createdAt fallback), birthtime-strict / mtime-epsilon-fallback split. The old mtime-only filter admitted a predecessor panel's still-warm transcript, which then out-mtimed the successor's fresh file — freezing `contextK` at the predecessor's value and feeding `enforceContext`/FR-6 a wrong number (false rotation/kill risk on orchestrated fleets). Lock-in tests mirror the codex suite (`packages/server/tests/claude-resolve-transcript-spawn-time.test.js`): rotation-contamination reject (pre-fix code returns the predecessor's file), own-transcript positive, createdAt back-compat, max-mtime tiebreak. Residual BACKLOG'd: concurrent same-cwd claude panels (birthtime gate can't disambiguate live peers).
+- **BR-10 (Brad, 2026-08-07) — `lastCommands` audit-log echo mangled pasted text.** `trackInput`'s escape-sequence skipper assumed CSI sequences terminate in a letter; CSI final bytes run 0x40–0x7E, so `~`-terminated sequences (bracketed-paste markers `ESC[200~`/`ESC[201~`, Del/PgUp/Home/End) overshot the terminator and swallowed the next real character ("You are" logged as "ou are"; Del/PgUp silently ate the next keystroke). Display-only — PTY/model delivery was never affected. Cleanup regex widened to the full CSI grammar. Regression tests (single-line paste, multi-line paste, tilde-key) in `packages/server/tests/session.test.js`.
+- **Session-project mislabeling from parent-folder launches.** The bundled session-end hook's `PROJECT_MAP` (`packages/stack-installer/assets/hooks/memory-session-end.js`) matched only a project's inner repo dir, so sessions launched from the project's parent folder fell through to a broader catch-all — poisoning provenance in Mnestra rows and downstream vault/graph nodes. The pattern now covers the whole project folder. (Daily-driver hook patched in place 2026-08-06; ships vendored here for fresh installs and `termdeck init --mnestra` refreshes.)
+
+### Notes
+- Server suite 734/734 green at close (+7 new: 3 BR-10, 4 BR-9).
+- Companion: `@jhizzard/termdeck-stack@1.18.1` (audit-trail bump + re-vendored session-end hook).
+- Queued in BACKLOG: BR-9 same-cwd concurrency residual, migration-034 four-branch reconcile (§A), FR-8 scoped read-only credential mode (§C, now carrying the cloud-bridge motivation + acceptance criterion).
+
 ## [1.20.0] - 2026-08-05
 
 ### Added — tier-0 objective injection surfaces + Gemini read-mirror (Sprint 71 Deck B, dual-deck with Sprint 70)

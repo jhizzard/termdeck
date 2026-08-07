@@ -238,6 +238,31 @@ test('trackInput: arrow-key escape sequences do NOT pollute the command log', ()
   assert.equal(s.meta.lastCommands[0].command, 'foo', 'escape sequences should be skipped, only foo remains');
 });
 
+// BR-10 (Brad 2026-08-07): CSI final bytes are 0x40–0x7E, not just letters.
+// The old letters-only terminator test overshot '~'-terminated sequences
+// (bracketed-paste markers, Del/PgUp/Home/End) and ate the next real char —
+// "\x1b[200~You are" logged as "ou are".
+test('trackInput: bracketed-paste markers do not eat the first pasted char', () => {
+  const s = new Session({ id: 't-in-bp1', type: 'shell' });
+  s.trackInput('\x1b[200~You are T1\x1b[201~\r');
+  assert.equal(s.meta.lastCommands.length, 1);
+  assert.equal(s.meta.lastCommands[0].command, 'You are T1');
+});
+
+test('trackInput: multi-line bracketed paste keeps each line\'s leading char', () => {
+  const s = new Session({ id: 't-in-bp2', type: 'shell' });
+  s.trackInput('\x1b[200~You are T1\nRead the brief\x1b[201~\r');
+  assert.equal(s.meta.lastCommands.length, 2);
+  assert.equal(s.meta.lastCommands[0].command, 'You are T1');
+  assert.equal(s.meta.lastCommands[1].command, 'Read the brief');
+});
+
+test('trackInput: tilde-terminated key sequences (Del) do not eat the next char', () => {
+  const s = new Session({ id: 't-in-bp3', type: 'shell' });
+  s.trackInput('foo\x1b[3~bar\r');
+  assert.equal(s.meta.lastCommands[0].command, 'foobar');
+});
+
 test('trackInput: rolling buffer is capped at 10 entries', () => {
   const s = new Session({ id: 't-in-5', type: 'shell' });
   for (let i = 0; i < 15; i++) {
