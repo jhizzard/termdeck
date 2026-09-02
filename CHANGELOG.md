@@ -1,3 +1,16 @@
+## [Unreleased]
+
+### Fixed — the stack badge read "5/7" on a demonstrably healthy stack
+
+- **Caught live, not inferred.** Polling all three local decks every 20 s on 2026-09-02 recorded deck `:3002` at exactly `5/7` from 13:10:04 to 13:10:51 ET, failing `mnestra_reachable` **and** `mnestra_has_memories`, both with detail `timeout` — while the store held 11,124 rows and a sibling deck polled `7/7` one second later. The badge was wrong; the stack was fine.
+- **Root cause: three of the seven checks are backed by only two dependencies, and each check opened its own connection.** The badge label is `passed/total`, so any dependency behind more than one check costs 2/7 the moment it is merely SLOW. Two such groups existed, and the 8K hotfix had raised the budget on one of them without removing the duplication:
+  - `mnestra_reachable` + `mnestra_has_memories` issued **two GETs of the same `/healthz` URL** in the same tick (the second check's own comment admitted the redundancy). Since `/healthz` runs a live remote aggregate, the pair contended with each other and blew a shared budget together — which is why they always fail as a pair and never singly.
+  - `database_url` + `rumen_recent` (+ `graph_health`) each opened a **separate `pg.Pool`** in the same tick against the same remote Postgres, each with its own 5 s connect budget, so one loaded network path presented as two-to-three broken checks.
+- **The fix — one probe per dependency per run, shared by every check that reads it.** A slow dependency now costs one round-trip, and checks within a group can no longer disagree about it. When the shared connection is already known dead, `rumen_recent` names `database_url` as the root cause instead of adding a second independent-looking red row. This is the rule `health.js` already applies to `/api/health/full` ("one root cause, not 6 RED rows"), applied to the 7-check badge surface.
+- **A timeout now gets exactly one retry; `ECONNREFUSED` gets none.** A daemon that answers on the second try is alive, and a refused connection is conclusive that nothing is listening — retrying it would only slow the badge down on its way to the right answer.
+- **Probe budgets are load-tolerant and env-tunable**, matching the existing mnestra knob: `TERMDECK_PG_PROBE_TIMEOUT_MS` (10 s, was a hard-coded 5 s) and `TERMDECK_SHELL_PROBE_TIMEOUT_MS` (10 s, was a hard-coded 3 s — Sprint 63 had already dropped `-l` from the shell probe for this exact reason but kept the 3 s).
+- New suite `packages/server/tests/preflight-single-flight.test.js` (11), proved RED before GREEN by reintroducing the per-check probes: 4 of the 11 fences failed, including the request-count and root-cause assertions.
+
 ## [1.21.0] - 2026-09-02
 
 ### Fixed — the server stops answering HTTP while its panels keep working (Sprint 87 T1)

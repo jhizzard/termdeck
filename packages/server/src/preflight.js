@@ -32,63 +32,135 @@ const CACHE_TTL_MS = 60_000;
 // 10 s is still a liveness bound; the 60 s result cache keeps the UI cheap.
 const MNESTRA_PROBE_TIMEOUT_MS = Number(process.env.TERMDECK_MNESTRA_PROBE_TIMEOUT_MS) || 10_000;
 
-async function checkMnestra(config) {
+// 2026-09-02: the 8K hotfix above raised the budget on ONE of the two
+// "single dependency, several checks, tight budget" amplifiers in this file
+// and left the other standing. The badge label is `passed/total`, so a
+// dependency backing more than one check costs 2/7 the moment it is merely
+// SLOW — which is how a demonstrably healthy stack reads "5/7" on a host
+// under sprint load (load avg 30+, eight panels compiling). Two pairs:
+//
+//   A  mnestra_reachable + mnestra_has_memories — two GETs of the SAME
+//      /healthz URL (the second one's own comment admitted the redundancy).
+//   B  database_url + rumen_recent — two separate pg Pools opened in the
+//      same tick against the same remote Postgres, each with its own 5 s
+//      connect budget, so they time out as a group.
+//
+// Both are single-flight now: one probe per dependency per run, shared by
+// every check that reads it, so a slow dependency costs one round-trip and
+// the checks in a pair can never disagree about it. `health.js` already
+// settled this principle for /api/health/full ("one root cause, not 6 RED
+// rows"); this is the same rule applied to the 7-check badge surface.
+const PG_PROBE_TIMEOUT_MS = Number(process.env.TERMDECK_PG_PROBE_TIMEOUT_MS) || 10_000;
+
+// The shell check spawns a PTY and waits for one echo. On a loaded host the
+// spawn alone outruns a 3 s budget — Sprint 63 already dropped `-l` for this
+// reason but kept the 3 s. "Can $SHELL spawn a PTY at all?" is still
+// answered yes when the answer arrives slowly.
+const SHELL_PROBE_TIMEOUT_MS = Number(process.env.TERMDECK_SHELL_PROBE_TIMEOUT_MS) || 10_000;
+
+// ---------------------------------------------------------------------------
+// Single-flight Mnestra /healthz probe — one request per preflight run.
+// ---------------------------------------------------------------------------
+
+function mnestraHealthzUrl(config) {
   const rag = config.rag || {};
-  const url = rag.mnestraWebhookUrl
+  return rag.mnestraWebhookUrl
     ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '/healthz')
     : 'http://localhost:37778/healthz';
+}
 
-  const body = await httpGet(url, MNESTRA_PROBE_TIMEOUT_MS);
+// A timeout is weak evidence of death — the daemon answers a live remote
+// aggregate on /healthz and momentarily stalls under sprint load (its own log
+// shows upstream 429s and statement timeouts). One retry, and ONLY for a
+// timeout: ECONNREFUSED/ENOTFOUND is conclusive that nothing is listening, so
+// retrying it just doubles the badge's latency to reach the right answer.
+// Same distinction `health.js` draws between red:timeout and red:unreachable.
+function isTimeoutish(err) {
+  const code = err && err.code;
+  if (code === 'ETIMEDOUT' || code === 'ECONNRESET' || code === 'TIMEOUT') return true;
+  return /timeout/i.test((err && err.message) || '');
+}
+
+async function probeMnestra(config, httpGetFn) {
+  const get = httpGetFn || httpGet;
+  const url = mnestraHealthzUrl(config);
+  let body;
+  try {
+    body = await get(url, MNESTRA_PROBE_TIMEOUT_MS);
+  } catch (err) {
+    if (!isTimeoutish(err)) throw err;
+    body = await get(url, MNESTRA_PROBE_TIMEOUT_MS);
+  }
   const data = tryParseJSON(body);
   const total = data && (data.store?.rows ?? data.total ?? data.memories ?? data.count ?? null);
+  return { total: total == null ? null : Number(total) };
+}
+
+async function checkMnestra(probe) {
+  const { total } = await probe;
   if (total != null) {
-    return { name: 'mnestra_reachable', passed: true, detail: `${Number(total).toLocaleString()} memories` };
+    return { name: 'mnestra_reachable', passed: true, detail: `${total.toLocaleString()} memories` };
   }
   // Got 200 but no count — still reachable
   return { name: 'mnestra_reachable', passed: true, detail: 'reachable (no memory count)' };
 }
 
-async function checkMnestraMemories(config) {
-  // If Mnestra responded with a count in the reachable check we can skip
-  // a second request — but since checks run independently we check the
-  // memory_status endpoint separately.
-  const rag = config.rag || {};
-  const baseUrl = rag.mnestraWebhookUrl
-    ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '')
-    : 'http://localhost:37778';
-
-  const body = await httpGet(`${baseUrl}/healthz`, MNESTRA_PROBE_TIMEOUT_MS);
-  const data = tryParseJSON(body);
-  const total = data && (data.store?.rows ?? data.total ?? data.memories ?? data.count ?? null);
-  if (total != null && Number(total) > 0) {
-    return { name: 'mnestra_has_memories', passed: true, detail: `${Number(total).toLocaleString()} memories loaded` };
+async function checkMnestraMemories(probe) {
+  const { total } = await probe;
+  if (total != null && total > 0) {
+    return { name: 'mnestra_has_memories', passed: true, detail: `${total.toLocaleString()} memories loaded` };
   }
-  if (total != null && Number(total) === 0) {
+  if (total != null && total === 0) {
     return { name: 'mnestra_has_memories', passed: false, detail: 'Mnestra running but 0 memories — run `mnestra ingest`' };
   }
   return { name: 'mnestra_has_memories', passed: false, detail: 'could not determine memory count' };
 }
 
-async function checkRumen(config) {
-  // Try to query rumen_jobs table via DATABASE_URL for last successful job
+// ---------------------------------------------------------------------------
+// Single-flight Postgres handle — one Pool per preflight run, shared by
+// database_url / rumen_recent / graph_health. Opening three of them in the
+// same tick meant one loaded network path presented as three broken checks.
+// ---------------------------------------------------------------------------
+
+function openPgHandle(pgPoolFactory) {
   const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) {
-    return { name: 'rumen_recent', passed: false, detail: 'DATABASE_URL not set — cannot check Rumen jobs' };
-  }
+  if (!dbUrl) return { pool: null, reason: 'DATABASE_URL not set' };
 
   let pg;
   try { pg = require('pg'); } catch (err) { pg = null; }
-  if (!pg) {
-    return { name: 'rumen_recent', passed: false, detail: 'pg module not installed' };
+  if (!pg && !pgPoolFactory) return { pool: null, reason: 'pg module not installed' };
+
+  const factory = pgPoolFactory || ((opts) => new pg.Pool(opts));
+  return {
+    pool: factory({
+      connectionString: dbUrl,
+      max: 1,
+      connectionTimeoutMillis: PG_PROBE_TIMEOUT_MS,
+    }),
+    reason: null,
+  };
+}
+
+async function checkRumen(handle, dbResultPromise) {
+  // Try to query rumen_jobs table via DATABASE_URL for last successful job
+  if (!handle.pool) {
+    return { name: 'rumen_recent', passed: false, detail: `${handle.reason} — cannot check Rumen jobs` };
   }
 
-  const pool = new pg.Pool({
-    connectionString: dbUrl,
-    max: 1,
-    connectionTimeoutMillis: 5000,
-  });
+  // The connection is shared with database_url. If THAT check already found
+  // the connection dead, this check has nothing independent to say — report
+  // the root cause instead of a second, independent-looking red row.
+  const dbResult = dbResultPromise ? await dbResultPromise.catch(() => null) : null;
+  if (dbResult && dbResult.passed === false) {
+    return {
+      name: 'rumen_recent',
+      passed: false,
+      detail: 'not checked — database_url is the root cause (one dependency, not two failures)',
+    };
+  }
 
-  try {
+  const pool = handle.pool;
+  {
     const res = await pool.query(
       `SELECT status, completed_at, insights_generated
        FROM rumen_jobs
@@ -112,40 +184,21 @@ async function checkRumen(config) {
         ? `last job ${agoMin}m ago, ${insights} insights`
         : `last job ${agoMin}m ago (stale — expected within 30m), ${insights} insights`,
     };
-  } finally {
-    await pool.end().catch(() => {});
   }
 }
 
-async function checkDatabase() {
-  const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) {
-    return { name: 'database_url', passed: false, detail: 'DATABASE_URL not set' };
+async function checkDatabase(handle) {
+  if (!handle.pool) {
+    return { name: 'database_url', passed: false, detail: handle.reason };
   }
-
-  let pg;
-  try { pg = require('pg'); } catch (err) { pg = null; }
-  if (!pg) {
-    return { name: 'database_url', passed: false, detail: 'pg module not installed' };
-  }
-
-  const pool = new pg.Pool({
-    connectionString: dbUrl,
-    max: 1,
-    connectionTimeoutMillis: 5000,
-  });
 
   const t0 = Date.now();
-  try {
-    const res = await pool.query('SELECT 1 AS ok');
-    const ms = Date.now() - t0;
-    if (res.rows[0] && res.rows[0].ok === 1) {
-      return { name: 'database_url', passed: true, detail: `connected in ${ms}ms` };
-    }
-    return { name: 'database_url', passed: false, detail: 'SELECT 1 returned unexpected result' };
-  } finally {
-    await pool.end().catch(() => {});
+  const res = await handle.pool.query('SELECT 1 AS ok');
+  const ms = Date.now() - t0;
+  if (res.rows[0] && Number(res.rows[0].ok) === 1) {
+    return { name: 'database_url', passed: true, detail: `connected in ${ms}ms` };
   }
+  return { name: 'database_url', passed: false, detail: 'SELECT 1 returned unexpected result' };
 }
 
 // Sprint 38 / T3 — graph-health check. Returns:
@@ -156,7 +209,7 @@ async function checkDatabase() {
 // Reads `inferred_at` (T1's migration 009 column). Falls back to `created_at`
 // for the 749 pre-T2 edges that have no inferred_at value yet, so the check
 // doesn't perma-warn on the substrate that already exists.
-async function checkGraphHealth(config) {
+async function checkGraphHealth(config, handle) {
   // Only meaningful when graph features are enabled. Treat as pass with a
   // descriptive detail so the banner doesn't FAIL on installs that haven't
   // opted into graph recall yet.
@@ -165,24 +218,12 @@ async function checkGraphHealth(config) {
     return { name: 'graph_health', passed: true, detail: 'graph recall disabled' };
   }
 
-  const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) {
-    return { name: 'graph_health', passed: false, detail: 'DATABASE_URL not set — cannot check graph' };
+  if (!handle.pool) {
+    return { name: 'graph_health', passed: false, detail: `${handle.reason} — cannot check graph` };
   }
 
-  let pg;
-  try { pg = require('pg'); } catch (err) { pg = null; }
-  if (!pg) {
-    return { name: 'graph_health', passed: false, detail: 'pg module not installed' };
-  }
-
-  const pool = new pg.Pool({
-    connectionString: dbUrl,
-    max: 1,
-    connectionTimeoutMillis: 5000,
-  });
-
-  try {
+  const pool = handle.pool;
+  {
     // Single round-trip: edge count + last inference timestamp. coalesce on
     // inferred_at so the substrate's pre-T2 edges register their created_at
     // (otherwise max() returns NULL and the staleness check trips).
@@ -219,8 +260,6 @@ async function checkGraphHealth(config) {
         ? `${edges.toLocaleString()} edges, last inference ${agoH}h ago (stale — expected within 48h)`
         : `${edges.toLocaleString()} edges, last inference ${agoH}h ago`,
     };
-  } finally {
-    await pool.end().catch(() => {});
   }
 }
 
@@ -275,7 +314,7 @@ async function checkShellSanity() {
 
     // Sprint 63 T3 §3.3 — drop `-l` (login mode). `-l` sources ~/.bash_profile
     // / ~/.zshrc and friends, which on heavy profiles (nvm, conda, plugin
-    // managers — Brad's r730 has conda) routinely exceeds the 3s timeout
+    // managers — Brad's r730 has conda) routinely exceeds the timeout
     // budget below. A PTY-spawn health check answers "can $SHELL spawn a
     // PTY and emit output?" — not "does the user's interactive profile
     // complete fast?" Login-mode startup time is unrelated to PTY health.
@@ -309,14 +348,18 @@ async function checkShellSanity() {
       }
     });
 
-    // 3s timeout
+    // Liveness bound (env-tunable — see SHELL_PROBE_TIMEOUT_MS).
     setTimeout(() => {
       if (!resolved) {
         resolved = true;
         try { proc.kill(); } catch (err) { /* cleanup — process may already be dead */ }
-        resolve({ name: 'shell_sanity', passed: false, detail: `${shellName} timed out after 3s` });
+        resolve({
+          name: 'shell_sanity',
+          passed: false,
+          detail: `${shellName} timed out after ${Math.round(SHELL_PROBE_TIMEOUT_MS / 1000)}s`,
+        });
       }
-    }, 3000);
+    }, SHELL_PROBE_TIMEOUT_MS);
   });
 }
 
@@ -350,43 +393,62 @@ function tryParseJSON(str) {
 // Main preflight runner
 // ---------------------------------------------------------------------------
 
-async function runPreflight(config) {
-  const checks = await Promise.all([
-    checkMnestra(config).catch((err) => ({
-      name: 'mnestra_reachable', passed: false,
-      detail: `unreachable — ${err.message}. Start with \`mnestra serve\``,
-    })),
-    checkMnestraMemories(config).catch((err) => ({
-      name: 'mnestra_has_memories', passed: false,
-      detail: `check failed — ${err.message}`,
-    })),
-    checkRumen(config).catch((err) => ({
-      name: 'rumen_recent', passed: false,
-      detail: `check failed — ${err.message}`,
-    })),
-    checkDatabase().catch((err) => {
-      // Sprint 75 T2 (part C): a connect failure against the IPv6-only
-      // direct endpoint (db.<project-ref>.supabase.co) on an IPv4-only
-      // host presents as a timeout — name the likely cause in the detail.
-      let detail = `connection failed — ${err.message}`;
-      if (classifyDbEndpoint(process.env.DATABASE_URL).kind === 'direct') {
-        detail += ' (DATABASE_URL is the IPv6-only db.<project-ref> direct endpoint — on IPv4-only hosts pg clients hang until a pool/connect timeout; use the Shared Pooler URL)';
-      }
-      return { name: 'database_url', passed: false, detail };
-    }),
-    checkProjectPaths(config).catch((err) => ({
-      name: 'project_paths', passed: false,
-      detail: `check failed — ${err.message}`,
-    })),
-    checkShellSanity().catch((err) => ({
-      name: 'shell_sanity', passed: false,
-      detail: `check failed — ${err.message}`,
-    })),
-    checkGraphHealth(config).catch((err) => ({
-      name: 'graph_health', passed: false,
-      detail: `check failed — ${err.message}`,
-    })),
-  ]);
+// `deps` is a test seam only — production callers pass `config` alone.
+//   deps.httpGet        (url, timeoutMs) => Promise<string>
+//   deps.pgPoolFactory  (opts) => pool-like { query, end }
+async function runPreflight(config, deps = {}) {
+  // One probe per dependency, shared by every check that reads it. Two
+  // checks of the same dependency must never cost two red rows for one
+  // slow answer — that is the whole "5/7 on a healthy stack" failure.
+  const mnestraProbe = probeMnestra(config, deps.httpGet);
+  // Nobody may see an unhandled rejection before the two consumers attach.
+  mnestraProbe.catch(() => {});
+
+  const pgHandle = openPgHandle(deps.pgPoolFactory);
+
+  const databasePromise = checkDatabase(pgHandle).catch((err) => {
+    // Sprint 75 T2 (part C): a connect failure against the IPv6-only
+    // direct endpoint (db.<project-ref>.supabase.co) on an IPv4-only
+    // host presents as a timeout — name the likely cause in the detail.
+    let detail = `connection failed — ${err.message}`;
+    if (classifyDbEndpoint(process.env.DATABASE_URL).kind === 'direct') {
+      detail += ' (DATABASE_URL is the IPv6-only db.<project-ref> direct endpoint — on IPv4-only hosts pg clients hang until a pool/connect timeout; use the Shared Pooler URL)';
+    }
+    return { name: 'database_url', passed: false, detail };
+  });
+
+  let checks;
+  try {
+    checks = await Promise.all([
+      checkMnestra(mnestraProbe).catch((err) => ({
+        name: 'mnestra_reachable', passed: false,
+        detail: `unreachable — ${err.message}. Start with \`mnestra serve\``,
+      })),
+      checkMnestraMemories(mnestraProbe).catch((err) => ({
+        name: 'mnestra_has_memories', passed: false,
+        detail: `check failed — ${err.message}`,
+      })),
+      checkRumen(pgHandle, databasePromise).catch((err) => ({
+        name: 'rumen_recent', passed: false,
+        detail: `check failed — ${err.message}`,
+      })),
+      databasePromise,
+      checkProjectPaths(config).catch((err) => ({
+        name: 'project_paths', passed: false,
+        detail: `check failed — ${err.message}`,
+      })),
+      checkShellSanity().catch((err) => ({
+        name: 'shell_sanity', passed: false,
+        detail: `check failed — ${err.message}`,
+      })),
+      checkGraphHealth(config, pgHandle).catch((err) => ({
+        name: 'graph_health', passed: false,
+        detail: `check failed — ${err.message}`,
+      })),
+    ]);
+  } finally {
+    if (pgHandle.pool) await pgHandle.pool.end().catch(() => {});
+  }
 
   const result = {
     passed: checks.every((c) => c.passed),
@@ -476,4 +538,21 @@ function printHealthBanner(result) {
   }
 }
 
-module.exports = { runPreflight, createHealthHandler, printHealthBanner };
+// `_resetCache` and the budget constants are exported for tests only — the
+// production surface is the three functions above.
+function _resetCache() {
+  _cachedResult = null;
+  _cachedAt = 0;
+}
+
+module.exports = {
+  runPreflight,
+  createHealthHandler,
+  printHealthBanner,
+  _resetCache,
+  _budgets: {
+    get mnestraMs() { return MNESTRA_PROBE_TIMEOUT_MS; },
+    get pgMs() { return PG_PROBE_TIMEOUT_MS; },
+    get shellMs() { return SHELL_PROBE_TIMEOUT_MS; },
+  },
+};
