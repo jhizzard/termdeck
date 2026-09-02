@@ -43,13 +43,23 @@
 // ──────────────────────────────────────────────────────────────────────────
 const GROK_SELECTORS = {
   // The message composer (textarea or contenteditable).
+  //
+  // 2026-08-15 live-drift fix: the label regex must NOT carry a bare /grok/i
+  // alternative — grok.com added an <a aria-label="Open Grok Bot"> nav link
+  // that precedes the composer in DOM order, so /grok/i matched it first and
+  // fill() threw ("Element is not an <input>…"). The live composer today is a
+  // ProseMirror contenteditable DIV labeled "Ask Grok anything", so the
+  // contenteditable CSS fallback now outranks the textarea one. Belt-and-
+  // suspenders: composer candidates are additionally gated on being EDITABLE
+  // (see TARGET_FILTERS/isEditableDomNode below), so a future non-editable
+  // lookalike can never be picked again regardless of regex drift.
   composer: [
     { kind: 'testid', value: 'grok-composer' },
-    { kind: 'label', nameRe: /ask grok|message grok|grok/i },
+    { kind: 'label', nameRe: /ask grok|message grok/i },
     { kind: 'placeholder', nameRe: /ask|message|grok|anything/i },
     { kind: 'role', role: 'textbox', nameRe: /ask|grok|message|reply/i },
-    { kind: 'css', value: 'form textarea, main textarea' },
     { kind: 'css', value: 'div[contenteditable="true"]' },
+    { kind: 'css', value: 'form textarea, main textarea' },
   ],
 
   // Send/submit button (present when idle, ready to send).
@@ -177,10 +187,53 @@ function selfHeal(snapshot, targetKey) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Per-target candidate filters. A strategy can MATCH the wrong element class
+// entirely (the 2026-08-15 drift: composer's label regex matched a non-editable
+// <a> nav link that preceded the real composer in DOM order). For targets
+// listed here, resolveLocator scans the matched candidates and returns the
+// first that passes the named predicate — and treats a strategy whose matches
+// ALL fail the predicate as a miss, falling through to the next strategy.
+// ──────────────────────────────────────────────────────────────────────────
+const TARGET_FILTERS = { composer: 'editable' };
+
+// PURE predicate on a DOM-node shape ({ tagName, type, isContentEditable }) —
+// true when fill()/type() can target it. Module-level + closure-free so
+// Playwright can serialize it into the page via locator.evaluate(), and so the
+// unit suite can exercise it with plain objects (no browser).
+function isEditableDomNode(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName === 'INPUT') {
+    return !/^(button|submit|checkbox|radio|range|file|image|reset|hidden)$/i
+      .test(el.type || '');
+  }
+  return false;
+}
+
+// Scan a matched Locator's candidates for the first that passes the target's
+// filter. No filter declared → first candidate (legacy behavior). Returns null
+// when candidates exist but none pass (caller falls through to next strategy).
+// Cap keeps the scan bounded on a pathological match (e.g. bare
+// `div[contenteditable="true"]` on a busy page).
+async function firstAcceptableCandidate(loc, targetKey, count, cap = 10) {
+  if (!TARGET_FILTERS[targetKey]) return loc.first();
+  const limit = Math.min(count, cap);
+  for (let i = 0; i < limit; i++) {
+    const cand = loc.nth(i);
+    try {
+      if (await cand.evaluate(isEditableDomNode)) return cand;
+    } catch { /* detached mid-probe — try the next candidate */ }
+  }
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // resolveLocator() — GLUE (Playwright-bound; integration-tested, not unit).
-// Try each catalog strategy; return the first Locator that matches ≥1 element.
-// If all miss, capture a fresh ARIA snapshot and self-heal. Throws only when
-// even self-heal fails (caller decides whether that's fatal).
+// Try each catalog strategy; return the first Locator that matches ≥1 element
+// AND passes the target's candidate filter (TARGET_FILTERS above). If all
+// miss, capture a fresh ARIA snapshot and self-heal. Throws only when even
+// self-heal fails (caller decides whether that's fatal).
 //
 // `opts.timeout` bounds each existence probe so a missing optional control
 // (e.g. `stop` after an instant reply) fails fast instead of hanging.
@@ -198,7 +251,12 @@ async function resolveLocator(page, targetKey, opts = {}) {
       // must be fast. Callers that need to WAIT for an element use the returned
       // Locator's own .waitFor().
       const n = await loc.count();
-      if (n > 0) return loc.first();
+      if (n > 0) {
+        const cand = await firstAcceptableCandidate(loc, targetKey, n);
+        if (cand) return cand;
+        // matched, but every candidate failed the filter (wrong element class,
+        // e.g. a nav link wearing the composer's label) — try the next strategy
+      }
     } catch { /* try next strategy */ }
   }
 
@@ -225,7 +283,13 @@ async function trySelfHeal(page, targetKey, timeout) {
     const loc = guess.name
       ? page.getByRole(guess.role, { name: guess.name })
       : page.getByRole(guess.role);
-    if (await loc.count() > 0) return loc.first();
+    const n = await loc.count();
+    if (n > 0) {
+      // Same candidate filter as the strategy loop — a healed match must still
+      // be the right element class for the target.
+      const cand = await firstAcceptableCandidate(loc, targetKey, n);
+      if (cand) return cand;
+    }
   } catch { /* fall through */ }
   return null;
 }
@@ -261,7 +325,9 @@ async function extractLastAssistantText(page) {
 module.exports = {
   GROK_SELECTORS,
   SELF_HEAL_HINTS,
+  TARGET_FILTERS,
   build,
+  isEditableDomNode,
   parseAriaSnapshot,
   selfHeal,
   resolveLocator,

@@ -23,13 +23,22 @@ const CACHE_TTL_MS = 60_000;
 // Individual checks
 // ---------------------------------------------------------------------------
 
+// Sprint 8K hotfix (2026-09-01): the Mnestra daemon's /healthz does a live
+// Supabase aggregate, and on a thrashing host (8-panel sprint, PhysMem free
+// <100 MB, load 100+) it answered in 2–15 s while the daemon itself was alive
+// and writing. A 3 s probe turned "slow" into "unreachable" for BOTH mnestra
+// checks at once — the stack widget sat at 5/7 for an hour on a healthy store
+// (11,021 rows, last_write minutes old). Same class as the doctor's npm probe.
+// 10 s is still a liveness bound; the 60 s result cache keeps the UI cheap.
+const MNESTRA_PROBE_TIMEOUT_MS = Number(process.env.TERMDECK_MNESTRA_PROBE_TIMEOUT_MS) || 10_000;
+
 async function checkMnestra(config) {
   const rag = config.rag || {};
   const url = rag.mnestraWebhookUrl
     ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '/healthz')
     : 'http://localhost:37778/healthz';
 
-  const body = await httpGet(url, 3000);
+  const body = await httpGet(url, MNESTRA_PROBE_TIMEOUT_MS);
   const data = tryParseJSON(body);
   const total = data && (data.store?.rows ?? data.total ?? data.memories ?? data.count ?? null);
   if (total != null) {
@@ -48,7 +57,7 @@ async function checkMnestraMemories(config) {
     ? rag.mnestraWebhookUrl.replace(/\/mnestra\/?$/, '')
     : 'http://localhost:37778';
 
-  const body = await httpGet(`${baseUrl}/healthz`, 3000);
+  const body = await httpGet(`${baseUrl}/healthz`, MNESTRA_PROBE_TIMEOUT_MS);
   const data = tryParseJSON(body);
   const total = data && (data.store?.rows ?? data.total ?? data.memories ?? data.count ?? null);
   if (total != null && Number(total) > 0) {

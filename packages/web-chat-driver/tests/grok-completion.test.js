@@ -47,10 +47,16 @@ test('quietWaiterInPage is a serializable function that uses a MutationObserver'
 // Presence is keyed by token ("testid:<v>", "css:<v>", "role:<r>", "label",
 // "placeholder"). A present locator reports count 1 and resolves waitFor() for
 // the configured states; everything else reports count 0.
-function fakeLocator({ count = 0, waitStates = [], innerText = '' } = {}) {
+function fakeLocator({ count = 0, waitStates = [], innerText = '', el = { tagName: 'TEXTAREA' } } = {}) {
   const self = {
     first() { return self; },
     last() { return self; },
+    // Candidate scan surface (2026-08-15 editable filter): resolveLocator walks
+    // loc.nth(i).evaluate(isEditableDomNode). The fake models each candidate as
+    // `el` — a TEXTAREA by default so composer matches pass the filter, exactly
+    // like the real composer element does.
+    nth() { return self; },
+    async evaluate(fn) { return typeof fn === 'function' ? fn(el) : undefined; },
     async count() { return count; },
     async innerText() { return innerText; },
     async click() {},

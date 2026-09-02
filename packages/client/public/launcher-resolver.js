@@ -16,6 +16,8 @@
 // Adapter matching uses an anchored prefix on the adapter's binary name
 // (`^binary\b`, case-insensitive) which fits all four Sprint-45 adapters
 // (claude / codex / gemini / grok) since each binary is uniquely named.
+// Adapters without a binary (web-chat-grok) match on their registry name —
+// see the fallback note at the match site below.
 
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -39,9 +41,16 @@
       canonical = canonical.replace(/^cc\b/i, 'claude');
     }
 
-    const adapter = (agentAdapters || []).find((a) =>
-      a && a.binary && new RegExp(`^${escapeRegex(a.binary)}\\b`, 'i').test(canonical)
-    );
+    // Match on the adapter's binary; adapters with no binary (web-chat-grok —
+    // driver-backed, nothing to spawn) match on their registry name instead,
+    // which is what the quick-launch buttons emit as the command (`a.binary ||
+    // a.name` in adapterLauncherEntries). Without the name fallback those
+    // buttons resolve to type 'shell' and spawn a nonexistent binary.
+    const adapter = (agentAdapters || []).find((a) => {
+      if (!a) return false;
+      const key = a.binary || a.name;
+      return key && new RegExp(`^${escapeRegex(key)}\\b`, 'i').test(canonical);
+    });
 
     if (adapter) {
       resolvedType = adapter.sessionType;

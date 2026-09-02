@@ -145,6 +145,32 @@ test('binary with regex characters: matches safely (Sprint 49 T2 fix)', () => {
   assert.equal(resolve('myabot', undefined, customAdapters, PROJECTS).resolvedType, 'shell');
 });
 
+// ── Binary-less adapters match on registry name (web-chat-grok fix) ──
+//
+// The web-chat-grok adapter is driver-backed (no `binary` field — nothing to
+// spawn). The quick-launch buttons emit `a.binary || a.name` as the command,
+// so the resolver must fall back to matching the registry NAME or the
+// "grok (web)" button resolves to type 'shell' and spawns a nonexistent
+// `web-chat-grok` binary (the panel dies instantly on command-not-found).
+
+const ADAPTERS_WITH_WEBCHAT = [
+  ...ADAPTERS,
+  { name: 'web-chat-grok', sessionType: 'web-chat', costBand: 'subscription', displayName: 'Grok (Web)' },
+];
+
+test('web-chat-grok (no binary): matches on name → type=web-chat', () => {
+  const r = resolve('web-chat-grok', undefined, ADAPTERS_WITH_WEBCHAT, PROJECTS);
+  assert.equal(r.resolvedType, 'web-chat');
+  assert.equal(r.resolvedCommand, 'web-chat-grok');
+});
+
+test('web-chat-grok: name fallback never shadows binary-declared adapters', () => {
+  // `grok` must still resolve to the CLI adapter, not web-chat.
+  assert.equal(resolve('grok', undefined, ADAPTERS_WITH_WEBCHAT, PROJECTS).resolvedType, 'grok');
+  // And an unrelated command still falls to shell.
+  assert.equal(resolve('webpack', undefined, ADAPTERS_WITH_WEBCHAT, PROJECTS).resolvedType, 'shell');
+});
+
 // ── Bare commands fall to shell ──
 
 test('vim falls to shell', () => {

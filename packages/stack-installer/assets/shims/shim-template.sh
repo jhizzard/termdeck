@@ -18,13 +18,17 @@
 # (those churned out from under the 2026-05-19 plan wholesale).
 #
 # WHAT IT DOES. Resolves the real binary, runs it under a PTY via `script` so
-# the CLI still sees a real TTY (fully interactive), and on exit hands the
-# transcript to `drain.js`, which cleans it and feeds the EXISTING bundled
-# memory-session-end hook. The hook is not modified by this sprint.
+# the CLI still sees a real TTY (fully interactive), copies the parent TTY's
+# winsize onto that slave (macOS `script` otherwise leaves it at 80×24 and
+# swallows SIGWINCH — a fullscreen TUI then paints a postage-stamp overlay in
+# a large Terminal.app window), and on exit hands the transcript to `drain.js`,
+# which cleans it and feeds the EXISTING bundled memory-session-end hook. The
+# hook is not modified by this sprint.
 #
 # HARD INVARIANTS (each has a test in T3's fence + a T4 attack):
 #   1. TRANSPARENT. Exit code, argv (incl. spaces/quotes), stdin, and TTY
-#      semantics are the real binary's. A user must not be able to tell.
+#      semantics (including winsize / SIGWINCH) are the real binary's. A user
+#      must not be able to tell.
 #   2. FAIL-SOFT. Every capture-side failure degrades to "ran the CLI, captured
 #      nothing". Capture NEVER changes the exit code or writes to the user's
 #      stdout/stderr on the success path.
@@ -213,6 +217,139 @@ fi
 
 TRANSCRIPT="$TRANSCRIPT_DIR/$AGENT-$(date +%s)-$$.log"
 
+# ── Winsize / SIGWINCH forwarder ──────────────────────────────────────────────
+# BSD/macOS `script` openpty()s a slave at 80×24 and does not copy the parent
+# TTY's TIOCGWINSZ or forward SIGWINCH. Observed 2026-08-23: Grok Build 1.0.5
+# in Apple Terminal 178×96 painted an ~80×24 overlay (empty field, overlapping
+# chrome, compact-mode garbage) because the real binary was on script's slave
+# at 24×80. util-linux script is better about this; the helper is a no-op when
+# sizes already match. Fail-soft: missing python3, a missing parent tty, or any
+# helper error degrades to historical (wrong-size) behaviour — never a launch
+# failure, never a write to the user's stdout/stderr (Invariant 2).
+_ws_pid=""
+_cleanup_ws() {
+  if [ -n "${_ws_pid:-}" ]; then
+    kill "$_ws_pid" 2>/dev/null || true
+    wait "$_ws_pid" 2>/dev/null || true
+    _ws_pid=""
+  fi
+}
+_ptty="$(tty 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1 && [ -n "${_ptty:-}" ] && [ -e "$_ptty" ]; then
+  python3 - "$$" "$_ptty" >/dev/null 2>&1 <<'TERMDECK_WINSIZE_SYNC' &
+import errno
+import fcntl
+import os
+import signal
+import struct
+import subprocess
+import sys
+import termios
+import time
+
+shim_pid = int(sys.argv[1])
+parent_tty = sys.argv[2]
+poll = 0.15
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def norm_tty(name):
+    if not name or name in ("??", "-", "?"):
+        return None
+    candidates = (name,) if name.startswith("/") else (name, "/dev/" + name)
+    for cand in candidates:
+        if os.path.exists(cand):
+            try:
+                return os.path.realpath(cand)
+            except OSError:
+                return cand
+    return None
+
+
+def winsize(fd):
+    return struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\x00" * 8))
+
+
+def set_winsize(fd, rows, cols, xp, yp):
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, xp, yp))
+
+
+def descendants(root):
+    try:
+        out = subprocess.check_output(["ps", "-axo", "pid=,ppid=,tty="], text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    by_ppid = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        by_ppid.setdefault(ppid, []).append((pid, parts[2]))
+    found, stack, seen = [], [root], {root}
+    while stack:
+        cur = stack.pop()
+        for pid, tty in by_ppid.get(cur, []):
+            if pid in seen:
+                continue
+            seen.add(pid)
+            found.append((pid, tty))
+            stack.append(pid)
+    return found
+
+
+parent_real = norm_tty(parent_tty)
+last = None
+while alive(shim_pid):
+    slave = None
+    pids_on_slave = []
+    for pid, tty in descendants(shim_pid):
+        path = norm_tty(tty)
+        if not path or path == parent_real:
+            continue
+        if slave is None:
+            slave = path
+        if path == slave:
+            pids_on_slave.append(pid)
+    if slave:
+        try:
+            pfd = os.open(parent_tty, os.O_RDONLY)
+            try:
+                rows, cols, xp, yp = winsize(pfd)
+            finally:
+                os.close(pfd)
+            current = (rows, cols, xp, yp)
+            if rows > 0 and cols > 0 and current != last:
+                cfd = os.open(slave, os.O_RDWR)
+                try:
+                    set_winsize(cfd, rows, cols, xp, yp)
+                finally:
+                    os.close(cfd)
+                for pid in pids_on_slave:
+                    try:
+                        os.kill(pid, signal.SIGWINCH)
+                    except OSError:
+                        pass
+                last = current
+        except OSError as exc:
+            if exc.errno not in (errno.EBADF, errno.ENXIO, errno.EIO, errno.ENOENT, errno.ENOTTY, errno.EBUSY):
+                pass
+    time.sleep(poll)
+TERMDECK_WINSIZE_SYNC
+  _ws_pid=$!
+  trap '_cleanup_ws' EXIT INT TERM HUP
+fi
+
 # ── Run under a PTY ───────────────────────────────────────────────────────────
 # BSD (macOS):     script -q <file> <cmd> [args...]   — argv passed through
 #                  directly (NO shell re-parse, so args with spaces/quotes are
@@ -255,6 +392,7 @@ if script --version 2>/dev/null | grep -qi 'util-linux'; then
 else
   script -q "$TRANSCRIPT" "$_real" "$@" || _status=$?
 fi
+_cleanup_ws
 
 # ── Exit drain (Invariant 2: fail-soft, non-blocking) ─────────────────────────
 # Detached + nohup so the user's prompt returns instantly — the drain does

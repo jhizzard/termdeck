@@ -15,6 +15,8 @@ const {
   selfHeal,
   GROK_SELECTORS,
   SELF_HEAL_HINTS,
+  TARGET_FILTERS,
+  isEditableDomNode,
 } = require('../src/grok/selectors');
 
 const fx = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
@@ -77,6 +79,39 @@ test('every catalog target has a self-heal hint (no orphan targets)', () => {
   for (const key of Object.keys(GROK_SELECTORS)) {
     assert.ok(SELF_HEAL_HINTS[key], `missing self-heal hint for "${key}"`);
   }
+});
+
+// ── 2026-08-15 live-drift regression: "Open Grok Bot" nav link ──
+//
+// grok.com added an <a aria-label="Open Grok Bot"> that precedes the composer
+// in DOM order. The composer label strategy's old bare /grok/i alternative
+// matched it first and fill() threw. Pin: the label regex must match the real
+// composer labels but never the nav link's.
+
+test('composer label strategy matches composer labels, never "Open Grok Bot"', () => {
+  const label = GROK_SELECTORS.composer.find((s) => s.kind === 'label');
+  assert.ok(label, 'composer has a label strategy');
+  assert.ok(label.nameRe.test('Ask Grok anything'), 'live 2026-08-15 composer label');
+  assert.ok(label.nameRe.test('Message Grok'), 'legacy composer label');
+  assert.ok(!label.nameRe.test('Open Grok Bot'), 'nav link must not match');
+});
+
+test('composer declares the editable candidate filter', () => {
+  assert.equal(TARGET_FILTERS.composer, 'editable');
+});
+
+test('isEditableDomNode: editable shapes pass, chrome shapes fail', () => {
+  // The real 2026-08-15 composer (ProseMirror contenteditable DIV).
+  assert.ok(isEditableDomNode({ tagName: 'DIV', isContentEditable: true }));
+  assert.ok(isEditableDomNode({ tagName: 'TEXTAREA' }));
+  assert.ok(isEditableDomNode({ tagName: 'INPUT', type: 'text' }));
+  assert.ok(isEditableDomNode({ tagName: 'INPUT' })); // type defaults to text
+  // The offending nav link + other non-editable chrome.
+  assert.ok(!isEditableDomNode({ tagName: 'A', type: 'button' }));
+  assert.ok(!isEditableDomNode({ tagName: 'BUTTON', type: 'submit' }));
+  assert.ok(!isEditableDomNode({ tagName: 'INPUT', type: 'submit' }));
+  assert.ok(!isEditableDomNode({ tagName: 'INPUT', type: 'hidden' }));
+  assert.ok(!isEditableDomNode(null));
 });
 
 test('catalog strategies are well-formed (known kinds only)', () => {

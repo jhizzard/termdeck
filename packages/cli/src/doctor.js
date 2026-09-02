@@ -41,7 +41,13 @@ const STACK_PACKAGES = [
 ];
 
 const REGISTRY_TIMEOUT_MS = 5000;
-const NPM_LS_TIMEOUT_MS = 8000;
+// Sprint 8K hotfix (2026-09-01): under host load `npm ls -g` took 25-27 s on an
+// 8-panel host, and the old 8 s probe timeout converted "slow" into "not
+// installed" for ALL FOUR stack packages at once (a fully-installed stack
+// reported "No stack packages detected (4 of 4 not installed)"). The probe is
+// now filesystem-first (see _readInstalledVersionFromFs) and npm is only the
+// fallback, with a timeout wide enough to survive a loaded host.
+const NPM_LS_TIMEOUT_MS = 30000;
 
 const STATUS = {
   UP_TO_DATE: 'up to date',
@@ -66,11 +72,41 @@ function makeColors(enabled) {
   };
 }
 
+// Sprint 8K hotfix — filesystem-first detection. This CLI runs from inside the
+// global node_modules tree (`<root>/@jhizzard/termdeck/packages/cli/src`), so
+// every sibling stack package is one `package.json` read away: instant, and
+// immune to host load. Returns null (→ npm fallback) when the CLI is not
+// running from a global install (e.g. a repo checkout) or the package is absent.
+function _globalNodeModulesRoot() {
+  const root = path.resolve(__dirname, '..', '..', '..', '..', '..');
+  return path.basename(root) === 'node_modules' ? root : null;
+}
+
+function _readInstalledVersionFromFs(pkg, root) {
+  const base = root === undefined ? _globalNodeModulesRoot() : root;
+  if (!base) return null;
+  try {
+    const pj = JSON.parse(fs.readFileSync(path.join(base, pkg, 'package.json'), 'utf8'));
+    return typeof pj.version === 'string' ? pj.version : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+// Detect installed version: filesystem first, then `npm ls -g` as fallback.
+async function _detectInstalled(pkg) {
+  // Dispatch through module.exports (this file's convention, see
+  // _detectMnestraVersion) so unit tests can monkey-patch either half.
+  const fromFs = module.exports._readInstalledVersionFromFs(pkg);
+  if (fromFs) return fromFs;
+  return module.exports._detectInstalledViaNpm(pkg);
+}
+
 // Detect installed version via `npm ls -g <pkg> --depth=0 --json`. Returns
 // the version string on success, or null on "not installed" / parse failure
 // / npm-missing-from-PATH / timeout. Stderr noise (npm WARN lines) is
 // silently dropped — those are not fatal.
-async function _detectInstalled(pkg) {
+async function _detectInstalledViaNpm(pkg) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -1197,6 +1233,9 @@ async function doctor(argv) {
 
 module.exports = doctor;
 module.exports._detectInstalled = _detectInstalled;
+module.exports._detectInstalledViaNpm = _detectInstalledViaNpm;
+module.exports._readInstalledVersionFromFs = _readInstalledVersionFromFs;
+module.exports._globalNodeModulesRoot = _globalNodeModulesRoot;
 module.exports._fetchLatest = _fetchLatest;
 module.exports._compareSemver = _compareSemver;
 module.exports._detectMnestraVersion = _detectMnestraVersion;
