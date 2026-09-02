@@ -190,6 +190,37 @@ function _codexCandidateDirs(homedir, now) {
 const _CODEX_GATE_EPSILON_MS_BIRTHTIME = 0;
 const _CODEX_GATE_EPSILON_MS_MTIME_FALLBACK = 5000;
 
+// Sprint 87 T1 — bounded head read for the rollout's `session_meta` header.
+// 64 KB is ~3 orders of magnitude more than any observed header line and two
+// orders of magnitude less than a live rollout, which is the entire point.
+const CODEX_HEADER_READ_BYTES = 64 * 1024;
+
+// Returns the first line of `file`, or null when the head contains no newline
+// (a header longer than the bound — treat as unparseable rather than guessing)
+// or the file cannot be read. `fsApi` is injected so the unit suite can assert
+// the bound is respected without materializing a 52 MB fixture.
+function _readFirstLineBounded(fsApi, file, maxBytes = CODEX_HEADER_READ_BYTES) {
+  let fd;
+  try { fd = fsApi.openSync(file, 'r'); }
+  catch (_) { return null; }
+  try {
+    const buf = Buffer.allocUnsafe(maxBytes);
+    const bytes = fsApi.readSync(fd, buf, 0, maxBytes, 0);
+    if (!bytes) return null;
+    const head = buf.slice(0, bytes);
+    const nl = head.indexOf(0x0a);
+    // No newline inside the bound: either the header is absurdly long or the
+    // file is a single line shorter than the bound. Only the latter is a valid
+    // candidate, and it is identifiable by the read having hit EOF.
+    if (nl < 0) return bytes < maxBytes ? head.toString('utf8') : null;
+    return head.slice(0, nl).toString('utf8');
+  } catch (_) {
+    return null;
+  } finally {
+    try { fsApi.closeSync(fd); } catch (_) { /* fail-soft */ }
+  }
+}
+
 async function resolveTranscriptPath(session) {
   const fs = require('fs');
   const path = require('path');
@@ -237,9 +268,19 @@ async function resolveTranscriptPath(session) {
   for (const { full } of candidates) {
     let firstLine;
     try {
-      const buf = fs.readFileSync(full, 'utf8');
-      const nl = buf.indexOf('\n');
-      firstLine = nl >= 0 ? buf.slice(0, nl) : buf;
+      // Sprint 87 T1 — read only the head of the file, not all of it.
+      // This used to be `fs.readFileSync(full, 'utf8')` to obtain ONE line: the
+      // `{type:'session_meta'}` header. Codex rollouts on this machine reach
+      // 52 MB (measured 2026-09-02: 446 files, 1.6 GB under ~/.codex/sessions,
+      // largest 52 MB, today's active one 33 MB), so the old form blocked the
+      // event loop for the whole synchronous read AND allocated a same-sized
+      // UTF-8 string — per candidate, per periodic-capture tick, per panel.
+      // On a swapping host that read is measured in seconds, during which the
+      // HTTP API answers nothing. The header is the first line of the file, so
+      // a bounded head read is sufficient; CODEX_HEADER_READ_BYTES is far
+      // beyond any observed session_meta line.
+      firstLine = _readFirstLineBounded(fs, full);
+      if (firstLine === null) continue;
     } catch (_) { continue; }
     let meta;
     try { meta = JSON.parse(firstLine); } catch (_) { continue; }
@@ -530,5 +571,9 @@ const codexAdapter = {
 // tests/agent-adapter-parity.test.js) iterate a fixed allowlist of fields and
 // tolerate extra properties — adding this function is safe.
 codexAdapter.probeCodexVersion = probeCodexVersion;
+// Sprint 87 T1 — exported for the bounded-head-read suite (same "extra
+// properties are tolerated by the parity test" rationale as probeCodexVersion).
+codexAdapter._readFirstLineBounded = _readFirstLineBounded;
+codexAdapter.CODEX_HEADER_READ_BYTES = CODEX_HEADER_READ_BYTES;
 
 module.exports = codexAdapter;

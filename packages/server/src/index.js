@@ -98,6 +98,12 @@ const geminiMirrorLib = require('./gemini-mirror');
 const advisor = require('./advisor');
 const { groupRecallEvents } = require('./recall-events'); // Sprint 81 T4 — memory-proof surface
 const { submitToPty } = require('./pty-submit');
+// Sprint 87 T1 — node-pty leaks one untracked /dev/ptmx master per spawn; this
+// records it at spawn time and closes it at exit. See pty-fd-reclaim.js header
+// for the measurement and why `session.pty = null` never reclaimed it.
+const ptyFdReclaim = require('./pty-fd-reclaim');
+// Sprint 87 T2 — host memory-pressure guard for the optional background timers.
+const memoryPressure = require('./memory-pressure');
 const {
   computeContextK,
   classifyContext,
@@ -446,10 +452,23 @@ async function onPanelClose(session) {
 //
 // Skip rules mirror onPanelClose (Claude has its own PreCompact hook,
 // missing adapter / resolveTranscriptPath / hook file → no-op).
+// Sprint 87 T2 — module-scope handle so `onPanelPeriodicCapture` (module-level,
+// invoked from a timer) can consult the guard that createServer owns. Assigned
+// by createServer; the unit suite sets it directly to drive both paths.
+let _memoryMonitor = null;
+function _setMemoryMonitorForTests(m) { _memoryMonitor = m; }
+
 async function onPanelPeriodicCapture(session) {
   try {
     if (!session || !session.meta) return;
     if (session.meta.status === 'exited') return;
+    // Sprint 87 T2 — the FIRST gate, ahead of every expensive step below.
+    // A capture costs a full transcript resolve (which for codex reads a
+    // multi-megabyte rollout) plus a forked Node process that parses, embeds
+    // and POSTs. None of it has a deadline, so on a thrashing host it is
+    // skipped outright: the next tick with headroom picks the same byte range
+    // up, because the `lastSize` bookmark is only advanced on a real fire.
+    if (_memoryMonitor && _memoryMonitor.shouldSkipOptionalWork()) return;
     const adapter = AGENT_ADAPTERS[session.meta.type]
       || Object.values(AGENT_ADAPTERS).find((a) => a.sessionType === session.meta.type);
     if (!adapter) return;
@@ -1043,6 +1062,14 @@ function createServer(config) {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
 
+  // Sprint 87 T2 — host memory-pressure guard. Sampled on its own slow, unref'd
+  // timer; every consumer just reads the cached boolean. Gates OPTIONAL
+  // background work only — PTY I/O, /input, /buffer, /sessions and the WS
+  // broadcast are never gated. Module header explains the signal choice.
+  const memoryMonitor = memoryPressure.createMemoryPressureMonitor().start();
+  app.locals.memoryMonitor = memoryMonitor;
+  _memoryMonitor = memoryMonitor;
+
   // Sprint 80 T1 (BR-1 — Brad's 2026-06-26 fleet cascade) — route-scoped
   // pre-parse normalization for POST /api/sessions/:id/input. Bash/curl inject
   // callers send JSON whose `text` contains the literal 4-char sequence `\x1b`
@@ -1444,7 +1471,20 @@ function createServer(config) {
   // default and the CLI guardrail blocks beyond-localhost binds without explicit opt-in.
   // For any non-loopback deployment (Sprint 18+ remote story), gate this route behind auth
   // or scope the response to a minimal {status, version} payload.
-  app.get('/api/health', createHealthHandler(config));
+  // Sprint 87 T2 — the preflight body is cached for 60 s, but the
+  // memory-pressure block must be LIVE (an operator hitting /api/health during
+  // a thrash needs the reading from now, not from a minute ago), so it is
+  // merged in on the way out rather than baked into the cached result.
+  const _preflightHealth = createHealthHandler(config);
+  app.get('/api/health', (req, res) => {
+    const sendJson = res.json.bind(res);
+    res.json = (body) => sendJson(
+      (body && typeof body === 'object' && !Array.isArray(body))
+        ? { ...body, memoryPressure: memoryMonitor.state() }
+        : body
+    );
+    return _preflightHealth(req, res);
+  });
 
   // GET /api/health/full - v0.7.0 runtime health snapshot (Sprint 32 T3)
   // Mirrors the install-time auditPreconditions/verifyOutcomes pattern from
@@ -2527,6 +2567,13 @@ function createServer(config) {
             directSpawnAdapter.probeCodexVersion();
           } catch (_probeErr) { /* fail-soft */ }
         }
+        // Sprint 87 T1 — snapshot the open character-device fds immediately
+        // before the spawn so the orphan master node-pty forgets about can be
+        // identified by difference and closed in `term.onExit` below. Cheap
+        // (~4k fstats, single-digit ms) and confined to the spawn path.
+        const _fdsBeforeSpawn = ptyFdReclaim.reclaimEnabled()
+          ? ptyFdReclaim.snapshotCharDeviceFds()
+          : null;
         const term = pty.spawn(spawnShell, args, {
           name: 'xterm-256color',
           cols: 120,
@@ -2592,6 +2639,20 @@ function createServer(config) {
 
         session.pty = term;
         session.pid = term.pid;
+
+        // Sprint 87 T1 — the post-spawn half of the fd snapshot. Anything that
+        // appeared as a character device and is NOT `term.fd` / the ReadStream's
+        // fd is node-pty's untracked master; parked on the session so exit can
+        // close it. Empty list on every platform where node-pty does not leak.
+        if (_fdsBeforeSpawn) {
+          try {
+            session._orphanPtyFds = ptyFdReclaim.findOrphanPtyFds(
+              _fdsBeforeSpawn,
+              ptyFdReclaim.snapshotCharDeviceFds(),
+              term
+            );
+          } catch (_fdErr) { session._orphanPtyFds = []; }
+        }
 
         // Sprint 80 T1 (INCIDENT 2026-07-01 — whole-deck crash) — attach a pty
         // 'error' listener so an ASYNC node-pty socket error can NEVER take the
@@ -2826,6 +2887,28 @@ function createServer(config) {
           // forget; reads `session.meta` + `session.id`, not `session.pty`) and
           // AFTER the upload-dir cleanup so any sync reader above this line
           // sees the original wrapper.
+          //
+          // ── DATED CORRECTION (Sprint 87 T1, 2026-09-02) ──────────────────
+          // The Sprint-63 claim immediately above — that without this nulling
+          // node-pty's wrapper "held the master fd until next GC pass" — is
+          // WRONG, and it is why the 2026-05-08/09 ptmx exhaustion came back
+          // on 2026-08-16 and again on 2026-09-02. Nulling is right for making
+          // the WRAPPER collectable, but the fd that actually leaks is a
+          // SECOND /dev/ptmx master that the native fork opens and the JS layer
+          // never records. No JS object references it, so no GC pass can ever
+          // release it: a harness that spawns 60 ptys, exits them all, nulls
+          // the reference exactly as this line does and then forces a full GC
+          // still measures 60 open masters. The nulling stays (it is correct
+          // for its own purpose); the reclaim below is what closes the fd.
+          if (Array.isArray(session._orphanPtyFds) && session._orphanPtyFds.length) {
+            try {
+              const n = ptyFdReclaim.reclaimOrphanPtyFds(session._orphanPtyFds);
+              if (n > 0) {
+                console.log(`[pty-fd] reclaimed ${n} orphan pty master fd(s) for session ${session.id}`);
+              }
+            } catch (_fdErr) { /* fail-soft — never block teardown */ }
+            session._orphanPtyFds = [];
+          }
           session.pty = null;
         });
 
