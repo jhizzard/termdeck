@@ -49,7 +49,7 @@ function readPortsFile(portsPath) {
     const parsed = JSON.parse(fs.readFileSync(portsPath || defaultPortsPath(), 'utf8'));
     if (Array.isArray(parsed)) return parsed;
     if (parsed && Array.isArray(parsed.decks)) return parsed.decks;
-  } catch { /* start fresh */ }
+  } catch (err) { console.error('[ports-file] read failed, starting fresh:', err && err.message); }
   return [];
 }
 
@@ -77,7 +77,7 @@ function recordLivePort(port, opts = {}) {
   } catch (err) {
     try {
       console.error('[ports-file] best-effort write failed:', err && err.message);
-    } catch { /* never throw from a fail-soft path */ }
+    } catch (err) { console.error('[ports-file] fail-soft write-failure log itself failed:', err && err.message); }
     return false;
   }
 }

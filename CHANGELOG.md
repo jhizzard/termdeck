@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.21.1] - 2026-09-02
+
 ### Fixed — the stack badge read "5/7" on a demonstrably healthy stack
 
 - **Caught live, not inferred.** Polling all three local decks every 20 s on 2026-09-02 recorded deck `:3002` at exactly `5/7` from 13:10:04 to 13:10:51 ET, failing `mnestra_reachable` **and** `mnestra_has_memories`, both with detail `timeout` — while the store held 11,124 rows and a sibling deck polled `7/7` one second later. The badge was wrong; the stack was fine.
