@@ -156,7 +156,13 @@ function buildProposeTools({ clients, identity, policy, env, now } = {}) {
         + 'automated promotion pass (dedup, redaction, quality gates), MAY BE REJECTED, and do '
         + 'not appear in memory_recall/memory_search unless and until promoted — minutes later '
         + 'at the earliest. Never claim a proposal has been "saved to memory"; say it has been '
-        + 'proposed for review. Proposals containing secrets or denylisted literals are refused.',
+        + 'proposed for review. Proposals containing secrets or denylisted literals are refused. '
+        + 'WHEN TO CALL (proactively, without being asked): whenever the developer states a decision, '
+        + 'a preference, a project fact, a lesson learned, or a bug root cause; whenever they say '
+        + '"remember", "note", "save", "for next time", or similar; and at the end of any substantive '
+        + 'working exchange, once, with the durable takeaway. Prefer one dense kitchen-level proposal '
+        + 'over many chat-level ones. After proposing, tell the developer the proposal id and that '
+        + 'memory_propose_status reports its verdict.',
       inputSchema: (z) => ({
         text: z.string().describe(
           `The proposed memory (≤ ${TEXT_MAX_CHARS} chars). Durable, kitchen-level facts/decisions/preferences — not chat ephemera.`,
