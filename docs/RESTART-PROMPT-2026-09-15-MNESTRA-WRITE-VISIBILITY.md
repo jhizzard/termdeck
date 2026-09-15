@@ -37,3 +37,9 @@ See the "ordered command list" in the 2026-09-15 wrap email / session close mess
 
 ## Memories written (Mnestra, project=termdeck/mnestra, sprint_ref=mnestra-silent-writes-2026-09-15)
 Ledger-first triage; PostgREST authenticator timeout + HNSW abandonment; vendored-hook drift (stale vs private carve-out) + overrides pattern; bridge read-only exemption shape; SESSION STATE row.
+
+## Addendum 17:15 ET — runbook executed, all surfaces verified
+- Published + pushed: mnestra **0.14.1** (0.14.0 shipped a stale dist — no prepublishOnly; fixed), rumen 0.13.0, termdeck 1.22.0, termdeck-stack 1.19.0. Migrations 040/041 applied via the session pooler (`DATABASE_URL` in secrets.env is the transaction pooler with `?pgbouncer=true`; psql needs the query string stripped and port 6543→5432).
+- **Origin skew found**: public hostname fronts iMac + Air + cloud origins. Air was at 1.20.1 / mnestra 0.6.0 / no flags / no propose map → 6 tools; ChatGPT's 7 client registrations live only on the Air, so chatgpt-web never saw memory_propose. Air brought to parity (82db36f, 0.14.1, flags, propose map 25 clients, local edits stashed as `air-local-2026-09-15`). Web connectors cache the tool list at add time: ChatGPT needed remove + re-add.
+- End-to-end proof: grok-web proposal 20:34Z **promoted** by the redeployed gate; chatgpt-web 21:05Z and four claude-web (one per account) 21:09–21:13Z pending → promote on the next 10-min pass. Bridge /healthz on both origins: tools 9 + inbox field.
+- New follow-up: cross-origin parity check (tool-count diff across imac-bridge / air-bridge / cloud) in `termdeck doctor` or the watchdog.
