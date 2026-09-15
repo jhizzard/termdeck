@@ -126,6 +126,28 @@ function isHonestProposeShape(toolDef) {
   return true;
 }
 
+// ── READ_ONLY_NAME_EXEMPTIONS — reads whose NAME trips the verb heuristic ────
+//
+// The name-token heuristic in step 2 is deliberately blunt: it rejects any tool
+// whose name contains a mutating verb token, so that a write tool which forgot
+// (or lied about) its hints still cannot mount. `memory_propose_status` is a
+// genuine READ — it reports the disposition of a proposal already submitted —
+// but it tokenizes to ['memory','propose','status'] and 'propose' is a
+// mutating verb, so the heuristic would reject it.
+//
+// This is the narrow, exact-name carve-out for that case, and it is the MIRROR
+// of WRITE_CHANNEL_TOOLS rather than a loophole in it: membership alone is not
+// enough, because the exemption demands an EXPLICIT `readOnlyHint:true`
+// (a positive assertion, not merely the absence of a negative one) and is
+// checked only AFTER step 1 has already rejected every writable/destructive
+// declaration. A tool that is actually a write cannot reach this set's benefit
+// by being named into it — it would have to lie about readOnlyHint first, and
+// that lie is exactly what WRITE_CHANNEL_TOOLS refuses to let a *_propose name
+// get away with.
+//
+// Adding a name here asserts: this tool performs NO mutation of any kind.
+const READ_ONLY_NAME_EXEMPTIONS = new Set(['memory_propose_status']);
+
 // assertReadOnly(toolDef) — throws if the tool looks capable of mutation.
 // Honors explicit MCP capability hints first, then a name-token heuristic.
 // Exactly ONE exemption: a PROPOSE_TOOLS member with verified-honest proposal
@@ -161,6 +183,20 @@ function assertReadOnly(toolDef) {
     throw new Error(`Bridge policy: tool "${name}" is declared destructive; the Bridge is read-only.`);
   }
 
+  // 1b) Exact-name read exemption (see READ_ONLY_NAME_EXEMPTIONS). Reached only
+  // after step 1, so a writable/destructive declaration has already thrown.
+  // Requires an EXPLICIT readOnlyHint:true — an exempt name that declines to
+  // assert read-only gets no benefit from membership.
+  if (READ_ONLY_NAME_EXEMPTIONS.has(name)) {
+    if (ann.readOnlyHint !== true) {
+      throw new Error(
+        `Bridge policy: tool "${name}" is name-exempt from the mutating-verb heuristic but must declare `
+        + 'readOnlyHint:true explicitly; refusing to mount.',
+      );
+    }
+    return true;
+  }
+
   // 2) Name-token heuristic (catches a mutating tool that forgot its hints).
   const tokens = name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   for (const t of tokens) {
@@ -180,7 +216,7 @@ function assertReadOnly(toolDef) {
 const TERMINAL_STATE_TOOLS = new Set([
   'list_panels', 'read_panel', 'panel_status', 'recent_activity',
 ]);
-const MEMORY_TOOLS = new Set(['memory_recall', 'memory_search']);
+const MEMORY_TOOLS = new Set(['memory_recall', 'memory_search', 'memory_propose_status']);
 
 // requiresApproval(toolName) → boolean. Fail-safe: an unrecognized tool name
 // returns true, so a newly-added tool defaults to approval-gated until it is
@@ -373,6 +409,8 @@ module.exports = {
   loadProposeMap,
   mapClientToSourceAgent,
   isStrictMapMode,
+  // exact-name read exemptions from the mutating-verb heuristic (Sprint 86)
+  READ_ONLY_NAME_EXEMPTIONS,
   // exported for tests / introspection
   MUTATING_VERBS,
   TERMINAL_STATE_TOOLS,

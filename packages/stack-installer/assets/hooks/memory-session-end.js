@@ -155,7 +155,7 @@ function resolveSecretsPath() {
 // nashville catch-all stays LAST (structural invariant) so a TermDeck cwd
 // inside ChopinNashville/SideHustles/ resolves to "termdeck", not the
 // catch-all.
-const PROJECT_MAP = [
+const BUNDLED_PROJECT_MAP = [
   // ── Active code projects (most-specific FIRST) ──
   // Whole TermDeck folder, not just the inner repo — sessions launch from the
   // parent (…/SideHustles/TermDeck) too and must not fall through to the
@@ -180,6 +180,100 @@ const PROJECT_MAP = [
   // this entry gets shadowed and the row mis-tags as 'chopin-nashville'.
   { pattern: /\/ChopinNashville(\/|$)/i,                      project: 'chopin-nashville' },
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOCAL PROJECT-MAP OVERRIDES (2026-09-15).
+//
+// WHY. Some cwds must be tagged but must NOT be named in this file. This asset
+// ships in a PUBLIC repo and inside every @jhizzard/termdeck-stack npm tarball
+// (`assets/**` is in the package `files` whitelist), so a directory name added
+// here is published to everyone, forever. A private matter — legal, medical,
+// an employer under NDA — needs its own project tag for exactly the reason it
+// must stay unpublished: without a tag the cwd falls through to `global`, and
+// a session-end drain then pushes an uncurated transcript into the
+// cross-project-recallable tag.
+//
+// Before this existed, the only way to get that tag was to hand-edit the
+// installed copy at ~/.claude/hooks/ — which `termdeck init --mnestra` then
+// silently overwrote on the next run, restoring the leak with no warning.
+//
+// SHAPE. Mirrors PROJECT_MAP, with `pattern` as a regex SOURCE STRING because
+// JSON has no regex literal:
+//   [ { "pattern": "\\/Clients\\/Acme Holdings(\\/|$)", "project": "acme" } ]
+// `flags` is optional and defaults to 'i', matching every bundled entry.
+//
+// PRECEDENCE. Local entries are PREPENDED. detectProject returns the first
+// match, and the bundled list ends in a /ChopinNashville/ catch-all, so
+// appending would let the catch-all shadow a local rule. Prepending is what
+// makes "local wins" true rather than merely intended.
+//
+// FAIL-SOFT, ALWAYS. Missing file, unreadable file, bad JSON, wrong type, a
+// malformed regex — every one degrades to "no overrides" and the hook runs on
+// the bundled map. This is a capture hook: it must never be the reason a
+// session fails to close.
+const LOCAL_PROJECT_MAP_PATH = process.env.TERMDECK_HOOK_PROJECT_MAP_PATH
+  || join(os.homedir(), '.termdeck', 'hook-project-map.local.json');
+
+// Bounded so a pathological entry can't turn cwd-matching into a ReDoS.
+const MAX_LOCAL_PATTERN_LENGTH = 400;
+const MAX_LOCAL_ENTRIES = 100;
+
+function _loadLocalProjectMap(file = LOCAL_PROJECT_MAP_PATH) {
+  let raw;
+  try {
+    if (!existsSync(file)) return [];
+    raw = readFileSync(file, 'utf8');
+  } catch (err) {
+    log(`local-project-map-unreadable: ${file} — ${err && err.message ? err.message : String(err)} (continuing with the bundled map)`);
+    return [];
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    log(`local-project-map-invalid-json: ${file} — ${err && err.message ? err.message : String(err)} (continuing with the bundled map)`);
+    return [];
+  }
+
+  // Accept the array form, or an object wrapper `{ "entries": [...] }` so the
+  // file has somewhere to grow a version/comment field later.
+  const list = Array.isArray(parsed) ? parsed
+    : (parsed && Array.isArray(parsed.entries) ? parsed.entries : null);
+  if (!list) {
+    log(`local-project-map-bad-shape: ${file} — expected an array of {pattern, project} (continuing with the bundled map)`);
+    return [];
+  }
+
+  const out = [];
+  for (const entry of list.slice(0, MAX_LOCAL_ENTRIES)) {
+    if (!entry || typeof entry.pattern !== 'string' || typeof entry.project !== 'string') continue;
+    if (!entry.pattern || !entry.project) continue;
+    if (entry.pattern.length > MAX_LOCAL_PATTERN_LENGTH) {
+      log(`local-project-map-pattern-too-long: skipping an entry for project="${entry.project}"`);
+      continue;
+    }
+    let flags = typeof entry.flags === 'string' ? entry.flags : 'i';
+    let pattern;
+    try {
+      pattern = new RegExp(entry.pattern, flags);
+    } catch (err) {
+      // Deliberately does NOT echo the pattern — the whole point of this file
+      // is that its contents stay out of shared logs.
+      log(`local-project-map-bad-regex: skipping an entry for project="${entry.project}" — ${err && err.message ? err.message : String(err)}`);
+      continue;
+    }
+    out.push({ pattern, project: entry.project });
+  }
+  return out;
+}
+
+// Local first — see PRECEDENCE above.
+function _mergeProjectMap(local, bundled) {
+  return [...(local || []), ...(bundled || [])];
+}
+
+const PROJECT_MAP = _mergeProjectMap(_loadLocalProjectMap(), BUNDLED_PROJECT_MAP);
 
 const MIN_TRANSCRIPT_BYTES = parseInt(process.env.TERMDECK_HOOK_MIN_BYTES || '5000', 10);
 // Sprint 64 T2 (carve-out 2.2) — Sprint 63 EXIT-CAPTURE-VERIFICATION.md
@@ -755,6 +849,47 @@ function normalizeSourceAgent(raw) {
   return ALLOWED_SOURCE_AGENTS.has(canonical) ? canonical : 'claude';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DEDUP-vs-FAILURE classification (2026-09-15).
+//
+// memory_items carries a partial-unique index on content_hash. Re-ingesting a
+// session whose summary is byte-identical to one already stored (SessionEnd
+// firing twice, a periodic checkpoint that landed no new messages, a resumed
+// session re-summarized to the same text) makes PostgREST return
+// HTTP 409 / SQLSTATE 23505. That is the dedup working AS DESIGNED — the row
+// is already in the store — but the hook used to log it as
+// `supabase-insert-failed` and stamp `memory_items=fail` on the ingest line.
+//
+// Cost of the mislabel: on 2026-09-15 a fleet-wide "Mnestra has not accepted a
+// CLI write since Sept 5" incident was opened and escalated purely because the
+// log was littered with these lines. Writes had never stopped. A benign no-op
+// must never be reported in the same vocabulary as a real write failure, or
+// the log stops being usable as evidence during an actual outage.
+//
+// DUP_RESULT is a TRUTHY sentinel on purpose: every existing `if (itemOk)` /
+// `itemOk || sessionOk` truthiness check keeps treating a dup as "the row is
+// in the store," which is exactly right. Only the human-facing label differs.
+const DUP_RESULT = 'dup';
+
+// PostgREST surfaces the unique violation as {"code":"23505", ...} in the body.
+// Match on status AND code — a bare 409 without 23505 is some other conflict
+// and stays a real failure.
+function isDuplicateRow(status, body) {
+  if (status !== 409) return false;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && parsed.code === '23505';
+  } catch {
+    return /\b23505\b/.test(String(body || ''));
+  }
+}
+
+// ok | dup | fail, for the `memory_items=` / `memory_sessions=` log fields.
+function writeStatusLabel(result) {
+  if (result === DUP_RESULT) return 'dup';
+  return result ? 'ok' : 'fail';
+}
+
 async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, project, sessionId, sourceAgent }) {
   try {
     const res = await fetch(`${supabaseUrl}/rest/v1/memory_items`, {
@@ -780,6 +915,10 @@ async function postMemoryItem({ supabaseUrl, supabaseKey, content, embedding, pr
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      if (isDuplicateRow(res.status, body)) {
+        log(`memory-items-dup: content_hash already present — row is in the store, skipping duplicate insert (session=${sessionId || 'null'})`);
+        return DUP_RESULT;
+      }
       log(`supabase-insert-failed: HTTP ${res.status} ${body.slice(0, 200)}`);
       return false;
     }
@@ -863,6 +1002,10 @@ async function postMemorySession({
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      if (isDuplicateRow(res.status, body)) {
+        log(`memory-sessions-dup: row already present — skipping duplicate insert (session=${sessionId || 'null'})`);
+        return DUP_RESULT;
+      }
       log(`memory-sessions-insert-failed: HTTP ${res.status} ${body.slice(0, 200)}`);
       return false;
     }
@@ -994,7 +1137,7 @@ async function processStdinPayload(input) {
   });
 
   if (itemOk || sessionOk) {
-    log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} messages=${messagesCount} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)} startedAt=${parsedStartedAt || 'null'} durationMin=${durationMinutes === null ? 'null' : durationMinutes} factsExtracted=${factsExtracted} memory_items=${itemOk ? 'ok' : 'fail'} memory_sessions=${sessionOk ? 'ok' : 'fail'}`);
+    log(`ingested: project="${project}" session=${sessionId} bytes=${summary.length} messages=${messagesCount} sessionType=${sessionType} sourceAgent=${normalizeSourceAgent(sourceAgent)} startedAt=${parsedStartedAt || 'null'} durationMin=${durationMinutes === null ? 'null' : durationMinutes} factsExtracted=${factsExtracted} memory_items=${writeStatusLabel(itemOk)} memory_sessions=${writeStatusLabel(sessionOk)}`);
   }
 }
 
@@ -1010,6 +1153,13 @@ if (require.main === module) {
 } else {
   module.exports = {
     PROJECT_MAP,
+    // 2026-09-15 — local project-map overrides (private cwds that must never
+    // be named in this published asset). Also consumed by memory-pre-compact.js
+    // through loadHelpers(), so both hooks share one merged map.
+    BUNDLED_PROJECT_MAP,
+    _loadLocalProjectMap,
+    _mergeProjectMap,
+    LOCAL_PROJECT_MAP_PATH,
     detectProject,
     readEnv,
     buildSummary,
@@ -1017,6 +1167,10 @@ if (require.main === module) {
     postMemoryItem,
     // Sprint 51.6 T3 — memory_sessions write companion.
     postMemorySession,
+    // 2026-09-15 — dedup-vs-failure classification surface (see DUP_RESULT).
+    DUP_RESULT,
+    isDuplicateRow,
+    writeStatusLabel,
     processStdinPayload,
     LOG_FILE,
     // Sprint 45 T4 — adapter-pluggable transcript-parser surface.

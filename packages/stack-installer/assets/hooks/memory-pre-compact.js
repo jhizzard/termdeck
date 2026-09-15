@@ -176,6 +176,12 @@ function debug(msg) { if (DEBUG) log(`[debug] ${msg}`); }
 //      stack-installer assets dir this file lives in.
 //   3. The bundled SessionEnd source sibling — used when this hook is exercised
 //      directly from the source tree (fence tests, dev repro).
+// NOTE (2026-09-15) — project tagging, including the LOCAL PROJECT-MAP
+// OVERRIDES from ~/.termdeck/hook-project-map.local.json, lives entirely in
+// memory-session-end.js. This hook calls `helpers.detectProject()` (see the
+// two call sites below), so it inherits the merged map for free. Do NOT add a
+// second PROJECT_MAP or a second overrides reader here: two copies would drift,
+// and a private cwd tagged by only one of them still leaks through the other.
 function loadHelpers() {
   const override = process.env.TERMDECK_HOOK_HELPERS_PATH;
   const candidates = [
@@ -253,6 +259,24 @@ async function postViaIngestCapture(args) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DEDUP-vs-FAILURE classification (2026-09-15). VENDORED COPY of the helpers in
+// memory-session-end.js — deliberately duplicated rather than require()'d,
+// for the same reason the tier-0 block below is vendored: this file is
+// installed to ~/.claude/hooks/ and must not reach across package boundaries
+// at runtime (INSTALLER-PITFALLS Class E). Keep the two copies in sync.
+const DUP_RESULT = 'dup';
+
+function isDuplicateRow(status, body) {
+  if (status !== 409) return false;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && parsed.code === '23505';
+  } catch {
+    return /\b23505\b/.test(String(body || ''));
+  }
+}
+
 // FALLBACK write path (transition-safe — see the v3 header note). Raw POST to
 // /rest/v1/memory_items with source_type='pre_compact_snapshot'. This is the
 // pre-Sprint-81 behavior (append a row per compaction); it runs ONLY when
@@ -281,6 +305,14 @@ async function postPreCompactSnapshot({
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      if (isDuplicateRow(res.status, body)) {
+        // Dedup, not failure — see the DUP_RESULT note in memory-session-end.js.
+        // This branch is load-bearing here: the v2-era append path wrote one row
+        // per compaction, so a session that compacts repeatedly with no new
+        // content hits content_hash 23505 by design.
+        log(`pre-compact-snapshot-dup: content_hash already present — snapshot is in the store (session=${sessionId || 'null'})`);
+        return DUP_RESULT;
+      }
       log(`supabase-insert-failed: HTTP ${res.status} ${body.slice(0, 200)}`);
       return false;
     }
@@ -642,8 +674,9 @@ async function runCapture(data, helpers, firing) {
   log(`ingest_capture non-success (status=${rpc.status}) → raw-append fallback`);
   const ok = await postPreCompactSnapshot(writeArgs);
   if (ok) {
-    log(`ingested-${mode} via append-fallback: project="${project}" session=${sessionId} trigger=${trigger} agent=${sourceAgent} bytes=${content.length} messages=${messagesCount} factsExtracted=${factsExtracted}`);
-    return { status: 'ingested', via: 'append-fallback', project, sessionId, sourceAgent, mode, trigger, messagesCount };
+    const via = ok === DUP_RESULT ? 'append-fallback-dup' : 'append-fallback';
+    log(`ingested-${mode} via ${via}: project="${project}" session=${sessionId} trigger=${trigger} agent=${sourceAgent} bytes=${content.length} messages=${messagesCount} factsExtracted=${factsExtracted}`);
+    return { status: 'ingested', via, project, sessionId, sourceAgent, mode, trigger, messagesCount };
   }
   return { status: 'insert-failed' };
 }

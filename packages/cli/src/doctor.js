@@ -22,6 +22,8 @@
 //   --no-schema   Skip the Supabase schema section (used by tests + offline runs)
 //   --no-shims    Skip the standalone-shell capture section (it spawns each
 //                 shim in dry-probe mode; skip in CI / on hosts without them)
+//   --no-memory-write  Skip the memory-write health section (reads the tail of
+//                 ~/.claude/hooks/memory-hook.log; warn-only, never gates exit)
 //
 // Test seams (monkey-patchable):
 //   _detectInstalled / _fetchLatest — npm probes (Sprint 28)
@@ -303,6 +305,7 @@ function parseArgv(argv) {
     noAgents: args.includes('--no-agents'),
     noShims: args.includes('--no-shims'),
     noBilling: args.includes('--no-billing'),
+    noMemoryWrite: args.includes('--no-memory-write'),
   };
 }
 
@@ -971,6 +974,217 @@ function renderShimResult(result, c) {
   return out.join('\n');
 }
 
+// ── 2026-09-15: memory-write health ────────────────────────────────────────
+//
+// WHY THIS EXISTS. On 2026-09-15 a fleet-wide "Mnestra has accepted no CLI
+// write since Sept 5" incident was opened, escalated, and staffed — and the
+// writes had never stopped. The hooks were logging benign content-hash dedup
+// (HTTP 409 / SQLSTATE 23505) with the same `supabase-insert-failed` vocabulary
+// as real errors, so a human reading the log could not tell a healthy store
+// from a dead one. The hooks now say `dup`; this check makes the answer a
+// single command instead of a log-archaeology session.
+//
+// Everything here is WARN-or-better by design. A stale log is evidence to look
+// at, not a broken install, and `doctor` must stay usable on a machine that is
+// simply idle. Never FAIL — `hasGaps` stays false unconditionally.
+const MEMORY_HOOK_LOG = path.join(os.homedir(), '.claude', 'hooks', 'memory-hook.log');
+const LAST_OK_WARN_HOURS = 48;
+const INBOX_STALE_WARN_HOURS = 72;
+// Reading the whole log would mean holding a multi-MB file in memory for one
+// timestamp. The tail is bounded instead: enough to cover a week of a busy
+// fleet, cheap on an idle one.
+const LOG_TAIL_BYTES = 512 * 1024;
+
+function _tailFile(file, maxBytes, _fs = fs) {
+  const fd = _fs.openSync(file, 'r');
+  try {
+    const size = _fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    if (len <= 0) return '';
+    const buf = Buffer.alloc(len);
+    _fs.readSync(fd, buf, 0, len, start);
+    return buf.toString('utf8');
+  } finally {
+    _fs.closeSync(fd);
+  }
+}
+
+// Parses the hook log's tail into the three numbers a human actually wants:
+// when the store last accepted a write, how much of the recent noise was
+// harmless dedup, and how much was a real failure.
+function _parseMemoryHookLog(text, now = Date.now(), windowDays = 7) {
+  const cutoff = now - windowDays * 24 * 3600 * 1000;
+  let lastOk = null;
+  let dup = 0;
+  let realFail = 0;
+  for (const line of String(text || '').split('\n')) {
+    const m = /^\[(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)\]/.exec(line);
+    if (!m) continue;
+    const ts = Date.parse(m[1]);
+    if (!Number.isFinite(ts)) continue;
+    // `memory_items=ok` is the unambiguous proof a row was newly inserted.
+    // A `dup` is also proof the row is in the store, but it does NOT prove
+    // the write path is live today — so it deliberately does not refresh
+    // lastOk. That keeps the 48h warning honest on a fleet that is only
+    // ever re-ingesting identical summaries.
+    if (line.includes('memory_items=ok') && (lastOk === null || ts > lastOk)) lastOk = ts;
+    if (ts < cutoff) continue;
+    // Post-fix vocabulary.
+    if (/-dup:/.test(line)) { dup++; continue; }
+    // TRANSITION: hooks older than 2026-09-15 logged dedup with the same
+    // `insert-failed` wording as a real error. The log keeps ~a week of that
+    // history, and misreporting it here would reproduce the exact confusion
+    // this check exists to end — so classify the legacy shape by its payload
+    // (HTTP 409 + 23505), not by its label.
+    if (/insert-failed: HTTP 409\b/.test(line) && /\b23505\b/.test(line)) { dup++; continue; }
+    if (/insert-failed|insert-exception|embed-failed|embed-exception/.test(line)) realFail++;
+  }
+  return { lastOk, dup, realFail, windowDays };
+}
+
+// Staleness RPC (authored alongside this check). Returns hours since the last
+// memory_inbox row plus per-source_agent hours since the last memory_items
+// row. GUARDED: an install whose store predates the function must still pass
+// doctor, so PGRST202 / undefined-function is a `skip`, never a warn.
+async function _probeInboxStaleness(client) {
+  try {
+    const res = await client.query('select * from public.memory_inbox_staleness()');
+    return { available: true, rows: res && res.rows ? res.rows : [] };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (/does not exist|could not find the function|PGRST202|undefined_function/i.test(msg)) {
+      return { available: false, reason: 'memory_inbox_staleness() is not deployed on this store yet' };
+    }
+    return { available: false, reason: `staleness probe failed: ${msg.slice(0, 160)}` };
+  }
+}
+
+async function _runMemoryWriteCheck(opts = {}) {
+  const optsObj = opts || {};
+  const _fs = optsObj._fs || fs;
+  const now = typeof optsObj.now === 'number' ? optsObj.now : Date.now();
+  const logPath = optsObj.logPath || MEMORY_HOOK_LOG;
+  const checks = [];
+
+  if (!_fs.existsSync(logPath)) {
+    return {
+      skipped: true,
+      reason: `${logPath} not found — the memory hooks have not run on this machine yet`,
+      checks: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = _parseMemoryHookLog(_tailFile(logPath, LOG_TAIL_BYTES, _fs), now);
+  } catch (err) {
+    return {
+      skipped: true,
+      reason: `could not read ${logPath}: ${err.message}`,
+      checks: [], passed: 0, total: 0, hasGaps: false,
+    };
+  }
+
+  if (parsed.lastOk === null) {
+    checks.push({
+      label: 'last successful memory_items write',
+      status: 'warn',
+      hint: `no \`memory_items=ok\` line in the last ${Math.round(LOG_TAIL_BYTES / 1024)}KB of ${logPath}. If this machine has been idle that is expected; otherwise check SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / OPENAI_API_KEY in ~/.termdeck/secrets.env.`,
+    });
+  } else {
+    const ageH = (now - parsed.lastOk) / 3600000;
+    const iso = new Date(parsed.lastOk).toISOString();
+    checks.push(ageH > LAST_OK_WARN_HOURS
+      ? {
+        label: 'last successful memory_items write',
+        status: 'warn',
+        hint: `${iso} — ${Math.floor(ageH)}h ago, older than the ${LAST_OK_WARN_HOURS}h threshold. If sessions HAVE been ending since then, the write path is the thing to look at (env vars first, then the embed call).`,
+      }
+      : { label: 'last successful memory_items write', status: 'pass', detail: `${iso} (${Math.floor(ageH)}h ago)` });
+  }
+
+  // Stated even when zero: the whole point is that a reader can see dup and
+  // real-failure counts are DIFFERENT things without re-reading the log.
+  checks.push({
+    label: `write outcomes, last ${parsed.windowDays}d`,
+    status: parsed.realFail > 0 ? 'warn' : 'pass',
+    detail: `${parsed.dup} dedup no-op${parsed.dup === 1 ? '' : 's'}, ${parsed.realFail} real failure${parsed.realFail === 1 ? '' : 's'}`,
+    hint: parsed.realFail > 0
+      ? `dedup (HTTP 409 / 23505) is healthy and needs no action. The ${parsed.realFail} real failure(s) are what to grep: \`grep -E "insert-failed|embed-failed" ${logPath}\`.`
+      : undefined,
+  });
+
+  // Web-inbox staleness. Opt-in on a client: doctor's schema section owns the
+  // connection, so this runs only when it hands one over.
+  const client = optsObj._pgClient || null;
+  if (!client) {
+    checks.push({ label: 'web-inbox staleness', status: 'skip', hint: 'no database connection available in this doctor run.' });
+  } else {
+    const probe = await (optsObj._probeInboxStaleness || _probeInboxStaleness)(client);
+    if (!probe.available) {
+      checks.push({ label: 'web-inbox staleness', status: 'skip', hint: probe.reason });
+    } else {
+      const row = probe.rows[0] || {};
+      const inboxH = Number(row.inbox_hours ?? row.hours_since_inbox ?? NaN);
+      if (!Number.isFinite(inboxH)) {
+        checks.push({ label: 'web-inbox staleness', status: 'skip', hint: 'staleness function returned no inbox age.' });
+      } else {
+        checks.push(inboxH > INBOX_STALE_WARN_HOURS
+          ? { label: 'web-inbox staleness', status: 'warn', hint: `no memory_inbox row for ${Math.floor(inboxH)}h (threshold ${INBOX_STALE_WARN_HOURS}h) — the web capture path may be down even though the CLI path is fine.` }
+          : { label: 'web-inbox staleness', status: 'pass', detail: `${Math.floor(inboxH)}h since last inbox row` });
+      }
+      for (const r of probe.rows) {
+        const agent = r.source_agent;
+        const h = Number(r.agent_hours ?? r.hours_since_memory_item ?? NaN);
+        if (!agent || !Number.isFinite(h)) continue;
+        checks.push(h > LAST_OK_WARN_HOURS
+          ? { label: `agent \`${agent}\` last write`, status: 'warn', hint: `${Math.floor(h)}h ago (threshold ${LAST_OK_WARN_HOURS}h).` }
+          : { label: `agent \`${agent}\` last write`, status: 'pass', detail: `${Math.floor(h)}h ago` });
+      }
+    }
+  }
+
+  const scored = checks.filter((ch) => ch.status === 'pass' || ch.status === 'fail');
+  return {
+    skipped: false,
+    logPath,
+    checks,
+    passed: scored.filter((ch) => ch.status === 'pass').length,
+    total: scored.length,
+    // Never gates the exit code — see the header note.
+    hasGaps: false,
+  };
+}
+
+function renderMemoryWriteResult(result, c) {
+  const out = [];
+  out.push('');
+  out.push(c.bold('Memory-write health'));
+  out.push('');
+  if (result.skipped) {
+    out.push(`  ${c.dim(`(skipped) ${result.reason}`)}`);
+    return out.join('\n');
+  }
+  for (const chk of result.checks) {
+    if (chk.status === 'pass') {
+      out.push(`  ${c.green('✓')} ${chk.label}${chk.detail ? c.dim(` — ${chk.detail}`) : ''}`);
+    } else if (chk.status === 'skip') {
+      out.push(`  ${c.dim('─')} ${c.dim(`${chk.label}: skipped`)}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    } else if (chk.status === 'warn') {
+      out.push(`  ${c.yellow('!')} ${chk.label}${chk.detail ? c.dim(` — ${chk.detail}`) : ''}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    } else {
+      out.push(`  ${c.red('✗')} ${chk.label}`);
+      if (chk.hint) out.push(`      ${c.dim(chk.hint)}`);
+    }
+  }
+  out.push('');
+  out.push(`  ${result.passed}/${result.total} memory-write checks passed`);
+  return out.join('\n');
+}
+
 // ── Sprint 71 B-T2: panel-billing probe ────────────────────────────────────
 //
 // WHAT GOES WRONG. A Claude Code panel that inherits `ANTHROPIC_API_KEY` stops
@@ -1167,6 +1381,22 @@ async function doctor(argv) {
     }
   }
 
+  // 2026-09-15: memory-write health. Log-only (no connection of its own), so
+  // it is cheap and offline-safe; the staleness RPC engages only when a caller
+  // hands in a client. Never gates the exit code.
+  let memoryWrite = null;
+  if (!opts.noMemoryWrite) {
+    try {
+      memoryWrite = await module.exports._runMemoryWriteCheck();
+    } catch (err) {
+      memoryWrite = {
+        skipped: false,
+        checks: [{ label: 'memory-write probe', status: 'warn', hint: `unexpected error: ${err && err.message || err}` }],
+        passed: 0, total: 0, hasGaps: false,
+      };
+    }
+  }
+
   // Sprint 71 B-T2: panel-billing probe. Local + read-only, so it has no
   // offline/CI cost, but it is skippable for symmetry with the other sections.
   let billing = null;
@@ -1207,6 +1437,7 @@ async function doctor(argv) {
     if (schema) payload.schema = schema;
     if (agents) payload.agents = agents;
     if (shims) payload.shims = shims;
+    if (memoryWrite) payload.memoryWrite = memoryWrite;
     if (billing) payload.billing = billing;
     process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
     return exitCode;
@@ -1224,6 +1455,9 @@ async function doctor(argv) {
   }
   if (shims) {
     process.stdout.write(renderShimResult(shims, c) + '\n');
+  }
+  if (memoryWrite) {
+    process.stdout.write(renderMemoryWriteResult(memoryWrite, c) + '\n');
   }
   if (billing) {
     process.stdout.write(renderBillingResult(billing, c) + '\n');
@@ -1250,6 +1484,15 @@ module.exports._looksLikeShim = _looksLikeShim;
 module.exports._realpath = _realpath;
 module.exports.renderShimResult = renderShimResult;
 module.exports.SHIM_NAMES = SHIM_NAMES;
+// 2026-09-15 — memory-write health (dedup-vs-failure + staleness).
+module.exports._runMemoryWriteCheck = _runMemoryWriteCheck;
+module.exports._parseMemoryHookLog = _parseMemoryHookLog;
+module.exports._probeInboxStaleness = _probeInboxStaleness;
+module.exports._tailFile = _tailFile;
+module.exports.renderMemoryWriteResult = renderMemoryWriteResult;
+module.exports.MEMORY_HOOK_LOG = MEMORY_HOOK_LOG;
+module.exports.LAST_OK_WARN_HOURS = LAST_OK_WARN_HOURS;
+module.exports.INBOX_STALE_WARN_HOURS = INBOX_STALE_WARN_HOURS;
 // Sprint 71 B-T2 — panel-billing probe.
 module.exports._runBillingCheck = _runBillingCheck;
 module.exports._readSecretsEnvKeys = _readSecretsEnvKeys;

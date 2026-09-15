@@ -296,7 +296,15 @@ test('handler: heuristic identity (client_name) resolves and is stamped into the
   assert.match(r.content[0].text, /QUARANTINED PENDING REVIEW/);
   assert.match(r.content[0].text, /inbox-uuid-1/);
   assert.match(r.content[0].text, /not .*saved to memory/i);
-  assert.deepEqual(r.structuredContent, { id: 'inbox-uuid-1', status: 'pending', source_agent: 'claude-web' });
+  // Sprint 86: the result also points at the read half of the channel, so a
+  // proposer can find out whether this id was promoted or rejected.
+  assert.deepEqual(r.structuredContent, {
+    id: 'inbox-uuid-1',
+    status: 'pending',
+    source_agent: 'claude-web',
+    check_status_with: 'memory_propose_status',
+  });
+  assert.match(r.content[0].text, /memory_propose_status/);
 });
 
 test('handler: explicit operator map WINS over the client_name heuristic', async () => {

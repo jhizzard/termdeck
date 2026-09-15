@@ -205,6 +205,71 @@ function createBridgeServer({ tools = [], policy = null, auth, options = {} } = 
     }),
   );
 
+  // ── /healthz `inbox` — write-path staleness tripwire (Sprint 86) ──────────
+  //
+  // /healthz answering 200 has never meant the WRITE path works: on this host
+  // the inbox went silent on 2026-09-06 while transport, tunnel and OAuth all
+  // stayed green for nine days, and nothing in the health surface disagreed.
+  // These two fields make that silence visible to anything already polling
+  // /healthz.
+  //
+  // THREE PROPERTIES THIS MUST HAVE, in priority order:
+  //   1. It must NEVER block or fail the health check. /healthz is a liveness
+  //      probe polled every few seconds by the supervisor and the tunnel; a
+  //      synchronous webhook call here would couple bridge liveness to Mnestra
+  //      liveness, which is precisely backwards. So this is
+  //      stale-while-revalidate: the handler reads a cached value and NEVER
+  //      awaits. The first probe after boot omits the field and warms the
+  //      cache for the next one.
+  //   2. It must degrade to ABSENT, not to an error. An older Mnestra (501),
+  //      an unreachable webhook, a malformed row — all leave `inbox` simply
+  //      not present. Absent means "unknown", which is honest; a zero or a
+  //      null would read as "fresh" or "broken" and both would be lies.
+  //   3. It must stay MINIMAL. /healthz is public and unauthenticated. Only
+  //      the overall row's two timing fields go out — deliberately NOT the
+  //      per-source_agent breakdown or pending counts, which would expose the
+  //      shape of the operator's activity to anyone who can curl the tunnel.
+  const INBOX_TTL_MS = 60_000;
+  const inboxCache = { value: null, at: 0, inflight: false };
+
+  // NULL vs ABSENT, the distinction this field lives or dies on:
+  //   field absent          → UNKNOWN (old Mnestra, webhook down, not wired)
+  //   inbox_last_at: null   → NEVER WROTE (the store answered; nothing has ever
+  //                           landed) — a real and alarming datum, published
+  //                           as null rather than suppressed, because
+  //                           suppressing it would hide the worst case behind
+  //                           the same silence as a transport hiccup.
+  // Coercing either into a number would turn "nothing ever landed" into
+  // "landed just now", which is the most dangerous misreading available.
+  function inboxHealth() {
+    const mnestra = options.mnestraClient;
+    if (!mnestra || typeof mnestra.inboxStaleness !== 'function') return null;
+    const now = Date.now();
+    if (!inboxCache.inflight && now - inboxCache.at >= INBOX_TTL_MS) {
+      inboxCache.inflight = true;
+      Promise.resolve()
+        .then(() => mnestra.inboxStaleness())
+        .then((r) => {
+          const overall = r && r.overall;
+          inboxCache.value = overall
+            ? {
+              inbox_last_at: overall.inbox_last_at != null ? overall.inbox_last_at : null,
+              inbox_stale_hours: overall.inbox_stale_hours != null ? overall.inbox_stale_hours : null,
+            }
+            : null;
+        })
+        .catch(() => {
+          // 501 from an older Mnestra, webhook down, timeout — all "unknown".
+          inboxCache.value = null;
+        })
+        .finally(() => {
+          inboxCache.at = Date.now();
+          inboxCache.inflight = false;
+        });
+    }
+    return inboxCache.value;
+  }
+
   // health — public, no secrets. `mode` is the origin FLAVOR (full vs
   // memory-only); `origin` (only when configured) identifies WHICH origin.
   app.get('/healthz', (req, res) => {
@@ -219,6 +284,8 @@ function createBridgeServer({ tools = [], policy = null, auth, options = {} } = 
       ts: new Date().toISOString(),
     };
     if (originLabel) body.origin = originLabel;
+    const inbox = inboxHealth();
+    if (inbox) body.inbox = inbox;
     return res.json(body);
   });
 
@@ -473,7 +540,16 @@ function bootstrap(options = {}) {
     tools,
     policy,
     auth,
-    options: Object.assign({}, options.serverOptions || {}, { memoryOnly }),
+    // `mnestraClient` powers the /healthz `inbox` staleness field ONLY. It is
+    // passed separately from `clients` (rather than the whole bundle) so the
+    // health surface can never reach the TermDeck panel API, and so a caller
+    // constructing a server with explicit `options` opts in deliberately.
+    options: Object.assign(
+      {},
+      options.serverOptions || {},
+      { memoryOnly },
+      clients && clients.mnestra ? { mnestraClient: clients.mnestra } : {},
+    ),
   });
 }
 

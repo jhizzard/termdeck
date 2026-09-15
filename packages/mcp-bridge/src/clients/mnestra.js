@@ -66,7 +66,8 @@ function createMnestraClient(opts = {}) {
   const reqOpts = { fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs || 8000, headers: authHeaders };
 
   // Internal — the ONLY way this module talks to Mnestra. `op` is always one of
-  // the three read ops below; callers cannot inject an arbitrary op.
+  // the read ops below (recall/search/status/propose_status/inbox_staleness);
+  // callers cannot inject an arbitrary op.
   async function readOp(op, args) {
     const body = await requestJson(webhookUrl, { method: 'POST', body: { op, ...args }, ...reqOpts });
     return body || {};
@@ -111,6 +112,119 @@ function createMnestraClient(opts = {}) {
 
     async status() {
       return readOp('status', {});
+    },
+
+    // ── write-VISIBILITY reads (Sprint 86) ───────────────────────────────────
+    // A proposal is fire-and-forget by design: it lands in quarantine and an
+    // asynchronous pass promotes or rejects it later. Until now the proposer
+    // had no way to learn WHICH — so a rejected proposal was indistinguishable
+    // from a working one, and the whole channel could sit dead for weeks
+    // without anyone noticing. These two ops close that blind spot. Both are
+    // READS (no argument mutates anything) and both tolerate an older webhook.
+
+    // propose_status: one proposal's disposition.
+    //   request  { op:'propose_status', id }   ('proposal_id' is accepted as an
+    //                                           alias by the store; we send the
+    //                                           canonical `id`)
+    //   200 known   { ok:true, found:true,  id, status, rejection_reason,
+    //                 promoted_memory_id, proposed_at, detail }
+    //   200 unknown { ok:true, found:false, id, status:null, detail }
+    //   400 malformed id · 501 pre-0.14.0 build
+    //
+    // UNKNOWN IS A 200, NOT A 404. That matters: `found:false` must render as
+    // "unknown", never as "pending". Reporting an aged-out or mistyped id as
+    // still-queued would tell the user their memory is on its way when nothing
+    // is on its way — the exact false-reassurance this whole channel exists to
+    // remove. So `found` is carried through explicitly rather than inferred
+    // from a missing status.
+    async proposeStatus({ proposalId } = {}) {
+      if (!proposalId || !String(proposalId).trim()) {
+        throw new Error('memory_propose_status requires a proposal id');
+      }
+      const id = String(proposalId).trim();
+      let data;
+      try {
+        data = await readOp('propose_status', { id });
+      } catch (err) {
+        if (err && err.status === 404) {
+          // Not the contract (unknown is a 200), but a defensive mapping so an
+          // older/proxied build still reads as "unknown" rather than an outage.
+          return { found: false, id, status: null, rejectionReason: null, promotedMemoryId: null, proposedAt: null, detail: null };
+        }
+        if (err && err.status === 501) {
+          const e = new Error(
+            'this Mnestra build has no propose_status op (upgrade @jhizzard/mnestra to the release carrying it)',
+          );
+          e.unsupported = true;
+          throw e;
+        }
+        throw err;
+      }
+      const found = !!(data && data.ok !== false && data.found === true && data.status);
+      // Bounded projection — never hand back the proposal TEXT. The caller
+      // already sent it; echoing it would re-egress content through the
+      // provider cloud for no benefit. `detail` IS passed straight through:
+      // it is the store's own explanation and is what makes an unknown or a
+      // rejection actionable.
+      return {
+        found,
+        id: data && data.id != null ? String(data.id) : id,
+        status: found ? String(data.status) : null,
+        rejectionReason: data && data.rejection_reason != null ? String(data.rejection_reason) : null,
+        promotedMemoryId: data && data.promoted_memory_id != null ? String(data.promoted_memory_id) : null,
+        proposedAt: data && data.proposed_at != null ? String(data.proposed_at) : null,
+        detail: data && data.detail != null ? String(data.detail) : null,
+      };
+    },
+
+    // inbox_staleness: how long since anything landed in the inbox / was
+    // promoted to items, per scope+agent, plus a precomputed `overall`.
+    //   request { op:'inbox_staleness' }
+    //   200     { ok:true, count, overall:{…}, rows:[…] }
+    //   501     pre-0.14.0 build
+    // Powers the /healthz `inbox` field — the tripwire for "the write path has
+    // been silently dead for N days".
+    //
+    // A NULL stale_hours means NEVER WROTE, which is not the same as zero and
+    // not the same as unknown. It is preserved as null all the way out; any
+    // coercion here would turn "nothing has ever landed" into "landed just
+    // now", which is the most dangerous possible misreading of this field.
+    async inboxStaleness() {
+      let data;
+      try {
+        data = await readOp('inbox_staleness', {});
+      } catch (err) {
+        if (err && err.status === 501) {
+          const e = new Error(
+            'this Mnestra build has no inbox_staleness op (upgrade @jhizzard/mnestra to the release carrying it)',
+          );
+          e.unsupported = true;
+          throw e;
+        }
+        throw err;
+      }
+      const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+      const str = (v) => (v != null ? String(v) : null);
+      const row = (r) => (r && typeof r === 'object' ? {
+        scope: str(r.scope),
+        source_agent: str(r.source_agent),
+        inbox_last_at: str(r.inbox_last_at),
+        inbox_stale_hours: num(r.inbox_stale_hours),
+        inbox_pending: num(r.inbox_pending),
+        items_last_at: str(r.items_last_at),
+        items_stale_hours: num(r.items_stale_hours),
+      } : null);
+
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      return {
+        count: num(data.count),
+        // The store precomputes `overall`; fall back to finding it among rows
+        // so a build that only ships `rows` still powers /healthz.
+        overall: row(data.overall)
+          || row(rows.find((r) => r && String(r.scope || '').toLowerCase() === 'overall'))
+          || null,
+        rows: rows.map(row).filter(Boolean),
+      };
     },
 
     // The ONE write op (Sprint 76): submit a proposal to the quarantined

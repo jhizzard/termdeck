@@ -5,6 +5,17 @@ underlying packages (`@jhizzard/termdeck`, `@jhizzard/mnestra`,
 `@jhizzard/rumen`) ship on their own cadences and have their own
 changelogs — see the root `CHANGELOG.md` for `@jhizzard/termdeck`.
 
+## [1.19.0] — 2026-09-15
+
+### Added
+- **Memory-write health in `termdeck doctor`** (Sprint 86). A new section answers the question the stack badge never could: *are writes actually landing?* It reads the tail of the hook log plus a staleness RPC, and classifies the legacy dedup shape by its **payload** (HTTP 409 + SQLSTATE 23505) rather than by its label — so a write that was *deduplicated* is never reported as a write that *failed*. Skip with `--no-memory-write`.
+- **Local project-map overrides for the bundled hooks.** `~/.termdeck/hook-project-map.local.json` extends the bundled `PROJECT_MAP` without editing vendored files, with `pattern` as a regex **source string**. Every failure mode — missing file, unreadable path, malformed JSON, bad regex — degrades to "no overrides" and the hook runs on; project tagging must never be able to take a capture down with it.
+- **Explicit dedup labeling in the session-end and pre-compact hooks.** A deduplicated write now reports `dup` instead of leaving a bare 409 for a human to interpret. Pre-compact ships as **v4**.
+
+### Notes
+- Rides `@jhizzard/termdeck` 1.22.0, whose MCP bridge adds `memory_propose_status` and the `/healthz` `inbox` staleness field. The bridge's new read ops require `@jhizzard/mnestra` ≥ 0.14.0; against an older store they answer 501 and say so, naming the upgrade, rather than failing opaquely.
+- The dedup-classification helpers are a **vendored copy** shared between the two hooks (INSTALLER-PITFALLS Class N): change both or neither, and the parity fences pin them.
+
 ## [1.11.0] — 2026-07-05
 
 ### Added

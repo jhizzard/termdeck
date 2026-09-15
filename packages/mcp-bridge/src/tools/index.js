@@ -35,6 +35,7 @@
 const { buildMemoryTools } = require('./memory');
 const { buildPanelTools } = require('./panels');
 const { buildProposeTools } = require('./propose');
+const { buildProposeStatusTools } = require('./propose-status');
 const { buildSessionRecordTools } = require('./session-record');
 
 function buildTools({ withEgressRedaction, policy, clients, memoryOnly = false, identity, env }) {
@@ -69,6 +70,12 @@ function buildTools({ withEgressRedaction, policy, clients, memoryOnly = false, 
     && identityReady
     && clients.mnestra && typeof clients.mnestra.propose === 'function');
 
+  // Same flag, but its own capability check: the status tool needs only a
+  // propose_status-capable client (no identity pipeline — it derives nothing
+  // and writes nothing), so it is gated on the flag plus that one method.
+  const canProposeStatus = !!(proposeEnabled
+    && clients.mnestra && typeof clients.mnestra.proposeStatus === 'function');
+
   // Sprint 84: the session-capture channel gets its OWN gate,
   // TERMDECK_BRIDGE_ENABLE_SESSION_RECORD=1 — DEFAULT-OFF, and independent of
   // the propose gate on purpose. They are different trust surfaces (one queues
@@ -90,6 +97,13 @@ function buildTools({ withEgressRedaction, policy, clients, memoryOnly = false, 
     ...buildMemoryTools({ clients, policy }),
     ...(memoryOnly ? [] : buildPanelTools({ clients, policy })),
     ...(canPropose ? buildProposeTools({ clients, identity, policy, env }) : []),
+    // Sprint 86: the READ half of the proposal channel rides the SAME gate —
+    // a surface that cannot propose has nothing to ask about, and coupling
+    // them means an operator can never end up with a status tool reporting on
+    // a channel they believe is off. Needs only a propose_status-capable
+    // client; an older Mnestra still mounts it and answers with the
+    // "upgrade @jhizzard/mnestra" message rather than failing opaquely.
+    ...(canProposeStatus ? buildProposeStatusTools({ clients }) : []),
     ...(canRecordSession ? buildSessionRecordTools({ clients, identity, policy, env }) : []),
   ];
 

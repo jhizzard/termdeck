@@ -262,8 +262,10 @@ function buildProposeTools({ clients, identity, policy, env, now } = {}) {
             `Proposal accepted into the memory inbox as ${sourceAgent} — QUARANTINED PENDING REVIEW (id: ${id}, status: ${status}). `
             + 'It is NOT part of canonical memory: an asynchronous review pass will promote or reject it, '
             + 'and it will not appear in memory_recall/memory_search unless promoted. '
-            + 'Tell the user it has been proposed for review — not "saved to memory".',
-            { id, status, source_agent: sourceAgent },
+            + 'Tell the user it has been proposed for review — not "saved to memory". '
+            + `To find out which way it went, call memory_propose_status with proposal_id "${id}" — `
+            + 'rejections are common (duplicate, recipe-level, or quality-gated) and are only visible there.',
+            { id, status, source_agent: sourceAgent, check_status_with: 'memory_propose_status' },
           );
         } catch (err) {
           return toolError('memory_propose', err);
