@@ -3648,6 +3648,32 @@ function createServer(config) {
     });
   });
 
+  // GET /api/sessions/:id/reply - Grok's reply text for a web-chat panel (asked for by a TermDeck user on
+  // Nov 6: "which endpoint returns Grok's reply text?"). POST /input sends the
+  // prompt; this returns what came back. The panel's turns are already kept in
+  // session._webChatTranscript (the same record the SessionEnd capture uses);
+  // this reads it and changes nothing. `text` is the newest assistant reply,
+  // or null before the first one lands; ?all=1 adds every turn in order.
+  app.get('/api/sessions/:id/reply', (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.meta.type !== 'web-chat') {
+      return res.status(400).json({ error: 'Not a web-chat session: read a terminal panel with /buffer' });
+    }
+    const turns = (session._webChatTranscript && Array.isArray(session._webChatTranscript.turns))
+      ? session._webChatTranscript.turns : [];
+    const replies = turns.filter((t) => t.role === 'assistant');
+    const body = {
+      ok: true,
+      id: session.id,
+      status: session.meta.status,
+      replyCount: replies.length,
+      text: replies.length ? replies[replies.length - 1].content : null,
+    };
+    if (req.query.all === '1') body.turns = turns.map((t) => ({ role: t.role, content: t.content }));
+    res.json(body);
+  });
+
   // GET /api/sessions/:id/buffer - lightweight introspection of recent input writes
   // Returns the session's recent _inputBuffer state (what the orchestrator has
   // written via /input that may or may not have been consumed by the TUI yet).

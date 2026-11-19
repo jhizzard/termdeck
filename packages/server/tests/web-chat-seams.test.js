@@ -541,3 +541,53 @@ test('attach throwing ⇒ errored status, no crash', async () => {
     }
   });
 });
+
+test('GET /api/sessions/:id/reply returns Grok\'s newest reply text; ?all=1 returns every turn', async () => {
+  await withTempHome(async () => {
+    const handle = await bootTestServer();
+    const driver = makeFakeDriver({ manualComplete: true });
+    _setWebChatDriverImplForTesting(() => driver);
+    const getReply = async (id, q = '') => {
+      const res = await fetch(`${base(handle.port)}/api/sessions/${id}/reply${q}`);
+      return { status: res.status, body: await res.json() };
+    };
+    const ask = async (id, text, reply) => {
+      await postInput(handle.port, id, `${PASTE_OPEN}${text}${PASTE_CLOSE}`);
+      await postInput(handle.port, id, '\r');
+      driver._state.fireComplete(reply);
+      return pollStatus(handle.port, id, 'idle');
+    };
+    try {
+      const { body } = await postSession(handle.port, { type: 'web-chat', cwd: '/tmp/wc-reply', label: 'grok-web' });
+      await pollStatus(handle.port, body.id, 'idle');
+
+      const before = await getReply(body.id);
+      assert.equal(before.status, 200);
+      assert.equal(before.body.text, null, 'no reply before the first turn');
+      assert.equal(before.body.replyCount, 0);
+
+      assert.equal(await ask(body.id, 'first question', 'first answer'), 'idle');
+      assert.equal(await ask(body.id, 'second question', 'second answer'), 'idle');
+
+      const after = await getReply(body.id);
+      assert.equal(after.status, 200);
+      assert.equal(after.body.text, 'second answer', 'the newest reply, not the first');
+      assert.equal(after.body.replyCount, 2);
+      assert.equal(after.body.turns, undefined, 'turns only on ?all=1');
+
+      const all = await getReply(body.id, '?all=1');
+      assert.deepEqual(all.body.turns, [
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: 'first answer' },
+        { role: 'user', content: 'second question' },
+        { role: 'assistant', content: 'second answer' },
+      ]);
+
+      const missing = await getReply('no-such-session');
+      assert.equal(missing.status, 404);
+    } finally {
+      _setWebChatDriverImplForTesting(null);
+      await closeTestServer(handle);
+    }
+  });
+});
