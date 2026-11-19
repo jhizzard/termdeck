@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [1.23.0] - 2026-11-19
+
+### Fixed — a web-chat panel installed from npm said "web-chat driver not available"
+
+- **The tarball left the driver out.** 1.22.0 had the web-chat panel type in the server and client, but `files[]` never listed `packages/web-chat-driver`, so every npm install degraded a web-chat panel to errored. `files[]` now ships the driver's `package.json` and `src` (not its tests).
+- **`playwright-core` is an optional dependency.** It is the driver's one npm dependency. An install that cannot fetch it still works: the server already marks a web-chat panel as errored when the driver cannot load, and PTY panels never touch it.
+
+### Added
+
+- **`GET /api/sessions/:id/reply`** returns the newest Grok reply text of a web-chat panel (`null` before the first), with `replyCount` and `status`; `?all=1` adds every turn in order. `POST /input` sends the prompt; this returns what came back. It reads the turns the panel already keeps and writes nothing. A terminal panel gets a 400 that points at `/buffer`.
+
+### Tests
+
+- New `packages/server/tests/web-chat-driver-packaging.test.js` and a reply-route test in `web-chat-seams.test.js`. Both fail on 1.22.0 and pass here.
+
 ## [1.22.0] - 2026-09-15
 
 ### Fixed — a green `/healthz` said nothing about whether writes were landing, and for nine days they weren't (Sprint 86)
